@@ -2,7 +2,7 @@
 
 A diagnostic tool for HTTP API issues. Takes a request (live, or captured as a HAR file or curl command), runs it through a battery of network, transport, auth, and protocol checks, and produces a structured report with plain-language findings and suggested fixes.
 
-This document is the build spec for v1. Mark Marquez directs the build; Claude implements alongside him. Budget: 80–200 hours of human time over 1–3 months. Public GitHub from commit 1, MIT license. Hosted demo at `api-medic.markandrewmarquez.com`.
+This document is the build spec for v1. Mark Marquez directs the build; Claude implements alongside him. Public GitHub from commit 1, MIT license. Hosted demo at `api-medic.markandrewmarquez.com`.
 
 ---
 
@@ -390,9 +390,9 @@ Not in v1: Homebrew formula, pre-built standalone binaries. Add later if there's
 
 ## Phased build plan
 
-The build order is **fixtures first, UI against fixtures, then engine.** This produces a visible artifact within the first few weeks and prevents the engine from being shaped accidentally by frontend convenience.
+The build order is **fixtures first, UI against fixtures, then engine.** This produces a visible artifact early and prevents the engine from being shaped accidentally by frontend convenience.
 
-**Phase 1 — Data model lock-in (week 1, ~5 hrs)**
+**Phase 1 — Data model lock-in**
 
 - Set up repo, `pyproject.toml`, CI skeleton, README placeholder
 - Implement Pydantic models in `core/models.py`
@@ -402,7 +402,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** A directory of fixture files; tests pass; both the Pydantic and TypeScript schemas exist.
 
-**Phase 2 — Web UI against fixtures (weeks 1–3, ~30 hrs)**
+**Phase 2 — Web UI against fixtures**
 
 - Vite + React + Tailwind project skeleton in `frontend/`
 - Build the report screen first (matches the mockup we already drew): metric cards, timing waterfall, finding cards
@@ -412,7 +412,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** A working web UI, served locally, that looks finished. Every "report" is loaded from `fixtures/reports/`. Suitable for an early screenshot or LinkedIn post.
 
-**Phase 3 — Core engine + parser (weeks 3–4, ~25 hrs)**
+**Phase 3 — Core engine + parser**
 
 - Implement `runner.py` with `httpx` and full timing capture
 - Implement `parser.py` for HAR files and curl commands (use a battle-tested library like `uncurl`, don't write the curl parser from scratch)
@@ -424,7 +424,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** The same UI from Phase 2, now powered by real diagnostics. `api-medic serve` produces real reports against real endpoints.
 
-**Phase 4 — CLI (week 4, ~10 hrs)**
+**Phase 4 — CLI**
 
 - Wrap the engine in Typer
 - All subcommands: `run`, `from-curl`, `from-har`, `serve`
@@ -433,7 +433,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** `pip install -e . && api-medic https://httpbin.org/status/401` produces a colored terminal report.
 
-**Phase 5 — Hosted demo on AWS (week 5–6, ~20 hrs)**
+**Phase 5 — Hosted demo on AWS**
 
 - ACM certificate in `us-east-1` for `api-medic.markandrewmarquez.com`
 - SAM template defining S3, CloudFront, API Gateway, Lambda
@@ -445,7 +445,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** `api-medic.markandrewmarquez.com` works on a phone.
 
-**Phase 6 — Polish and launch (week 6–7, ~15 hrs)**
+**Phase 6 — Polish and launch**
 
 - Record the 30-second README GIF (consider [vhs](https://github.com/charmbracelet/vhs) for a reproducible terminal recording, or QuickTime + ffmpeg for the web UI)
 - README polish: hero section, install, quickstart, demo link, contributing, license
@@ -455,7 +455,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** The done definition is met. v1 is shipped.
 
-**Phase 7 (post-launch) — Browser extension (~20–30 hrs)**
+**Phase 7 (post-launch) — Browser extension**
 
 - Manifest v3 setup (Chrome) and Firefox-compatible build
 - DevTools panel UI built from the same React components used in the web UI (the `ReportView` component is reusable as-is)
@@ -466,8 +466,6 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 - Firefox Add-ons submission (faster review, same code)
 
 **End-of-phase demo:** Open DevTools on any site, click the api-medic panel, pick a request, click Analyze, get a Report.
-
-Total v1 estimate: 7 weeks at ~17 hrs/week, or 5 weeks at ~25 hrs/week. Phase 7 adds another 2–3 weeks post-launch.
 
 ---
 
@@ -501,7 +499,7 @@ These need answers during the build but don't change the architecture. Most are 
 
 ## Success criteria recap
 
-If, two weeks after launch:
+If, in the period shortly after launch:
 
 - The PyPI page shows a few hundred downloads
 - A handful of GitHub stars and one or two issues from real users
