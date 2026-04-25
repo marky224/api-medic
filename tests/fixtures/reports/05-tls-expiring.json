@@ -1,0 +1,50 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000005",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/status",
+    "headers": {
+      "User-Agent": "api-medic/1.0 (+https://api-medic.markandrewmarquez.com)"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 200,
+    "status_text": "OK",
+    "headers": {
+      "Content-Type": "application/json",
+      "Content-Length": "15"
+    },
+    "body_size_bytes": 15,
+    "body_preview": "{\"status\":\"ok\"}",
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": 9.1,
+    "connect_ms": 24.0,
+    "tls_ms": 41.7,
+    "ttfb_ms": 38.2,
+    "download_ms": 1.9,
+    "total_ms": 114.9
+  },
+  "findings": [
+    {
+      "id": "network.tls.expiring_soon",
+      "severity": "warning",
+      "title": "TLS certificate expires in 5 days",
+      "explanation": "The server's certificate is valid now but will expire on 2026-04-30. After that, clients will reject connections by default.",
+      "evidence": {
+        "subject_cn": "api.example.com",
+        "issuer": "Let's Encrypt R3",
+        "not_before": "2026-01-30T00:00:00Z",
+        "not_after": "2026-04-30T23:59:59Z",
+        "days_until_expiry": 5
+      },
+      "suggested_fix": "Renew the certificate before 2026-04-30. If using Let's Encrypt, check that the renewal cron is running."
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000001",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/health",
+    "headers": {
+      "Accept": "application/json",
+      "User-Agent": "api-medic/1.0 (+https://api-medic.markandrewmarquez.com)"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 200,
+    "status_text": "OK",
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": "27",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+      "Server": "nginx/1.25.3"
+    },
+    "body_size_bytes": 27,
+    "body_preview": "{\"status\":\"ok\",\"uptime\":42}",
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": 8.2,
+    "connect_ms": 22.1,
+    "tls_ms": 38.5,
+    "ttfb_ms": 41.3,
+    "download_ms": 4.8,
+    "total_ms": 114.9
+  },
+  "findings": [
+    {
+      "id": "info.protocol.http2",
+      "severity": "info",
+      "title": "Connection negotiated HTTP/2",
+      "explanation": "The server supports HTTP/2 and the request used it. No action needed.",
+      "evidence": {
+        "negotiated_protocol": "HTTP/2"
+      },
+      "suggested_fix": null
+    }
+  ]
+}

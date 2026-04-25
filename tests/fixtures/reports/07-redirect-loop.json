@@ -1,0 +1,42 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000007",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/old-endpoint",
+    "headers": {
+      "User-Agent": "api-medic/1.0 (+https://api-medic.markandrewmarquez.com)"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": null,
+  "timing": {
+    "dns_ms": 8.4,
+    "connect_ms": 21.0,
+    "tls_ms": 39.2,
+    "ttfb_ms": null,
+    "download_ms": null,
+    "total_ms": 312.7
+  },
+  "findings": [
+    {
+      "id": "http.redirect.loop",
+      "severity": "critical",
+      "title": "Redirect chain forms a cycle",
+      "explanation": "The server returned a sequence of 3 redirects that returns to a previously visited URL. The request was aborted to prevent an infinite loop.",
+      "evidence": {
+        "chain": [
+          {"step": 1, "url": "https://api.example.com/old-endpoint", "status": 301, "location": "https://api.example.com/v2/old"},
+          {"step": 2, "url": "https://api.example.com/v2/old", "status": 302, "location": "https://api.example.com/redirect"},
+          {"step": 3, "url": "https://api.example.com/redirect", "status": 302, "location": "https://api.example.com/old-endpoint"}
+        ],
+        "cycle_detected_at_step": 3,
+        "cycle_target": "https://api.example.com/old-endpoint"
+      },
+      "suggested_fix": "Update the server's redirect configuration so the chain terminates at a real resource. Most likely the v2 alias is misconfigured."
+    }
+  ]
+}

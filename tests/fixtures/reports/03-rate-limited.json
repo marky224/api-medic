@@ -1,0 +1,53 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000003",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/search?q=widgets",
+    "headers": {
+      "Authorization": "Bearer valid_token_redacted",
+      "Accept": "application/json"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 429,
+    "status_text": "Too Many Requests",
+    "headers": {
+      "Content-Type": "application/json",
+      "Retry-After": "60",
+      "X-RateLimit-Limit": "1000",
+      "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Reset": "1761399420"
+    },
+    "body_size_bytes": 64,
+    "body_preview": "{\"error\":\"rate_limit_exceeded\",\"message\":\"Try again in 60s\"}",
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": 6.4,
+    "connect_ms": 18.2,
+    "tls_ms": 35.1,
+    "ttfb_ms": 28.0,
+    "download_ms": 2.1,
+    "total_ms": 89.8
+  },
+  "findings": [
+    {
+      "id": "rate_limit.hit",
+      "severity": "critical",
+      "title": "Rate limit exceeded",
+      "explanation": "The server returned 429. The client has consumed all of its allowed requests for the current window.",
+      "evidence": {
+        "limit": 1000,
+        "remaining": 0,
+        "retry_after_seconds": 60,
+        "reset_at": "2026-04-25T14:23:40Z"
+      },
+      "suggested_fix": "Wait 60 seconds before retrying. Consider implementing exponential backoff and respecting the Retry-After header."
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000002",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "POST",
+    "url": "https://api.example.com/v1/users",
+    "headers": {
+      "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsImV4cCI6MTc2MTM5OTM4MH0.7VqXYZ\n",
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body_size_bytes": 42,
+    "body_preview": "{\"name\":\"Alex Doe\",\"email\":\"alex@example.com\"}"
+  },
+  "response": {
+    "status_code": 401,
+    "status_text": "Unauthorized",
+    "headers": {
+      "Content-Type": "application/json",
+      "Content-Length": "89",
+      "WWW-Authenticate": "Bearer error=\"invalid_token\", error_description=\"The access token expired\""
+    },
+    "body_size_bytes": 89,
+    "body_preview": "{\"error\":\"invalid_token\",\"error_description\":\"The access token expired\"}",
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": 12.0,
+    "connect_ms": 45.0,
+    "tls_ms": 78.0,
+    "ttfb_ms": 95.0,
+    "download_ms": 17.0,
+    "total_ms": 247.0
+  },
+  "findings": [
+    {
+      "id": "auth.header.whitespace",
+      "severity": "critical",
+      "title": "Authorization header has trailing whitespace",
+      "explanation": "The Authorization value ends with a newline. Some servers reject this as a malformed header.",
+      "evidence": {
+        "header_value_repr": "Bearer eyJhbGc...XYZ\\n",
+        "trailing_chars": ["\\n"]
+      },
+      "suggested_fix": "Trim the value before setting the header."
+    },
+    {
+      "id": "auth.jwt.expired",
+      "severity": "critical",
+      "title": "Bearer token has expired",
+      "explanation": "The JWT in your Authorization header expired 3 hours ago. This is the most likely cause of the 401.",
+      "evidence": {
+        "exp": "2026-04-25T11:23:00Z",
+        "expired_for_seconds": 10800,
+        "sub": "user_123"
+      },
+      "suggested_fix": "Refresh the token at /oauth/token and retry."
+    }
+  ]
+}

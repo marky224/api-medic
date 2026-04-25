@@ -1,0 +1,52 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000006",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "curl",
+  "request": {
+    "method": "POST",
+    "url": "https://api.example.com/v1/orders",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer valid_token_redacted"
+    },
+    "body_size_bytes": 58,
+    "body_preview": "{\"customer\": \"acme\", \"items\": [{\"sku\": \"ABC-123\",}, {\"sku\":}]}"
+  },
+  "response": {
+    "status_code": 400,
+    "status_text": "Bad Request",
+    "headers": {
+      "Content-Type": "application/json",
+      "Content-Length": "72"
+    },
+    "body_size_bytes": 72,
+    "body_preview": "{\"error\":\"invalid_request\",\"message\":\"Request body is not valid JSON\"}",
+    "protocol": "HTTP/1.1"
+  },
+  "timing": {
+    "dns_ms": null,
+    "connect_ms": null,
+    "tls_ms": null,
+    "ttfb_ms": null,
+    "download_ms": null,
+    "total_ms": null
+  },
+  "findings": [
+    {
+      "id": "body.malformed_json",
+      "severity": "critical",
+      "title": "Request body is declared as JSON but does not parse",
+      "explanation": "The Content-Type header declares application/json, but the body has trailing commas and a missing value. The server returned 400 because it cannot parse the request.",
+      "evidence": {
+        "content_type": "application/json",
+        "parse_error": "Expecting value: line 1 column 53 (char 52)",
+        "issues": [
+          "trailing comma after object at position 36",
+          "missing value after key 'sku' at position 51"
+        ]
+      },
+      "suggested_fix": "Fix the JSON syntax. Consider validating the body client-side with JSON.parse or jq before sending."
+    }
+  ]
+}

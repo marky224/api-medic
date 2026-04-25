@@ -1,0 +1,60 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000008",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/products",
+    "headers": {
+      "Authorization": "Bearer valid_token_redacted",
+      "Accept": "application/json"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 200,
+    "status_text": "OK",
+    "headers": {
+      "Content-Type": "application/json",
+      "Content-Length": "1247"
+    },
+    "body_size_bytes": 1247,
+    "body_preview": "{\"products\":[{\"id\":1,\"name\":\"Widget\",\"price\":19.99}, ... ]}",
+    "protocol": "HTTP/1.1"
+  },
+  "timing": {
+    "dns_ms": 14.2,
+    "connect_ms": 38.1,
+    "tls_ms": 1842.6,
+    "ttfb_ms": 67.4,
+    "download_ms": 12.0,
+    "total_ms": 1974.3
+  },
+  "findings": [
+    {
+      "id": "performance.tls.slow_handshake",
+      "severity": "warning",
+      "title": "TLS handshake took 1.8 seconds",
+      "explanation": "The TLS phase alone took 1842ms, more than 90% of the total request time. The server's certificate chain or cipher negotiation is unusually slow.",
+      "evidence": {
+        "tls_ms": 1842.6,
+        "total_ms": 1974.3,
+        "tls_share_percent": 93.3,
+        "negotiated_protocol": "HTTP/1.1"
+      },
+      "suggested_fix": "Investigate the server's TLS configuration. Common causes: missing OCSP stapling, an oversized certificate chain, or the server is CPU-bound during handshake."
+    },
+    {
+      "id": "info.protocol.http1",
+      "severity": "info",
+      "title": "Connection used HTTP/1.1",
+      "explanation": "The server did not negotiate HTTP/2. Not a problem on its own, but HTTP/2 would reduce per-request connection overhead.",
+      "evidence": {
+        "negotiated_protocol": "HTTP/1.1"
+      },
+      "suggested_fix": "If the server supports HTTP/2, ensure ALPN advertises h2 in the TLS handshake."
+    }
+  ]
+}

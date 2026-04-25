@@ -1,0 +1,63 @@
+{
+  "id": "0193b0d4-1100-7000-8000-000000000004",
+  "schema_version": "1.0",
+  "timestamp": "2026-04-25T14:23:00Z",
+  "source": "har",
+  "request": {
+    "method": "OPTIONS",
+    "url": "https://api.example.com/v1/users",
+    "headers": {
+      "Origin": "https://app.example.org",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "Authorization, Content-Type"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 204,
+    "status_text": "No Content",
+    "headers": {
+      "Access-Control-Allow-Origin": "https://app.example.com",
+      "Access-Control-Allow-Methods": "GET, POST",
+      "Access-Control-Allow-Headers": "Content-Type"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null,
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": null,
+    "connect_ms": null,
+    "tls_ms": null,
+    "ttfb_ms": null,
+    "download_ms": null,
+    "total_ms": 134.0
+  },
+  "findings": [
+    {
+      "id": "http.cors.misconfigured",
+      "severity": "critical",
+      "title": "CORS preflight does not allow this origin",
+      "explanation": "The browser sent a preflight from https://app.example.org but the server only allows https://app.example.com. The browser will block the actual request.",
+      "evidence": {
+        "request_origin": "https://app.example.org",
+        "allowed_origin": "https://app.example.com",
+        "match": false
+      },
+      "suggested_fix": "Add https://app.example.org to the server's Access-Control-Allow-Origin list, or use a proxy with the correct origin."
+    },
+    {
+      "id": "http.cors.missing_header",
+      "severity": "critical",
+      "title": "CORS response missing requested header in allow-list",
+      "explanation": "The preflight asked permission for Authorization, but the server only allows Content-Type. The Authorization header will be stripped or the request blocked.",
+      "evidence": {
+        "requested_headers": ["Authorization", "Content-Type"],
+        "allowed_headers": ["Content-Type"],
+        "missing": ["Authorization"]
+      },
+      "suggested_fix": "Add Authorization to the server's Access-Control-Allow-Headers value."
+    }
+  ]
+}
