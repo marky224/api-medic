@@ -1,6 +1,6 @@
 # api-medic
 
-> **🚧 Under active development.** Targeting v1.0 in 1–3 months.
+> **🚧 Under active development.**
 
 A diagnostic tool for HTTP API issues. Captures or runs a request, checks it for common problems (network, transport, auth, protocol, body, rate limiting), and produces a structured report with plain-language findings and suggested fixes.
 
