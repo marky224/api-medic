@@ -9,8 +9,13 @@ from typing import Any
 
 import pytest
 
-from api_medic.core.captured import CapturedRequest
-from api_medic.core.checks.auth import jwt_expired
+from api_medic.core.captured import CapturedRequest, CapturedResponse
+from api_medic.core.checks.auth import (
+    auth_missing,
+    header_whitespace,
+    jwt_expired,
+    jwt_not_yet_valid,
+)
 from api_medic.core.models import TimingBreakdown
 
 
@@ -27,15 +32,28 @@ def _make_jwt(payload: dict[str, Any]) -> str:
     return f"{header}.{body}.signaturejunkjunkjunk"
 
 
-def _cap(headers: dict[str, str] | None = None) -> CapturedRequest:
+def _cap(
+    headers: dict[str, str] | None = None,
+    response: CapturedResponse | None = None,
+) -> CapturedRequest:
     return CapturedRequest(
         method="GET",
         url="https://api.example.com/v1/users",
         headers=headers or {},
         body=b"",
-        response=None,
+        response=response,
         timing=TimingBreakdown(),
         source="live",
+    )
+
+
+def _resp(status: int = 200, body: bytes = b"") -> CapturedResponse:
+    return CapturedResponse(
+        status_code=status,
+        status_text="OK",
+        headers={},
+        body=body,
+        protocol="HTTP/1.1",
     )
 
 
@@ -134,3 +152,108 @@ class TestJwtExpired:
         finding = jwt_expired(cap)
         assert finding is not None
         assert "h" in finding.explanation  # "3h ..." in "expired 3h Xm ago"
+
+
+class TestJwtNotYetValid:
+    def test_no_authorization(self):
+        assert jwt_not_yet_valid(_cap()) is None
+
+    def test_jwt_without_nbf_skipped(self):
+        token = _make_jwt({"sub": "u"})
+        cap = _cap(headers={"Authorization": f"Bearer {token}"})
+        assert jwt_not_yet_valid(cap) is None
+
+    def test_nbf_in_past_not_flagged(self):
+        token = _make_jwt({"sub": "u", "nbf": int(time.time()) - 60})
+        cap = _cap(headers={"Authorization": f"Bearer {token}"})
+        assert jwt_not_yet_valid(cap) is None
+
+    def test_nbf_in_future_flagged(self):
+        token = _make_jwt({"sub": "user_42", "nbf": int(time.time()) + 1800})
+        cap = _cap(headers={"Authorization": f"Bearer {token}"})
+
+        finding = jwt_not_yet_valid(cap)
+        assert finding is not None
+        assert finding.id == "auth.jwt.not_yet_valid"
+        assert finding.severity == "critical"
+        assert finding.evidence is not None
+        assert finding.evidence["sub"] == "user_42"
+        assert finding.evidence["valid_in_seconds"] == pytest.approx(1800, abs=5)
+        assert finding.evidence["nbf"].endswith("Z")
+
+
+class TestAuthMissing:
+    def test_no_response(self):
+        assert auth_missing(_cap()) is None
+
+    def test_200_response_not_flagged(self):
+        cap = _cap(response=_resp(200))
+        assert auth_missing(cap) is None
+
+    def test_401_with_authorization_not_flagged(self):
+        cap = _cap(
+            headers={"Authorization": "Bearer xyz"},
+            response=_resp(401),
+        )
+        assert auth_missing(cap) is None
+
+    def test_401_without_authorization_flagged(self):
+        cap = _cap(response=_resp(401))
+        finding = auth_missing(cap)
+        assert finding is not None
+        assert finding.id == "auth.missing"
+        assert finding.severity == "critical"
+        assert finding.evidence == {
+            "status_code": 401,
+            "had_authorization_header": False,
+        }
+
+    def test_lowercase_authorization_still_counts(self):
+        cap = _cap(
+            headers={"authorization": "Bearer xyz"},
+            response=_resp(401),
+        )
+        assert auth_missing(cap) is None
+
+
+class TestHeaderWhitespace:
+    def test_no_authorization(self):
+        assert header_whitespace(_cap()) is None
+
+    def test_clean_authorization_not_flagged(self):
+        cap = _cap(headers={"Authorization": "Bearer abc.def.ghi"})
+        assert header_whitespace(cap) is None
+
+    def test_trailing_newline_flagged(self):
+        cap = _cap(headers={"Authorization": "Bearer abc.def.ghi\n"})
+        finding = header_whitespace(cap)
+        assert finding is not None
+        assert finding.id == "auth.header.whitespace"
+        assert finding.severity == "critical"
+        ev = finding.evidence
+        assert ev is not None
+        assert ev["trailing_chars"] == ["\\n"]
+        assert ev.get("embedded_newline") is True
+
+    def test_leading_space_flagged(self):
+        cap = _cap(headers={"Authorization": " Bearer abc.def.ghi"})
+        finding = header_whitespace(cap)
+        assert finding is not None
+        assert finding.evidence is not None
+        assert finding.evidence["leading_chars"] == [" "]
+
+    def test_embedded_carriage_return_flagged_even_without_edge_whitespace(self):
+        cap = _cap(headers={"Authorization": "Bearer abc\rdef"})
+        finding = header_whitespace(cap)
+        assert finding is not None
+        assert finding.evidence is not None
+        assert finding.evidence.get("embedded_newline") is True
+
+    def test_long_header_value_truncated_in_evidence(self):
+        long_token = "a" * 500
+        cap = _cap(headers={"Authorization": f"Bearer {long_token}\n"})
+        finding = header_whitespace(cap)
+        assert finding is not None
+        assert finding.evidence is not None
+        assert "..." in finding.evidence["header_value_repr"]
+        assert len(finding.evidence["header_value_repr"]) < 250

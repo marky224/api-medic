@@ -1,13 +1,9 @@
 """Auth-related diagnostic checks.
 
-Phase 3a ships only `auth.jwt.expired`. The other auth checks
-(`auth.missing`, `auth.jwt.not_yet_valid`, `auth.header.whitespace`) land
-in Phase 3b alongside the rest of the 18-check battery.
-
-We deliberately don't verify the JWT signature — we just decode the payload
-to read the `exp` claim. The architecture spec calls this out: signature
-verification needs the server's secret/public key, which the user doesn't
-have when triaging from the client side.
+We deliberately don't verify JWT signatures — we just decode payloads to
+read claims. The architecture spec calls this out: signature verification
+needs the server's secret/public key, which the user doesn't have when
+triaging from the client side.
 """
 
 from __future__ import annotations
@@ -73,6 +69,144 @@ def jwt_expired(captured: CapturedRequest) -> Finding | None:
         evidence=evidence,
         suggested_fix="Refresh the token at your token endpoint and retry.",
     )
+
+
+@register
+def jwt_not_yet_valid(captured: CapturedRequest) -> Finding | None:
+    """Decode the bearer JWT and report when `nbf` is still in the future."""
+    auth = _find_header(captured.headers, "Authorization")
+    if not auth:
+        return None
+    m = _BEARER_RE.match(auth)
+    if not m:
+        return None
+    payload = _decode_jwt_payload(m.group(1))
+    if payload is None:
+        return None
+    nbf = payload.get("nbf")
+    if not isinstance(nbf, (int, float)):
+        return None
+
+    now = int(datetime.now(tz=timezone.utc).timestamp())
+    if nbf <= now:
+        return None
+
+    valid_in = int(nbf) - now
+    nbf_iso = datetime.fromtimestamp(int(nbf), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    evidence: dict[str, Any] = {"nbf": nbf_iso, "valid_in_seconds": valid_in}
+    sub = payload.get("sub")
+    if isinstance(sub, str) and sub:
+        evidence["sub"] = sub
+
+    return Finding(
+        id="auth.jwt.not_yet_valid",
+        severity="critical",
+        title="Bearer token is not yet valid",
+        explanation=(
+            f"The JWT's `nbf` claim is {_humanize_seconds(valid_in)} in the "
+            "future. The server will reject it until then. Likely a clock-skew "
+            "issue between the token issuer and the local machine."
+        ),
+        evidence=evidence,
+        suggested_fix=(
+            "Check the system clocks on the issuer and the client. "
+            "If skew is small, wait it out; otherwise sync NTP."
+        ),
+    )
+
+
+@register
+def auth_missing(captured: CapturedRequest) -> Finding | None:
+    """Fires on a 401 with no Authorization header sent."""
+    if captured.response is None or captured.response.status_code != 401:
+        return None
+    if _find_header(captured.headers, "Authorization") is not None:
+        return None
+
+    return Finding(
+        id="auth.missing",
+        severity="critical",
+        title="No Authorization header sent",
+        explanation=(
+            "The server returned 401 and the request didn't include an "
+            "Authorization header. Likely the credentials weren't attached, "
+            "or were attached to the wrong header."
+        ),
+        evidence={"status_code": 401, "had_authorization_header": False},
+        suggested_fix=(
+            "Add an Authorization header (Bearer, Basic, or whatever the API expects) and retry."
+        ),
+    )
+
+
+# Whitespace at the very edge of the value, plus any embedded newlines or
+# carriage returns anywhere — these are the patterns that bite.
+_EDGE_WHITESPACE_RE = re.compile(r"^\s|\s$")
+_EMBEDDED_NEWLINE_RE = re.compile(r"[\r\n]")
+
+
+@register
+def header_whitespace(captured: CapturedRequest) -> Finding | None:
+    """Fires when the Authorization value has stray whitespace or newlines."""
+    auth = _find_header(captured.headers, "Authorization")
+    if auth is None:
+        return None
+
+    has_edge = bool(_EDGE_WHITESPACE_RE.search(auth))
+    has_embedded_nl = bool(_EMBEDDED_NEWLINE_RE.search(auth))
+    if not (has_edge or has_embedded_nl):
+        return None
+
+    trailing_chars = _trailing_whitespace_chars(auth)
+    leading_chars = _leading_whitespace_chars(auth)
+
+    # Repr-style display so newlines/tabs are visible. Cap length so a long
+    # JWT doesn't blow out the report.
+    display = repr(auth)[1:-1]  # strip surrounding quotes
+    if len(display) > 200:
+        display = display[:100] + "..." + display[-50:]
+
+    evidence: dict[str, Any] = {"header_value_repr": display}
+    if leading_chars:
+        evidence["leading_chars"] = leading_chars
+    if trailing_chars:
+        evidence["trailing_chars"] = trailing_chars
+    if has_embedded_nl:
+        evidence["embedded_newline"] = True
+
+    return Finding(
+        id="auth.header.whitespace",
+        severity="critical",
+        title="Authorization header has stray whitespace",
+        explanation=(
+            "The Authorization value has whitespace or a newline at the edge "
+            "(or embedded). Some servers reject the header as malformed; "
+            "others silently drop it. Common cause: copy-pasting a token "
+            "with a trailing newline."
+        ),
+        evidence=evidence,
+        suggested_fix="Trim the value before setting the header.",
+    )
+
+
+def _leading_whitespace_chars(s: str) -> list[str]:
+    out: list[str] = []
+    for ch in s:
+        if ch.isspace():
+            out.append(repr(ch)[1:-1])
+        else:
+            break
+    return out
+
+
+def _trailing_whitespace_chars(s: str) -> list[str]:
+    out: list[str] = []
+    for ch in reversed(s):
+        if ch.isspace():
+            out.append(repr(ch)[1:-1])
+        else:
+            break
+    return list(reversed(out))
 
 
 def _find_header(headers: dict[str, str], name: str) -> str | None:

@@ -39,7 +39,46 @@ jobs:
         run: mypy src
 
       - name: Run tests
-        run: pytest --cov --cov-report=term-missing
+        run: pytest -m "not integration" --cov --cov-report=term-missing
+
+  checks-coverage:
+    name: 80% coverage gate on core/checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Coverage gate (core/checks ≥ 80%)
+        run: pytest -m "not integration" --cov=src/api_medic/core/checks --cov-report=term-missing --cov-fail-under=80
+
+  integration:
+    name: Integration tests (live, flake-tolerant)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run integration tests
+        run: pytest -m integration -v
 
   frontend:
     name: Frontend (typecheck, test, build)

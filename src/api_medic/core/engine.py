@@ -15,6 +15,10 @@ from .captured import CapturedRequest
 # Import check modules so their @register decorators fire before analyze() is
 # called. Add new modules here as they land in 3b.
 from .checks import auth as _auth  # noqa: F401
+from .checks import body as _body  # noqa: F401
+from .checks import http as _http  # noqa: F401
+from .checks import network as _network  # noqa: F401
+from .checks import rate_limit as _rate_limit  # noqa: F401
 from .checks import run_all_checks
 from .models import Report, RequestSummary, ResponseSummary
 
