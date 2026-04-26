@@ -10,6 +10,7 @@ types:  ## Regenerate TypeScript types from Pydantic JSON Schema
 	@echo "Exporting JSON Schema from Pydantic models..."
 	@python -m api_medic.core.export_schema > /tmp/api-medic-schema.json
 	@echo "Generating TypeScript types via quicktype..."
+	@mkdir -p frontend/src/lib
 	@npx --yes quicktype@23 \
 		--src-lang schema \
 		--lang typescript \
