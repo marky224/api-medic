@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>api-medic — Report screen design reference</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    background: #f4f3ee;
+    color: #2c2c2a;
+    margin: 0;
+    padding: 40px 20px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; font-weight: 500; margin: 32px 0 12px; }
+  .lead { font-size: 14px; color: #5f5e5a; margin: 0 0 32px; line-height: 1.6; }
+  p { margin: 8px 0; font-size: 14px; }
+  ul { font-size: 14px; color: #2c2c2a; padding-left: 20px; }
+  li { margin: 4px 0; }
+  code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; background: #ebe9e0; padding: 1px 5px; border-radius: 4px; }
+
+  .mockup-wrap {
+    background: #ebe9e0;
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .mockup-card {
+    background: #ffffff;
+    border-radius: 12px;
+    border: 0.5px solid rgba(0,0,0,0.12);
+    padding: 20px;
+  }
+
+  .header-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .header-title { display: flex; align-items: center; gap: 8px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #a32d2d; }
+  .header-name { font-size: 14px; font-weight: 500; }
+  .header-time { font-size: 12px; color: #5f5e5a; }
+
+  .request-line {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin-bottom: 20px; padding: 10px 12px;
+    background: #f1efe8; border-radius: 8px;
+  }
+  .request-line-text {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  .method { font-weight: 500; color: #185fa5; }
+  .status-pill {
+    background: #fcebeb; color: #a32d2d;
+    font-size: 12px; padding: 4px 10px; border-radius: 8px; font-weight: 500; white-space: nowrap;
+  }
+
+  .metrics-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-bottom: 24px;
+  }
+  .metric { background: #f1efe8; border-radius: 8px; padding: 10px 12px; }
+  .metric-label { font-size: 11px; color: #5f5e5a; margin-bottom: 4px; }
+  .metric-value { font-size: 18px; font-weight: 500; }
+  .metric-value.danger { color: #a32d2d; }
+
+  .section { margin-bottom: 24px; }
+  .section-title { font-size: 13px; font-weight: 500; margin-bottom: 10px; }
+
+  .timing-rows { display: flex; flex-direction: column; gap: 8px; }
+  .timing-row {
+    display: grid; grid-template-columns: 80px 1fr 60px;
+    gap: 12px; align-items: center; font-size: 12px;
+  }
+  .timing-label { color: #5f5e5a; }
+  .timing-bar { height: 6px; background: #f1efe8; border-radius: 3px; overflow: hidden; }
+  .timing-bar-fill { height: 100%; background: #185fa5; }
+  .timing-value { text-align: right; color: #5f5e5a; font-variant-numeric: tabular-nums; }
+
+  .findings { display: flex; flex-direction: column; gap: 10px; }
+  .finding { background: #f1efe8; border-radius: 8px; padding: 12px 14px; }
+  .finding-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; gap: 12px; }
+  .finding-title { font-weight: 500; font-size: 14px; }
+  .severity-pill { font-size: 11px; padding: 2px 8px; border-radius: 8px; font-weight: 500; white-space: nowrap; }
+  .severity-critical { background: #fcebeb; color: #a32d2d; }
+  .severity-warning  { background: #faeeda; color: #854f0b; }
+  .severity-info     { background: #e6f1fb; color: #185fa5; }
+  .finding-explain { font-size: 13px; color: #5f5e5a; margin-bottom: 8px; line-height: 1.5; }
+  .finding-evidence {
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    background: #ffffff; padding: 6px 10px; border-radius: 8px;
+    color: #5f5e5a; margin-bottom: 8px;
+    border: 0.5px solid rgba(0,0,0,0.08);
+  }
+  .finding-fix { font-size: 12px; }
+  .finding-fix-label { color: #5f5e5a; }
+
+  .actions {
+    display: flex; gap: 8px; margin-top: 20px;
+    padding-top: 16px; border-top: 0.5px solid rgba(0,0,0,0.12);
+  }
+  .actions button {
+    background: transparent;
+    border: 0.5px solid rgba(0,0,0,0.25);
+    color: #2c2c2a;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .actions button:hover { background: rgba(0,0,0,0.04); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>api-medic — Report screen design reference</h1>
+  <p class="lead">
+    Static visual reference for the diagnostic report screen built in Phase 2.
+    The production React version uses Tailwind utilities; the visual hierarchy,
+    severity color usage, spacing, and information density shown here should be preserved.
+    The example scenario shown is the canonical fixture: a POST returning 401 with an expired JWT.
+  </p>
+
+  <div class="mockup-wrap">
+    <div class="mockup-card">
+
+      <div class="header-bar">
+        <div class="header-title">
+          <span class="status-dot"></span>
+          <span class="header-name">apidoctor — diagnostic report</span>
+        </div>
+        <span class="header-time">2026-04-25 14:23 UTC</span>
+      </div>
+
+      <div class="request-line">
+        <span class="request-line-text">
+          <span class="method">POST</span> https://api.example.com/v1/users
+        </span>
+        <span class="status-pill">401 Unauthorized</span>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-label">Latency</div>
+          <div class="metric-value">247 ms</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Body</div>
+          <div class="metric-value">89 B</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Protocol</div>
+          <div class="metric-value">HTTP/2</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Findings</div>
+          <div class="metric-value danger">2 critical</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Timing breakdown</div>
+        <div class="timing-rows">
+          <div class="timing-row">
+            <span class="timing-label">DNS</span>
+            <div class="timing-bar"><div class="timing-bar-fill" style="width: 5%"></div></div>
+            <span class="timing-value">12 ms</span>
+          </div>
+          <div class="timing-row">
+            <span class="timing-label">Connect</span>
+            <div class="timing-bar"><div class="timing-bar-fill" style="width: 18%"></div></div>
+            <span class="timing-value">45 ms</span>
+          </div>
+          <div class="timing-row">
+            <span class="timing-label">TLS</span>
+            <div class="timing-bar"><div class="timing-bar-fill" style="width: 32%"></div></div>
+            <span class="timing-value">78 ms</span>
+          </div>
+          <div class="timing-row">
+            <span class="timing-label">TTFB</span>
+            <div class="timing-bar"><div class="timing-bar-fill" style="width: 38%"></div></div>
+            <span class="timing-value">95 ms</span>
+          </div>
+          <div class="timing-row">
+            <span class="timing-label">Download</span>
+            <div class="timing-bar"><div class="timing-bar-fill" style="width: 7%"></div></div>
+            <span class="timing-value">17 ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Findings</div>
+        <div class="findings">
+
+          <div class="finding">
+            <div class="finding-head">
+              <span class="finding-title">Bearer token has expired</span>
+              <span class="severity-pill severity-critical">Critical</span>
+            </div>
+            <div class="finding-explain">
+              The JWT in your Authorization header expired 3 hours ago. This is the most likely cause of the 401.
+            </div>
+            <div class="finding-evidence">
+              exp: 2026-04-25T11:23:00Z &middot; expired 3h 0m ago
+            </div>
+            <div class="finding-fix">
+              <span class="finding-fix-label">Suggested fix:</span>
+              Refresh the token at /oauth/token and retry.
+            </div>
+          </div>
+
+          <div class="finding">
+            <div class="finding-head">
+              <span class="finding-title">Authorization header has trailing whitespace</span>
+              <span class="severity-pill severity-critical">Critical</span>
+            </div>
+            <div class="finding-explain">
+              The Authorization value ends with a newline. Some servers reject this as a malformed header.
+            </div>
+            <div class="finding-evidence">
+              Authorization: Bearer eyJhbGc...XYZ\n
+            </div>
+            <div class="finding-fix">
+              <span class="finding-fix-label">Suggested fix:</span>
+              Trim the value before setting the header.
+            </div>
+          </div>
+
+          <div class="finding">
+            <div class="finding-head">
+              <span class="finding-title">Missing strict-transport-security header</span>
+              <span class="severity-pill severity-warning">Warning</span>
+            </div>
+            <div class="finding-explain">
+              Response is missing HSTS. Not the cause of your 401, but a security gap worth reporting.
+            </div>
+            <div class="finding-fix">
+              <span class="finding-fix-label">Suggested fix:</span>
+              Add Strict-Transport-Security on the server.
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="actions">
+        <button>Share report</button>
+        <button>Re-run</button>
+        <button>Export markdown</button>
+      </div>
+
+    </div>
+  </div>
+
+  <h2>Design notes</h2>
+
+  <p>Decisions worth preserving when translating this layout to React + Tailwind:</p>
+
+  <ul>
+    <li><strong>Severity-first ordering.</strong> Findings are sorted critical → warning → info, not chronologically. A TSE doesn't care that the CORS issue was logged before the auth issue; they care which one is causing the ticket.</li>
+    <li><strong>Title + evidence + fix.</strong> Every finding has three layers: a plain-language headline (for non-technical readers), structured raw evidence in monospace (for technical readers), and a suggested fix (for action). The evidence block is what differentiates this from a developer tool.</li>
+    <li><strong>Semantic severity colors.</strong> Critical = red ramp (#fcebeb / #a32d2d). Warning = amber (#faeeda / #854f0b). Info = blue (#e6f1fb / #185fa5). Map these to the equivalent Tailwind <code>red-50/red-700</code>, <code>amber-50/amber-700</code>, <code>blue-50/blue-700</code> or close equivalents — don't pick from a palette.</li>
+    <li><strong>Information density.</strong> The report is dense but scannable. Don't add hero spacing or oversized headers — that's developer-tool-conventional but reads as wasted space to a TSE who scans 50 tickets a day.</li>
+    <li><strong>Monospace for raw values.</strong> URLs, headers, timestamps, JWT claims, hex bodies — anything where exact characters matter goes in a monospace font. Plain prose stays in the sans-serif body font.</li>
+    <li><strong>Evidence block is optional.</strong> Some findings (like the third one shown) don't need raw evidence — the title and explanation are enough. Don't force-fit empty evidence boxes when there's nothing to show.</li>
+    <li><strong>Top-level metric cards (Latency / Body / Protocol / Findings) are the at-a-glance summary.</strong> Someone glancing at the report should know within one second whether this is a network problem, a payload problem, or a protocol problem. Keep them prominent.</li>
+    <li><strong>Timing waterfall as a horizontal bar chart, one row per phase.</strong> Not a stacked single bar — stacked bars hide phases that are very small (like DNS). Per-row bars show every phase, even when one phase dominates the others.</li>
+    <li><strong>Mobile responsiveness.</strong> The 4-column metrics grid should collapse to 2×2 below ~480px. The findings cards stack naturally. The timing rows already wrap fine.</li>
+    <li><strong>Action buttons at the bottom.</strong> Share, re-run, and export. Share-by-URL becomes the marketing surface — every shared report is a marketing impression. Don't bury these.</li>
+  </ul>
+
+  <p>The other Phase 2 surfaces — the <strong>request composer</strong> (URL/method/headers/body form) and the <strong>HAR upload</strong> page — don't have visual references yet. Mock them in the same visual style: white cards on a soft gray background, 0.5px borders, generous padding, sentence-case labels.</p>
+
+</div>
+</body>
+</html>
