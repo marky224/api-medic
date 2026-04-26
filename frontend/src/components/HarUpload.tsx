@@ -1,29 +1,12 @@
 import { useState } from "react";
-import { loadReport, type FixtureMeta } from "../lib/fixtures";
+import { analyzeHar } from "../lib/api";
 import type { Report } from "../lib/types";
 import { ReportView } from "./ReportView";
-import { FixturePicker } from "./FixturePicker";
-
-const DEFAULT_FIXTURE = "04-cors-misconfigured";
 
 interface HarFileSummary {
   name: string;
   entryCount: number;
   firstUrl: string | null;
-}
-
-interface HarUploadProps {
-  fixtures: FixtureMeta[];
-}
-
-function readAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("Failed to read file"));
-    reader.readAsText(file);
-  });
 }
 
 function summarizeHar(name: string, raw: string): HarFileSummary {
@@ -45,34 +28,45 @@ function summarizeHar(name: string, raw: string): HarFileSummary {
   return { name, entryCount: entries.length, firstUrl };
 }
 
-export function HarUpload({ fixtures }: HarUploadProps) {
+function readAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Failed to read file"));
+    reader.readAsText(file);
+  });
+}
+
+export function HarUpload() {
+  const [file, setFile] = useState<File | null>(null);
   const [summary, setSummary] = useState<HarFileSummary | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
-  const initialFixture = fixtures.some((f) => f.id === DEFAULT_FIXTURE)
-    ? DEFAULT_FIXTURE
-    : (fixtures[0]?.id ?? DEFAULT_FIXTURE);
-  const [responseFixture, setResponseFixture] = useState(initialFixture);
   const [report, setReport] = useState<Report | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
-  const onFile = async (file: File) => {
+  const onFile = async (f: File) => {
     setParseError(null);
     setReport(null);
+    setRunError(null);
     try {
-      const text = await readAsText(file);
-      setSummary(summarizeHar(file.name, text));
+      const text = await readAsText(f);
+      setSummary(summarizeHar(f.name, text));
+      setFile(f);
     } catch (err) {
       setSummary(null);
+      setFile(null);
       setParseError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const onAnalyze = async () => {
+    if (!file) return;
     setRunning(true);
     setRunError(null);
     try {
-      const r = await loadReport(responseFixture);
+      const r = await analyzeHar(file);
       setReport(r);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : String(err));
@@ -126,14 +120,7 @@ export function HarUpload({ fixtures }: HarUploadProps) {
             ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-black/[0.08]">
-            <FixturePicker
-              id="har-fixture"
-              label="Phase 2 — return fixture:"
-              fixtures={fixtures}
-              value={responseFixture}
-              onChange={setResponseFixture}
-            />
+          <div className="flex justify-end pt-3 border-t border-black/[0.08]">
             <button
               type="button"
               onClick={onAnalyze}

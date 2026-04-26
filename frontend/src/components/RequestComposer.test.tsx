@@ -2,33 +2,23 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { RequestComposer } from "./RequestComposer";
 import jwtReport from "../../../tests/fixtures/reports/02-jwt-expired.json";
-import healthyReport from "../../../tests/fixtures/reports/01-healthy.json";
-
-const FIXTURES = [
-  { id: "01-healthy", filename: "01-healthy.json" },
-  { id: "02-jwt-expired", filename: "02-jwt-expired.json" },
-];
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function mockReportFetch() {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+function mockRunFetch(report: unknown = jwtReport) {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : (input as Request).url;
-    if (url.endsWith("/fixtures/02-jwt-expired.json")) {
-      return new Response(JSON.stringify(jwtReport), { status: 200 });
-    }
-    if (url.endsWith("/fixtures/01-healthy.json")) {
-      return new Response(JSON.stringify(healthyReport), { status: 200 });
-    }
-    return new Response("not found", { status: 404 });
+    expect(url.endsWith("/api/run")).toBe(true);
+    expect(init?.method).toBe("POST");
+    return new Response(JSON.stringify(report), { status: 200 });
   });
 }
 
 describe("RequestComposer", () => {
   it("shows method, URL, headers, body, and a Run button", () => {
-    render(<RequestComposer fixtures={FIXTURES} />);
+    render(<RequestComposer />);
     expect(screen.getByLabelText("Method")).toBeInTheDocument();
     expect(screen.getByLabelText("URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Body")).toBeInTheDocument();
@@ -36,42 +26,52 @@ describe("RequestComposer", () => {
   });
 
   it("can add and remove header rows", () => {
-    render(<RequestComposer fixtures={FIXTURES} />);
+    render(<RequestComposer />);
     const before = screen.getAllByLabelText(/^Header \d+ name$/);
     fireEvent.click(screen.getByRole("button", { name: /Add header/ }));
     const after = screen.getAllByLabelText(/^Header \d+ name$/);
     expect(after.length).toBe(before.length + 1);
 
-    fireEvent.click(
-      screen.getByLabelText(`Remove header ${after.length}`),
-    );
+    fireEvent.click(screen.getByLabelText(`Remove header ${after.length}`));
     expect(screen.getAllByLabelText(/^Header \d+ name$/).length).toBe(
       before.length,
     );
   });
 
-  it("Run button loads the chosen fixture and renders ReportView", async () => {
-    mockReportFetch();
-    render(<RequestComposer fixtures={FIXTURES} />);
-
+  it("Run posts the form to /api/run and renders the returned Report", async () => {
+    mockRunFetch();
+    render(<RequestComposer />);
     fireEvent.click(screen.getByRole("button", { name: /^Run$/ }));
     expect(
       await screen.findByText(/Bearer token has expired/),
     ).toBeInTheDocument();
   });
 
-  it("returns the fixture chosen in the picker, not always the default", async () => {
-    mockReportFetch();
-    render(<RequestComposer fixtures={FIXTURES} />);
+  it("forwards method, URL, headers, and body in the request body", async () => {
+    let captured: { method?: string; url?: string; headers?: Record<string, string>; body?: string | null } = {};
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      captured = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify(jwtReport), { status: 200 });
+    });
 
-    const picker = screen.getByLabelText(
-      /Phase 2 — return fixture/i,
-    ) as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "01-healthy" } });
+    render(<RequestComposer />);
     fireEvent.click(screen.getByRole("button", { name: /^Run$/ }));
+    await screen.findByText(/Bearer token has expired/);
 
-    expect(
-      await screen.findByText(/Connection negotiated HTTP\/2/),
-    ).toBeInTheDocument();
+    expect(captured.method).toBe("POST");
+    expect(captured.url).toBe("https://api.example.com/v1/users");
+    expect(captured.headers).toEqual({
+      Authorization: "Bearer ...",
+      "Content-Type": "application/json",
+    });
+  });
+
+  it("shows an error when the API responds non-2xx", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return new Response(JSON.stringify({ detail: "boom" }), { status: 500 });
+    });
+    render(<RequestComposer />);
+    fireEvent.click(screen.getByRole("button", { name: /^Run$/ }));
+    expect(await screen.findByText(/Run failed.*boom/)).toBeInTheDocument();
   });
 });

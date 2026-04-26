@@ -5,10 +5,10 @@ import { FixtureBrowser } from "./components/FixtureBrowser";
 import { RequestComposer } from "./components/RequestComposer";
 import { HarUpload } from "./components/HarUpload";
 
-type TabId = "report" | "run" | "har";
+type TabId = "demos" | "run" | "har";
 
 const TABS: TabDef<TabId>[] = [
-  { id: "report", label: "Report" },
+  { id: "demos", label: "Demos" },
   { id: "run", label: "Run" },
   { id: "har", label: "HAR" },
 ];
@@ -16,7 +16,7 @@ const TABS: TabDef<TabId>[] = [
 export function App() {
   const [fixtures, setFixtures] = useState<FixtureMeta[]>([]);
   const [fixturesError, setFixturesError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabId>("report");
+  const [tab, setTab] = useState<TabId>("demos");
 
   useEffect(() => {
     let cancelled = false;
@@ -40,24 +40,25 @@ export function App() {
         <header className="mb-6">
           <h1 className="text-xl font-medium tracking-tight">api-medic</h1>
           <p className="mt-1 text-sm text-muted">
-            Phase 2 preview — reports loaded from local fixtures.
+            Run a request, upload a HAR, or browse the demo scenarios.
           </p>
         </header>
 
         <Tabs current={tab} tabs={TABS} onChange={setTab} />
 
-        {fixturesError ? (
-          <div className="bg-red-50 text-red-700 rounded-lg p-3 text-sm">
-            {fixturesError}
-          </div>
-        ) : null}
-
-        {tab === "report" ? (
-          <FixtureBrowser fixtures={fixtures} />
+        {tab === "demos" ? (
+          <>
+            {fixturesError ? (
+              <div className="bg-red-50 text-red-700 rounded-lg p-3 text-sm">
+                {fixturesError}
+              </div>
+            ) : null}
+            <FixtureBrowser fixtures={fixtures} />
+          </>
         ) : tab === "run" ? (
-          <RequestComposer fixtures={fixtures} />
+          <RequestComposer />
         ) : (
-          <HarUpload fixtures={fixtures} />
+          <HarUpload />
         )}
       </div>
     </main>

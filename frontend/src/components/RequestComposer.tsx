@@ -1,22 +1,16 @@
 import { useState } from "react";
-import { loadReport, type FixtureMeta } from "../lib/fixtures";
+import { runRequest } from "../lib/api";
 import type { Report } from "../lib/types";
 import { ReportView } from "./ReportView";
-import { FixturePicker } from "./FixturePicker";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
-const DEFAULT_FIXTURE = "02-jwt-expired";
 
 interface HeaderRow {
   key: string;
   value: string;
 }
 
-interface RequestComposerProps {
-  fixtures: FixtureMeta[];
-}
-
-export function RequestComposer({ fixtures }: RequestComposerProps) {
+export function RequestComposer() {
   const [method, setMethod] = useState("POST");
   const [url, setUrl] = useState("https://api.example.com/v1/users");
   const [headers, setHeaders] = useState<HeaderRow[]>([
@@ -24,10 +18,6 @@ export function RequestComposer({ fixtures }: RequestComposerProps) {
     { key: "Content-Type", value: "application/json" },
   ]);
   const [body, setBody] = useState("");
-  const initialFixture = fixtures.some((f) => f.id === DEFAULT_FIXTURE)
-    ? DEFAULT_FIXTURE
-    : (fixtures[0]?.id ?? DEFAULT_FIXTURE);
-  const [responseFixture, setResponseFixture] = useState(initialFixture);
   const [report, setReport] = useState<Report | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +35,17 @@ export function RequestComposer({ fixtures }: RequestComposerProps) {
     setRunning(true);
     setError(null);
     try {
-      const r = await loadReport(responseFixture);
+      const headersObj: Record<string, string> = {};
+      for (const h of headers) {
+        const k = h.key.trim();
+        if (k) headersObj[k] = h.value;
+      }
+      const r = await runRequest({
+        method,
+        url,
+        headers: headersObj,
+        body: body || null,
+      });
       setReport(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -137,14 +137,7 @@ export function RequestComposer({ fixtures }: RequestComposerProps) {
             />
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-black/[0.08]">
-            <FixturePicker
-              id="composer-fixture"
-              label="Phase 2 — return fixture:"
-              fixtures={fixtures}
-              value={responseFixture}
-              onChange={setResponseFixture}
-            />
+          <div className="flex justify-end pt-3 border-t border-black/[0.08]">
             <button
               type="button"
               onClick={onRun}

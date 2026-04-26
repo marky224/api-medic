@@ -31,21 +31,19 @@ function mockFixtureFetch() {
 }
 
 describe("App", () => {
-  it("renders the api-medic title and three tabs", async () => {
+  it("renders the title and three tabs (Demos / Run / HAR)", async () => {
     mockFixtureFetch();
     render(<App />);
     expect(
       screen.getByRole("heading", { name: /api-medic/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Report" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Demos" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Run" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "HAR" })).toBeInTheDocument();
-    // Let pending fixture fetches settle before the test ends to avoid
-    // React act() warnings from out-of-band setState.
     await screen.findByText(/Bearer token has expired/);
   });
 
-  it("loads and renders the default fixture in the Report tab", async () => {
+  it("loads the default fixture in the Demos tab", async () => {
     mockFixtureFetch();
     render(<App />);
     expect(
