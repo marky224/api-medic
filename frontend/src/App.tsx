@@ -7,13 +7,31 @@ import { HarUpload } from "./components/HarUpload";
 
 type TabId = "demos" | "run" | "har";
 
-const TABS: TabDef<TabId>[] = [
-  { id: "demos", label: "Demos" },
-  { id: "run", label: "Run" },
-  { id: "har", label: "HAR" },
-];
+// Captured-mode detection. The hosted demo's Vite build sets
+// VITE_DEMO_MODE=1, which hides the Run tab — there's no live runner on
+// the Lambda surface, so live requests aren't possible there.
+const ENV_DEMO_MODE =
+  (import.meta.env.VITE_DEMO_MODE as string | undefined) === "1";
 
-export function App() {
+interface AppProps {
+  /** Override env detection. Used by tests; production passes nothing. */
+  demoMode?: boolean;
+}
+
+export function App({ demoMode }: AppProps = {}) {
+  const isDemoMode = demoMode ?? ENV_DEMO_MODE;
+
+  const tabs: TabDef<TabId>[] = isDemoMode
+    ? [
+        { id: "demos", label: "Demos" },
+        { id: "har", label: "HAR" },
+      ]
+    : [
+        { id: "demos", label: "Demos" },
+        { id: "run", label: "Run" },
+        { id: "har", label: "HAR" },
+      ];
+
   const [fixtures, setFixtures] = useState<FixtureMeta[]>([]);
   const [fixturesError, setFixturesError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>("demos");
@@ -34,17 +52,19 @@ export function App() {
     };
   }, []);
 
+  const tagline = isDemoMode
+    ? "Upload a HAR or browse the demo scenarios."
+    : "Run a request, upload a HAR, or browse the demo scenarios.";
+
   return (
     <main className="min-h-screen bg-paper text-ink px-4 py-8 sm:px-5 sm:py-10">
       <div className="mx-auto max-w-3xl">
         <header className="mb-6">
           <h1 className="text-xl font-medium tracking-tight">api-medic</h1>
-          <p className="mt-1 text-sm text-muted">
-            Run a request, upload a HAR, or browse the demo scenarios.
-          </p>
+          <p className="mt-1 text-sm text-muted">{tagline}</p>
         </header>
 
-        <Tabs current={tab} tabs={TABS} onChange={setTab} />
+        <Tabs current={tab} tabs={tabs} onChange={setTab} />
 
         {tab === "demos" ? (
           <>
@@ -55,7 +75,7 @@ export function App() {
             ) : null}
             <FixtureBrowser fixtures={fixtures} />
           </>
-        ) : tab === "run" ? (
+        ) : tab === "run" && !isDemoMode ? (
           <RequestComposer />
         ) : (
           <HarUpload />

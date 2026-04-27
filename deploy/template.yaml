@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: api-medic hosted demo — captured-mode-only Lambda + S3 + CloudFront
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: api-medic.markandrewmarquez.com
+    Description: Custom domain for the hosted demo (CloudFront alias).
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 hosted zone ID for the domain's parent zone (e.g. markandrewmarquez.com).
+  CertificateArn:
+    Type: String
+    AllowedPattern: "^arn:aws:acm:us-east-1:.*:certificate/.*$"
+    Description: >
+      ACM certificate ARN — MUST be in us-east-1 (CloudFront constraint),
+      and must cover DomainName.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 30
+    Architectures:
+      - x86_64
+
+Resources:
+  # ---- Lambda function & API Gateway HTTP API ---------------------------
+
+  ApiAnalyzeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda/
+      Handler: handler.lambda_handler
+      Description: api-medic captured-mode engine — analyses HAR or curl input.
+      Events:
+        AnalyzeRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /api/analyze
+        HealthRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /api/health
+    Metadata:
+      BuildMethod: makefile
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Sub "https://${DomainName}"
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+
+  # ---- S3 bucket holding the React build --------------------------------
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ---- CloudFront -------------------------------------------------------
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: api-medic hosted demo
+        Aliases:
+          - !Ref DomainName
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+          - Id: ApiOrigin
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            Compress: true
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Content-Type
+                - Origin
+              Cookies:
+                Forward: none
+            # API responses are dynamic — never cache.
+            MinTTL: 0
+            DefaultTTL: 0
+            MaxTTL: 0
+        CustomErrorResponses:
+          # SPA fallback so unmatched paths land on index.html (the React app
+          # handles them).
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  # ---- Route 53 alias (DNS lives on Route 53; auto-manage the CNAME) ---
+
+  AliasRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        # CloudFront's distribution hosted zone ID is a magic global constant.
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt Distribution.DomainName
+        EvaluateTargetHealth: false
+
+Outputs:
+  WebUrl:
+    Value: !Sub "https://${DomainName}"
+    Description: Public URL of the hosted demo.
+  DistributionDomain:
+    Value: !GetAtt Distribution.DomainName
+    Description: CloudFront distribution domain (also used for cache invalidation).
+  DistributionId:
+    Value: !Ref Distribution
+    Description: CloudFront distribution ID (use with `aws cloudfront create-invalidation`).
+  WebBucketName:
+    Value: !Ref WebBucket
+    Description: S3 bucket holding the React build (target of `aws s3 sync`).
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    Description: Direct API Gateway URL (production traffic goes via CloudFront).

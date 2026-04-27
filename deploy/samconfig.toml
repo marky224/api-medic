@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "api-medic-demo"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = false
+fail_on_empty_changeset = false
+# DomainName has a default in template.yaml. HostedZoneId and CertificateArn
+# don't — pass them at deploy time, e.g.:
+#   sam deploy --parameter-overrides \
+#     HostedZoneId=Zxxxxxxxxxxxxxxxxxxxx \
+#     CertificateArn=arn:aws:acm:us-east-1:111111111111:certificate/...

@@ -1,0 +1,7 @@
+# Lambda dependency surface — kept lean per architecture.md:
+# the hosted-demo Lambda must not pull in httpx, fastapi, uvicorn,
+# dnspython, or cryptography (those live in the runner / web layer).
+# api_medic source is copied into the package by the Makefile build step,
+# not installed via pip.
+pydantic>=2.6.0
+uncurl>=0.0.11

@@ -81,3 +81,31 @@ describe("App", () => {
     expect(screen.getByLabelText(/HAR file/i)).toBeInTheDocument();
   });
 });
+
+describe("App in captured/demo mode", () => {
+  it("hides the Run tab when demoMode is true", async () => {
+    mockFixtureFetch();
+    render(<App demoMode={true} />);
+    await screen.findByText(/Bearer token has expired/);
+    expect(screen.getByRole("tab", { name: "Demos" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "HAR" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Run" })).toBeNull();
+  });
+
+  it("uses a captured-mode tagline when demoMode is true", async () => {
+    mockFixtureFetch();
+    render(<App demoMode={true} />);
+    await screen.findByText(/Bearer token has expired/);
+    expect(
+      screen.getByText(/Upload a HAR or browse the demo scenarios\./),
+    ).toBeInTheDocument();
+  });
+
+  it("still defaults to the Demos tab when demoMode is true", async () => {
+    mockFixtureFetch();
+    render(<App demoMode={true} />);
+    expect(
+      await screen.findByText(/Bearer token has expired/),
+    ).toBeInTheDocument();
+  });
+});
