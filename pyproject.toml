@@ -42,7 +42,7 @@ dev = [
 ]
 
 [project.scripts]
-api-medic = "api_medic.cli.main:app"
+api-medic = "api_medic.cli.main:cli_entry"
 
 [project.urls]
 Homepage = "https://api-medic.markandrewmarquez.com"
