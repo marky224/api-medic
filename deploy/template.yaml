@@ -50,6 +50,16 @@ Resources:
     Metadata:
       BuildMethod: makefile
 
+  # Owned by the stack so retention survives teardown/recreate. Default
+  # DeletionPolicy (Delete) is intentional: tearing the stack down should
+  # leave no orphan log groups, and the next stack-up will recreate it
+  # with retention from the template.
+  ApiAnalyzeFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiAnalyzeFunction}"
+      RetentionInDays: 14
+
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
