@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { analyzeHar } from "../lib/api";
+import type { StripSummary } from "../lib/harStrip";
 import type { Report } from "../lib/types";
 import { ReportView } from "./ReportView";
 
@@ -43,12 +44,14 @@ export function HarUpload() {
   const [summary, setSummary] = useState<HarFileSummary | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [report, setReport] = useState<Report | null>(null);
+  const [strip, setStrip] = useState<StripSummary | null>(null);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
   const onFile = async (f: File) => {
     setParseError(null);
     setReport(null);
+    setStrip(null);
     setRunError(null);
     try {
       const text = await readAsText(f);
@@ -65,9 +68,11 @@ export function HarUpload() {
     if (!file) return;
     setRunning(true);
     setRunError(null);
+    setStrip(null);
     try {
-      const r = await analyzeHar(file);
-      setReport(r);
+      const result = await analyzeHar(file);
+      setReport(result.report);
+      setStrip(result.strip);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -138,7 +143,45 @@ export function HarUpload() {
           {runError}
         </div>
       ) : null}
+      {strip && strip.action !== "passthrough" ? (
+        <StripBanner strip={strip} />
+      ) : null}
       {report ? <ReportView report={report} /> : null}
+    </div>
+  );
+}
+
+function StripBanner({ strip }: { strip: StripSummary }) {
+  const finalMb = (strip.finalBytes / 1_000_000).toFixed(1);
+  if (strip.action === "stripped-bodies") {
+    return (
+      <div
+        role="status"
+        className="bg-amber-50 text-amber-900 border border-amber-200 rounded-lg p-3 text-sm"
+      >
+        <div className="font-medium">HAR was trimmed before upload</div>
+        <div className="mt-1">
+          {strip.bodiesStripped} request/response{" "}
+          {strip.bodiesStripped === 1 ? "body" : "bodies"} were stripped
+          across {strip.finalEntryCount}{" "}
+          {strip.finalEntryCount === 1 ? "entry" : "entries"} so the upload
+          stays under the 10 MB API Gateway limit. Final payload: {finalMb} MB.
+          Headers, URLs, and timing are intact.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      role="status"
+      className="bg-amber-50 text-amber-900 border border-amber-200 rounded-lg p-3 text-sm"
+    >
+      <div className="font-medium">Only the first HAR entry was uploaded</div>
+      <div className="mt-1">
+        Reduced from {strip.originalEntryCount} entries to 1 (final payload:{" "}
+        {finalMb} MB). API Medic v1 only inspects the first entry, so the
+        report below is the same as if the full HAR had fit.
+      </div>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { prepareHarForUpload, type HarFile, type StripSummary } from "./harStrip";
 import type { Report } from "./types";
 
 // Two-process dev: this hits the FastAPI server (default port 8765) launched
@@ -12,6 +13,11 @@ export interface RunSpec {
   body?: string | null;
 }
 
+export interface AnalyzeHarResult {
+  report: Report;
+  strip: StripSummary;
+}
+
 export async function runRequest(spec: RunSpec): Promise<Report> {
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",
@@ -24,23 +30,34 @@ export async function runRequest(spec: RunSpec): Promise<Report> {
   return (await res.json()) as Report;
 }
 
-export async function analyzeHar(file: File): Promise<Report> {
+export async function analyzeHar(file: File): Promise<AnalyzeHarResult> {
   const text = await readAsText(file);
-  let har: unknown;
+  let parsed: unknown;
   try {
-    har = JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
     throw new Error("File is not valid JSON.");
   }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("log" in parsed) ||
+    typeof (parsed as { log: unknown }).log !== "object" ||
+    (parsed as { log: unknown }).log === null ||
+    !Array.isArray((parsed as { log: { entries?: unknown } }).log.entries)
+  ) {
+    throw new Error("File is not a HAR archive (missing 'log.entries').");
+  }
+  const { har: prepared, summary } = prepareHarForUpload(parsed as HarFile);
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind: "har", har }),
+    body: JSON.stringify({ kind: "har", har: prepared }),
   });
   if (!res.ok) {
     throw new Error(await readErrorMessage(res, "Analyze"));
   }
-  return (await res.json()) as Report;
+  return { report: (await res.json()) as Report, strip: summary };
 }
 
 function readAsText(file: File): Promise<string> {
