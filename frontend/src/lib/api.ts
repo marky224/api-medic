@@ -1,10 +1,18 @@
 import { prepareHarForUpload, type HarFile, type StripSummary } from "./harStrip";
 import type { Report } from "./types";
 
-// Two-process dev: this hits the FastAPI server (default port 8765) launched
-// by `python -m api_medic.web.server`. Override via VITE_API_BASE.
-const API_BASE =
-  (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8765";
+// Resolution order:
+//   1. VITE_API_BASE if set — explicit override for any environment
+//   2. VITE_DEMO_MODE=1 → same-origin ("") so /api/* hits CloudFront which
+//      routes to API Gateway (the hosted demo's wiring)
+//   3. otherwise → http://localhost:8765 (two-process dev: FastAPI launched
+//      via `python -m api_medic.web.server`)
+const API_BASE = ((): string => {
+  const explicit = import.meta.env.VITE_API_BASE as string | undefined;
+  if (explicit !== undefined) return explicit;
+  const demoMode = (import.meta.env.VITE_DEMO_MODE as string | undefined) === "1";
+  return demoMode ? "" : "http://localhost:8765";
+})();
 
 export interface RunSpec {
   method: string;
