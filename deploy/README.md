@@ -82,3 +82,25 @@ sam delete --stack-name api-medic-demo --region us-east-1
   endpoint. The frontend's Run tab is hidden via `VITE_DEMO_MODE=1`.
 - **No persistence**: no DynamoDB, no S3 writes for user data, no
   CloudWatch persistence beyond the Lambda's default execution log.
+
+## Building locally
+
+The Lambda build runs in a Linux container (required for pydantic's
+native compiled extensions; building on Windows or macOS would package
+the wrong-platform wheel into the zip and crash at runtime in Lambda).
+
+The container only sees the `deploy/lambda/` directory, so `api_medic`
+must be vendored in before each build:
+
+PowerShell:
+
+    Copy-Item -Recurse -Force ..\src\api_medic .\lambda\api_medic
+    sam build
+
+Bash:
+
+    cp -r ../src/api_medic lambda/api_medic
+    sam build
+
+The vendored copy is gitignored. Cleaning it up after a build is
+optional; the next vendor-and-build cycle will overwrite it.

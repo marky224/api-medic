@@ -12,5 +12,5 @@
 
 build-ApiAnalyzeFunction:
 	pip install -r requirements.txt -t "$(ARTIFACTS_DIR)"
-	cp -r ../../src/api_medic "$(ARTIFACTS_DIR)/api_medic"
+	cp -r api_medic "$(ARTIFACTS_DIR)/api_medic"
 	cp handler.py "$(ARTIFACTS_DIR)/handler.py"

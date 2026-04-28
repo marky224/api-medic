@@ -37,9 +37,10 @@ htmlcov/
 coverage.xml
 *.cover
 
-# IDE
+# IDE / agent state
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 .DS_Store
@@ -70,3 +71,11 @@ aws-credentials*
 
 # OS
 Thumbs.db
+
+# SAM build context: vendored copy of api_medic (created before sam build)
+deploy/lambda/api_medic/
+
+# Cert / DNS validation scratch (generated during one-shot ACM setup,
+# not used by builds or deploys)
+/acm-validation.json
+/cert-arn.txt

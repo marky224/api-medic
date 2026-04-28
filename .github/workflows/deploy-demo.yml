@@ -56,6 +56,9 @@ jobs:
           npm ci
           npm run build
 
+      - name: Vendor api_medic into Lambda build context
+        run: cp -r src/api_medic deploy/lambda/api_medic
+
       - name: SAM build
         working-directory: deploy
         run: sam build
