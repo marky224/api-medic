@@ -79,3 +79,7 @@ deploy/lambda/api_medic/
 # not used by builds or deploys)
 /acm-validation.json
 /cert-arn.txt
+
+# One-shot deploy operations scratch (templates fetched from CFN,
+# import maps, etc.)
+/.deploy-tmp/

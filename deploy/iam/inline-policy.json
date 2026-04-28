@@ -32,6 +32,25 @@
       "Resource": "arn:aws:cloudformation:us-east-1:aws:transform/Serverless-2016-10-31"
     },
     {
+      "Sid": "CloudFormationSamManagedStack",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:us-east-1:444977504043:stack/aws-sam-cli-managed-default/*",
+        "arn:aws:cloudformation:us-east-1:444977504043:changeSet/*"
+      ]
+    },
+    {
       "Sid": "CloudFormationValidateTemplate",
       "Effect": "Allow",
       "Action": "cloudformation:ValidateTemplate",
