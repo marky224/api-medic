@@ -33,6 +33,11 @@ DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 
+# Encodings httpx transparently decompresses on response.content. Used to
+# decide when to drop Content-Encoding from the captured headers so checks
+# don't see a body/header inconsistency we created ourselves.
+_HTTPX_DECODED_ENCODINGS = frozenset({"gzip", "deflate", "br"})
+
 
 def run(
     method: str,
@@ -101,6 +106,15 @@ def run(
     redirect_chain: list[str] | None = None
     if response is not None:
         raw_headers = [(k.decode("ascii"), v.decode("latin-1")) for k, v in response.headers.raw]
+
+        # httpx auto-decompresses gzip/deflate/br before returning .content,
+        # but leaves the Content-Encoding header reflecting the wire value.
+        # Drop the header so checks (encoding_mismatch, content_length_mismatch)
+        # see a captured response that's internally consistent with its body.
+        wire_encoding = response.headers.get("Content-Encoding", "").strip().lower()
+        if wire_encoding in _HTTPX_DECODED_ENCODINGS:
+            raw_headers = [(k, v) for k, v in raw_headers if k.lower() != "content-encoding"]
+
         captured_response = CapturedResponse(
             status_code=response.status_code,
             status_text=response.reason_phrase or _default_reason(response.status_code),

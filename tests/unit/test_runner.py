@@ -224,6 +224,68 @@ class TestRawHeaders:
         assert cookies == ["a=1", "b=2"]
 
 
+class TestContentEncodingStripping:
+    """httpx auto-decompresses gzip/deflate/br on response.content. The
+    captured headers should NOT then claim the body is still encoded —
+    that would false-positive the encoding_mismatch check on every real
+    site that ships compressed responses."""
+
+    def test_strips_content_encoding_when_httpx_decoded_gzip(self):
+        import gzip
+
+        decoded = b"<!DOCTYPE html><html><body>hi</body></html>"
+        gzipped = gzip.compress(decoded)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "text/html",
+                    "Content-Encoding": "gzip",
+                },
+                content=gzipped,
+            )
+
+        cap = run(
+            "GET",
+            "https://example.com/",
+            transport=_transport(handler),
+            probe_network=False,
+        )
+
+        assert cap.response is not None
+        # httpx returns the decoded body; the captured body matches.
+        assert cap.response.body == decoded
+        # And the captured headers no longer claim the body is gzip-encoded,
+        # so checks against captured_response are internally consistent.
+        assert "Content-Encoding" not in cap.response.headers
+        assert all(k.lower() != "content-encoding" for k, _ in cap.response.raw_headers or [])
+
+    def test_keeps_content_encoding_when_unknown_to_httpx(self):
+        # An encoding httpx doesn't decompress (e.g. 'compress', 'identity')
+        # leaves the body as-is; the header must be preserved so the body's
+        # actual format is still described accurately.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "text/html",
+                    "Content-Encoding": "compress",
+                },
+                content=b"some-compress-bytes",
+            )
+
+        cap = run(
+            "GET",
+            "https://example.com/",
+            transport=_transport(handler),
+            probe_network=False,
+        )
+
+        assert cap.response is not None
+        assert cap.response.headers.get("Content-Encoding") == "compress"
+
+
 class TestDnsProbing:
     def test_dns_populated_when_probing_enabled(self, monkeypatch):
         def fake_resolve(host: str, timeout: float = 5.0):
