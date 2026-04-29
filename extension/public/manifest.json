@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "api-medic",
+  "version": "0.1.0",
+  "description": "Diagnose HTTP requests captured in DevTools — analysis runs on the api-medic hosted demo.",
+  "minimum_chrome_version": "102",
+  "devtools_page": "devtools.html",
+  "host_permissions": [
+    "https://api-medic.markandrewmarquez.com/*"
+  ]
+}

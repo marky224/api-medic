@@ -107,6 +107,40 @@ jobs:
       - name: Build
         run: npm run build
 
+  extension:
+    name: Extension (typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      # Frontend deps are needed because the extension's tsc resolves
+      # imports through the @frontend alias into ../frontend/src/*.
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Type-check
+        working-directory: extension
+        run: npm run typecheck
+
+      - name: Run tests
+        working-directory: extension
+        run: npm test
+
+      - name: Build
+        working-directory: extension
+        run: npm run build
+
   schema-check:
     name: Verify TypeScript types are in sync with Pydantic schema
     runs-on: ubuntu-latest

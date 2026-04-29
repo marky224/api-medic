@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.vite/
+*.log
+
+# tsc -b composite emit artifacts (vite.config.ts → vite.config.{js,d.ts})
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+vite.config.d.ts.map
