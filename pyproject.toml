@@ -59,6 +59,12 @@ packages = ["src/api_medic"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/api_medic/web/frontend" = "api_medic/web/frontend"
 
+# `src/api_medic/web/frontend/*` is gitignored (built at release time, not
+# checked in). Force-include it in the sdist too so `python -m build` —
+# which builds the wheel from the sdist — sees the staged frontend.
+[tool.hatch.build.targets.sdist.force-include]
+"src/api_medic/web/frontend" = "src/api_medic/web/frontend"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
