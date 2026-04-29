@@ -73,7 +73,10 @@
         "lambda:GetPolicy",
         "lambda:TagResource",
         "lambda:UntagResource",
-        "lambda:ListTags"
+        "lambda:ListTags",
+        "lambda:PutFunctionConcurrency",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:GetFunctionConcurrency"
       ],
       "Resource": "arn:aws:lambda:us-east-1:444977504043:function:api-medic-demo-*"
     },

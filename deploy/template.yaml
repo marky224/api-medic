@@ -34,9 +34,12 @@ Resources:
       CodeUri: lambda/
       Handler: handler.lambda_handler
       Description: api-medic engine — analyses HAR/curl input or runs a live request.
-      # Cap parallel executions to bound cost on a public live-run endpoint.
-      # Five concurrent requests is plenty for the demo; abuse beyond that gets 429.
-      ReservedConcurrentExecutions: 5
+      # ReservedConcurrentExecutions intentionally omitted: this AWS account
+      # has a Lambda concurrency limit of 10 and a 10-min unreserved floor,
+      # so reserving any concurrency blocks the deploy. Cost protection
+      # comes from API Gateway throttling (2 rps on /api/run, see RouteSettings
+      # below) plus the AWS Budget. Add ReservedConcurrentExecutions back
+      # if and when the account-level limit is raised via Service Quotas.
       Events:
         AnalyzeRoute:
           Type: HttpApi
