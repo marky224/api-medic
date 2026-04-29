@@ -18,7 +18,7 @@ pip install api-medic
 api-medic https://api.example.com/health
 ```
 
-Hosted demo (captured-mode only): [api-medic.markandrewmarquez.com](https://api-medic.markandrewmarquez.com) — *not live yet.*
+Hosted demo: [api-medic.markandrewmarquez.com](https://api-medic.markandrewmarquez.com) — paste a curl, upload a HAR, or fire a live request (HTTPS only, throttled).
 
 ## License
 

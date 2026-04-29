@@ -35,7 +35,7 @@ flowchart LR
 
     User --> CLI[CLI<br/>api-medic url]
     User --> LocalWeb[Local web UI<br/>api-medic serve]
-    User --> Demo[Hosted demo<br/>captured mode only]
+    User --> Demo[Hosted demo<br/>captured + live]
     User -.v1.1.-> Ext[Browser extension<br/>DevTools panel]
 
     Demo --> CF[CloudFront + S3]
@@ -55,7 +55,7 @@ flowchart LR
 
 Key invariant: **the core engine produces byte-identical `Report` objects regardless of which surface invoked it,** given the same input. A report from the CLI, the local web UI, the hosted demo, or (eventually) the browser extension is interchangeable.
 
-The Lambda surface (and the future browser extension) only use Parser + Checks + Renderers. They cannot use the live Runner — those surfaces are captured-mode-only by design (no outbound network from AWS, no privileged network access from a browser extension).
+The Lambda surface uses Parser + Checks + Renderers + the live Runner, with SSRF mitigations on the Runner (block RFC1918, link-local incl. the EC2 metadata service, multicast, loopback; resolve DNS once and re-check the IP before the request). The browser extension is captured-mode-only by design — no privileged network access from a content script.
 
 ---
 
@@ -67,7 +67,7 @@ Pure Python library. No web, no CLI, no AWS dependencies. Importable and usable 
 
 Responsibilities:
 
-- **Runner.** Given a request specification, execute it using `httpx` and capture full timing breakdown (DNS, connect, TLS, TTFB, download), cert chain details, negotiated protocol version, redirect chain. Used only by CLI and local web UI.
+- **Runner.** Given a request specification, execute it using `httpx` and capture full timing breakdown (DNS, connect, TLS, TTFB, download), cert chain details, negotiated protocol version, redirect chain. Used by CLI, local web UI, and the hosted-demo Lambda. The Lambda call path additionally goes through an SSRF guard (`core.runner_safety`) before any socket is opened.
 - **Parser.** Given a HAR file, a curl command string, or a raw HTTP request/response pair, normalize into the same internal `CapturedRequest` representation that the Runner produces.
 - **Check battery.** Run all applicable checks against a normalized request/response pair. Produce a list of `Finding` objects.
 - **Renderers.** Convert a `Report` into terminal output, JSON, Markdown, or HTML.
@@ -100,13 +100,15 @@ The local web UI supports both live and captured modes.
 
 ### Hosted demo (`deploy/`)
 
-Captured-mode-only. Architecture:
+Both captured (HAR/curl) and live-run inputs are exposed. Architecture:
 
-- **S3 + CloudFront.** Hosts the same React build as the local web UI, with a build-time flag that hides the "live request" tab. Subdomain `api-medic.markandrewmarquez.com` via CNAME pointing at the CloudFront distribution. ACM certificate must be issued in `us-east-1` regardless of where any other infrastructure lives — that's a CloudFront constraint.
-- **API Gateway + Lambda.** Single Lambda function handling `POST /api/analyze`. Wraps `api_medic.core` and runs the parser + check battery on the request body. No outbound HTTP, no persistence, returns the `Report` and exits.
-- **No DynamoDB, no S3 writes, no CloudWatch persistence beyond default.** Stateless by design.
+- **S3 + CloudFront.** Hosts the same React build as the local web UI. Subdomain `api-medic.markandrewmarquez.com` via CNAME pointing at the CloudFront distribution. ACM certificate must be issued in `us-east-1` regardless of where any other infrastructure lives — that's a CloudFront constraint.
+- **API Gateway + Lambda.** Single Lambda function handling `POST /api/analyze`, `POST /api/run`, and `GET /api/health`. Wraps `api_medic.core` and runs the parser + check battery, plus the live Runner for `/api/run`. Returns the `Report` and exits.
+- **Outbound HTTP is allowed but constrained.** `/api/run` goes through the SSRF guard (block RFC1918, link-local incl. 169.254.169.254, multicast, loopback; resolve hostname once, re-check the resolved IP, then connect via that IP) and a short per-request timeout (≤10s). Body and response size are capped well under the 10 MB API Gateway payload limit.
+- **Cost / abuse controls.** API Gateway throttle on `/api/run` (low default; tunable in the SAM template), Lambda reserved concurrency on the function, AWS Budget at $10/month with 50%/100%/forecast alerts. The function is publicly callable; assume any URL the user submits will be fetched.
+- **No DynamoDB, no S3 writes, no CloudWatch persistence beyond default 14-day log retention.** Stateless by design.
 
-Lambda cold-start budget: 1.5s. The package needs to be lean — `httpx`, `uvicorn`, and `FastAPI` should not be in the Lambda layer. Only the parser + check modules.
+Lambda cold-start budget: 1.5s for the analyze-only path; the live-run path is allowed up to ~3s on cold start because of `httpx`'s import cost. `FastAPI` and `uvicorn` are still excluded — the Lambda dispatches routes inline via `lambda_handler`. The package now ships `httpx`, `dnspython`, and `cryptography` alongside `pydantic` and `uncurl`.
 
 ### Browser extension (post-v1, Phase 7)
 
@@ -381,7 +383,7 @@ The frontend is its own Node project that builds into `src/api_medic/web/fronten
 
 - **PyPI:** `pip install api-medic` — primary install path. Wheel includes the React build.
 - **Docker:** `docker run --rm -p 8765:8765 marky224/api-medic serve` — for users who don't want to install Python. Built and pushed to Docker Hub on every tagged release.
-- **Hosted demo:** `https://api-medic.markandrewmarquez.com` — captured-mode only. No install required.
+- **Hosted demo:** `https://api-medic.markandrewmarquez.com` — captured-mode + live-run (HTTPS only, SSRF-guarded, throttled). No install required.
 - **Browser extension** (Phase 7): Chrome Web Store + Firefox Add-ons.
 
 Not in v1: Homebrew formula, pre-built standalone binaries. Add later if there's demand.

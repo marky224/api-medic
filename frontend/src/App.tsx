@@ -7,9 +7,10 @@ import { HarUpload } from "./components/HarUpload";
 
 type TabId = "demos" | "run" | "har";
 
-// Captured-mode detection. The hosted demo's Vite build sets
-// VITE_DEMO_MODE=1, which hides the Run tab — there's no live runner on
-// the Lambda surface, so live requests aren't possible there.
+// VITE_DEMO_MODE=1 marks the hosted demo build. The Lambda now exposes
+// /api/run with SSRF guard + throttle, so the Run tab shows in both
+// builds — kept around because the tagline + future demo-only behaviors
+// (cost banner, etc.) still want to know they're running on the demo.
 const ENV_DEMO_MODE =
   (import.meta.env.VITE_DEMO_MODE as string | undefined) === "1";
 
@@ -21,16 +22,11 @@ interface AppProps {
 export function App({ demoMode }: AppProps = {}) {
   const isDemoMode = demoMode ?? ENV_DEMO_MODE;
 
-  const tabs: TabDef<TabId>[] = isDemoMode
-    ? [
-        { id: "demos", label: "Demos" },
-        { id: "har", label: "HAR" },
-      ]
-    : [
-        { id: "demos", label: "Demos" },
-        { id: "run", label: "Run" },
-        { id: "har", label: "HAR" },
-      ];
+  const tabs: TabDef<TabId>[] = [
+    { id: "demos", label: "Demos" },
+    { id: "run", label: "Run" },
+    { id: "har", label: "HAR" },
+  ];
 
   const [fixtures, setFixtures] = useState<FixtureMeta[]>([]);
   const [fixturesError, setFixturesError] = useState<string | null>(null);
@@ -53,7 +49,7 @@ export function App({ demoMode }: AppProps = {}) {
   }, []);
 
   const tagline = isDemoMode
-    ? "Upload a HAR or browse the demo scenarios."
+    ? "Run a request (HTTPS only, throttled), upload a HAR, or browse the demo scenarios."
     : "Run a request, upload a HAR, or browse the demo scenarios.";
 
   return (
@@ -75,7 +71,7 @@ export function App({ demoMode }: AppProps = {}) {
             ) : null}
             <FixtureBrowser fixtures={fixtures} />
           </>
-        ) : tab === "run" && !isDemoMode ? (
+        ) : tab === "run" ? (
           <RequestComposer />
         ) : (
           <HarUpload />

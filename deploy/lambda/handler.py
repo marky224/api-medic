@@ -1,8 +1,19 @@
 """AWS Lambda handler for the hosted demo.
 
-The Lambda surface is captured-mode-only by architectural design — no
-live runner, no httpx, no fastapi/uvicorn. This module imports only what
-is safe in that environment: parser, engine, and the JSON renderer.
+Routes:
+  GET  /api/health   liveness check
+  POST /api/analyze  parse + check a captured HAR or curl command
+  POST /api/run      execute a live HTTP request, then check it
+
+The /api/run path goes through `core.runner_safety` first to block
+SSRF (RFC1918, link-local incl. EC2 metadata, multicast, loopback).
+A 10s per-request timeout caps cost on slow targets. API Gateway
+throttling and Lambda reserved concurrency provide the broader
+abuse / cost ceiling — see deploy/template.yaml.
+
+FastAPI / uvicorn are deliberately excluded (route dispatch is inline
+below). The terminal renderer's `rich` dep is also excluded — we
+serialize the Report via model_dump_json directly.
 
 Triggered by API Gateway HTTP API v2 events. CloudFront proxies /api/*
 to this Lambda; same-origin with the React build, so no CORS headers
@@ -17,12 +28,13 @@ from typing import Any
 
 from api_medic.core.engine import analyze
 from api_medic.core.parser import parse_curl, parse_har
+from api_medic.core.runner import run as run_request
+from api_medic.core.runner_safety import UnsafeURLError, check_url_safe
 
-# Note: we deliberately don't `from api_medic.core.render import render_json`
-# because that triggers core/render/__init__.py, which eager-imports the
-# terminal renderer (and its `rich` dep) — bloating the Lambda zip. The
-# JSON renderer is a thin wrapper around model_dump_json anyway, so we call
-# it directly here.
+# Hard cap per the architecture invariants: a single live request can't
+# exceed this regardless of httpx defaults. Bounded so the Lambda doesn't
+# burn its 30s ceiling on a slow target.
+LIVE_RUN_TIMEOUT_SECONDS = 10.0
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -33,6 +45,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     if method == "POST" and path == "/api/analyze":
         return _handle_analyze(event)
+
+    if method == "POST" and path == "/api/run":
+        return _handle_run(event)
 
     if method == "OPTIONS":
         # API Gateway should already handle CORS preflight; this is a
@@ -70,6 +85,52 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
     except ValueError as e:
         return _err(400, str(e))
 
+    report = analyze(captured)
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": report.model_dump_json(),
+    }
+
+
+def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
+    raw = _decode_body(event)
+
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        return _err(400, f"Body is not valid JSON: {e.msg}")
+
+    if not isinstance(body, dict):
+        return _err(400, "Body must be a JSON object.")
+
+    method = body.get("method")
+    url = body.get("url")
+    headers = body.get("headers") or {}
+    req_body = body.get("body")
+
+    if not isinstance(method, str) or not method:
+        return _err(400, "Missing or empty 'method'.")
+    if not isinstance(url, str) or not url:
+        return _err(400, "Missing or empty 'url'.")
+    if not isinstance(headers, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+    ):
+        return _err(400, "'headers' must be a dict[str, str].")
+
+    try:
+        check_url_safe(url)
+    except UnsafeURLError as e:
+        return _err(400, str(e))
+
+    captured = run_request(
+        method=method,
+        url=url,
+        headers=headers,
+        body=req_body,
+        timeout=LIVE_RUN_TIMEOUT_SECONDS,
+        probe_network=True,
+    )
     report = analyze(captured)
     return {
         "statusCode": 200,

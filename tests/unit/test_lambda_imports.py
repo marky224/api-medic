@@ -1,9 +1,11 @@
 """Static-import audit for the Lambda surface.
 
-The hosted-demo Lambda must not transitively pull in httpx / fastapi /
-uvicorn / dnspython / cryptography / rich. Those live in the runner /
-web / terminal-render layers and would blow the cold-start budget and
-deployment size.
+The hosted-demo Lambda exposes /api/run (live runner) alongside
+/api/analyze (captured-mode), so httpx / dnspython / cryptography
+ARE expected — they're the runner's deps. What must still NEVER
+appear in the Lambda surface: fastapi, uvicorn (the Lambda dispatches
+routes inline; no web framework), and the CLI/terminal-render deps
+(typer, click, rich) which would just bloat the zip.
 
 Rather than try to test this dynamically (which is unreliable in a
 session that's already imported the heavy deps for other tests), we
@@ -27,12 +29,8 @@ SRC = ROOT / "src"
 
 # Modules that must never appear in the Lambda surface's transitive imports.
 FORBIDDEN = {
-    "httpx",
     "fastapi",
     "uvicorn",
-    "dns",  # dnspython exposes top-level `dns`
-    "dnspython",
-    "cryptography",
     "rich",
     "typer",  # CLI surface
     "click",  # CLI surface (typer's transitive)
@@ -123,13 +121,22 @@ class TestLambdaImportsAreLean:
         bad = _file_imports(HANDLER) & FORBIDDEN
         assert not bad, f"handler.py top-level imports forbidden modules: {bad}"
 
-    def test_handler_does_not_reach_runner(self):
+    def test_handler_reaches_runner(self):
+        """Live-run path requires the runner; verify it's actually in the graph."""
         graph = _walk_lambda_surface()
         runner = SRC / "api_medic" / "core" / "runner.py"
-        assert runner not in graph, (
-            "Lambda surface reaches core/runner.py — that drags in httpx, "
-            "dnspython, cryptography. Make handler.py and engine/parser/"
-            "render/json avoid runner imports."
+        assert runner in graph, (
+            "Lambda surface no longer reaches core/runner.py — /api/run will "
+            "be broken. handler.py should import api_medic.core.runner."
+        )
+
+    def test_handler_reaches_runner_safety(self):
+        """SSRF guard must be in the live-run path."""
+        graph = _walk_lambda_surface()
+        safety = SRC / "api_medic" / "core" / "runner_safety.py"
+        assert safety in graph, (
+            "Lambda surface no longer reaches core/runner_safety.py — /api/run "
+            "would be open SSRF. handler.py must call check_url_safe before run_request."
         )
 
     def test_handler_does_not_reach_web_app(self):

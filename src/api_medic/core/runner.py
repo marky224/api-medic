@@ -1,11 +1,9 @@
 """Live HTTP request execution.
 
 Used by:
+  * the CLI's `run` and bare-URL forms
   * the local web UI's POST /api/run
-  * the CLI's `run` and bare-URL forms (Phase 4)
-
-The hosted demo's Lambda surface deliberately does NOT use this — that
-surface is captured-mode only.
+  * the hosted-demo Lambda's POST /api/run (gated by core.runner_safety)
 
 Phase 3b adds DNS resolution (via dnspython) and a separate TLS probe (via
 ssl + cryptography) on top of the httpx HTTP exchange. Those two pre-flight

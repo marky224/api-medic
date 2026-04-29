@@ -1,7 +1,17 @@
-# Lambda dependency surface — kept lean per architecture.md:
-# the hosted-demo Lambda must not pull in httpx, fastapi, uvicorn,
-# dnspython, or cryptography (those live in the runner / web layer).
+# Lambda dependency surface.
+#
+# The hosted-demo Lambda exposes both captured-mode (/api/analyze)
+# AND live-run (/api/run), so it now ships the runner's network deps:
+# httpx for the request, dnspython for the pre-flight DNS probe,
+# cryptography for the TLS cert inspection.
+#
+# Still excluded: fastapi, uvicorn (Lambda dispatches routes inline),
+# typer, rich (CLI surface).
+#
 # api_medic source is copied into the package by the Makefile build step,
 # not installed via pip.
 pydantic>=2.6.0
 uncurl>=0.0.11
+httpx>=0.27.0
+dnspython>=2.6.0
+cryptography>=42.0.0

@@ -1,12 +1,13 @@
-"""FastAPI app powering the local web UI and (Phase 5) the hosted demo.
+"""FastAPI app powering the local web UI.
 
 Routes:
   * GET  /api/health   — liveness check
-  * POST /api/run      — execute via Runner (live mode, local dev only)
-  * POST /api/analyze  — Parser + engine (captured mode, also used by Lambda)
+  * POST /api/run      — execute via Runner (live mode)
+  * POST /api/analyze  — Parser + engine (captured mode)
 
-The Lambda surface for the hosted demo will only mount /api/analyze and
-/api/health — it deliberately doesn't expose the live runner. Phase 5 work.
+The hosted-demo Lambda mounts the same three routes (see deploy/lambda/
+handler.py). It dispatches them inline rather than via FastAPI to keep
+the cold-start budget intact, but the route shapes match by design.
 """
 
 from __future__ import annotations

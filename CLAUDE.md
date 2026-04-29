@@ -21,8 +21,17 @@ Phase 2 — Web UI against fixtures. Vite + React + TypeScript + Tailwind in `fr
 
 ## Architectural invariants (don''t change without sign-off)
 - Same Report shape from every surface (CLI, web, Lambda, extension).
-- Lambda surface uses parser + checks + renderers only — no httpx, FastAPI, or uvicorn.
-- Hosted demo is captured-mode only.
+- Lambda surface ships parser + checks + renderers + the live runner.
+  Outbound HTTP from the Lambda is allowed and must apply SSRF mitigations
+  (block RFC1918, link-local incl. 169.254.169.254 metadata, multicast,
+  loopback; resolve hostname once and re-check the IP before connecting)
+  plus a conservative per-request timeout (≤10s). FastAPI and uvicorn
+  remain excluded — the Lambda dispatches routes inline via
+  `lambda_handler`, no web framework.
+- Hosted demo exposes both captured-mode (HAR/curl) and live-run tabs.
+  Live runs are bounded by API Gateway throttling, Lambda reserved
+  concurrency, and the AWS Budget; assume any URL the user submits
+  will be fetched by the Lambda.
 - Stateless: no DynamoDB, no S3 writes for user data, no persistence.
 - Public repo, MIT license, no public timelines anywhere.
 

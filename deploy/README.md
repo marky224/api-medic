@@ -1,9 +1,13 @@
 # Deploying the api-medic hosted demo
 
-The hosted demo at `https://api-medic.markandrewmarquez.com` is a
-captured-mode-only build — the Lambda surface accepts HAR uploads and
-curl strings via `POST /api/analyze`, runs them through the engine, and
-returns a `Report`. There is no live runner on this surface by design.
+The hosted demo at `https://api-medic.markandrewmarquez.com` exposes
+both captured-mode and live-run paths:
+
+- `POST /api/analyze` — HAR/curl input, runs through the engine
+- `POST /api/run` — live request execution. SSRF-guarded (rejects
+  RFC1918, link-local incl. EC2 metadata, multicast, loopback, http://);
+  10 s per-request timeout; 2 req/sec sustained throttle (burst 5)
+  via API Gateway; Lambda capped at 5 concurrent executions.
 
 Architecture: S3 (React build) + CloudFront + API Gateway HTTP API +
 Lambda. DNS is managed by Route 53.
@@ -75,13 +79,14 @@ sam delete --stack-name api-medic-demo --region us-east-1
 
 ## Architectural invariants for this stack
 
-- The Lambda imports only `pydantic`, `uncurl`, and `api_medic.core` —
-  **no httpx, fastapi, uvicorn, dnspython, or cryptography**. Verified
-  by `tests/unit/test_lambda_imports.py`.
-- The hosted demo is **captured-mode only** — there is no `/api/run`
-  endpoint. The frontend's Run tab is hidden via `VITE_DEMO_MODE=1`.
+- The Lambda imports `pydantic`, `uncurl`, `httpx`, `dnspython`,
+  `cryptography`, and `api_medic.core` — **no fastapi, uvicorn, rich,
+  or typer**. Verified by `tests/unit/test_lambda_imports.py`.
+- `/api/run` MUST go through `core.runner_safety.check_url_safe`
+  before any socket is opened. Verified by an explicit assertion in
+  the same test module.
 - **No persistence**: no DynamoDB, no S3 writes for user data, no
-  CloudWatch persistence beyond the Lambda's default execution log.
+  CloudWatch persistence beyond the function's 14-day log retention.
 
 ## Building locally
 

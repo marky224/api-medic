@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: api-medic hosted demo — captured-mode-only Lambda + S3 + CloudFront
+Description: api-medic hosted demo — captured + live Lambda + S3 + CloudFront
 
 Parameters:
   DomainName:
@@ -33,7 +33,10 @@ Resources:
     Properties:
       CodeUri: lambda/
       Handler: handler.lambda_handler
-      Description: api-medic captured-mode engine — analyses HAR or curl input.
+      Description: api-medic engine — analyses HAR/curl input or runs a live request.
+      # Cap parallel executions to bound cost on a public live-run endpoint.
+      # Five concurrent requests is plenty for the demo; abuse beyond that gets 429.
+      ReservedConcurrentExecutions: 5
       Events:
         AnalyzeRoute:
           Type: HttpApi
@@ -41,6 +44,12 @@ Resources:
             ApiId: !Ref HttpApi
             Method: POST
             Path: /api/analyze
+        RunRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /api/run
         HealthRoute:
           Type: HttpApi
           Properties:
@@ -72,6 +81,18 @@ Resources:
           - OPTIONS
         AllowHeaders:
           - content-type
+      # Per-route throttling. /api/run is the live-egress path and the
+      # main abuse vector; /api/analyze is CPU-only on captured input
+      # and /api/health is trivial. API Gateway's default is ~10000 rps,
+      # which would blow the AWS budget if exploited — bound /api/run
+      # tightly: 2 req/sec sustained, burst 5.
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 20
+      RouteSettings:
+        "POST /api/run":
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
 
   # ---- S3 bucket holding the React build --------------------------------
 
