@@ -1,6 +1,6 @@
 [project]
 name = "api-medic"
-version = "0.1.0"
+version = "1.0.0"
 description = "Diagnostic tool for HTTP API issues. Captures or runs a request, runs a battery of checks, produces a structured report with plain-language findings."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -8,7 +8,7 @@ authors = [{ name = "Mark Marquez" }]
 requires-python = ">=3.10"
 keywords = ["http", "api", "debugging", "diagnostics", "troubleshooting", "tse", "support"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",

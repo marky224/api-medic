@@ -7,8 +7,16 @@ This is api-medic, an open-source HTTP API troubleshooting tool. Mark Marquez di
 - The Pydantic models in `src/api_medic/core/models.py` are the contract every surface produces and consumes. Don''t break them without bumping `schema_version`.
 - `frontend/src/lib/types.ts` is auto-generated from those models via `make types`. Never edit by hand.
 
-## Current phase
-Phase 2 — Web UI against fixtures. Vite + React + TypeScript + Tailwind in `frontend/`. Build the report screen first (matching the design notes in the architecture doc and `api-medic-ui-reference.html` if Mark provides it). Wire fixtures from `tests/fixtures/reports/` as the data source — no real API calls in this phase.
+## Status
+v1 is shipped. All seven phases in `docs/architecture.md` are complete:
+data model, fixtures, web UI, core engine, CLI, hosted demo on AWS,
+Phase 6 polish. The hosted demo at `https://api-medic.markandrewmarquez.com`
+exposes Demos / Run / HAR tabs and the Lambda runs both captured-mode
+and live requests (SSRF-guarded, throttled).
+
+Default work mode is now polish, bug fixes, and post-launch items.
+Phase 7 (browser extension) is the only remaining planned phase and
+is explicitly post-v1.
 
 ## Working style
 - Default to producing actual code, not pseudocode.
