@@ -16,8 +16,12 @@ below). The terminal renderer's `rich` dep is also excluded — we
 serialize the Report via model_dump_json directly.
 
 Triggered by API Gateway HTTP API v2 events. CloudFront proxies /api/*
-to this Lambda; same-origin with the React build, so no CORS headers
-are needed in the response.
+to this Lambda. CORS response headers come from API Gateway's
+CorsConfiguration (see deploy/template.yaml) — the React build is
+same-origin, but the browser extension calls cross-origin from
+chrome-extension:// and moz-extension:// URLs, so the API Gateway
+CORS layer is load-bearing. The handler itself does not emit
+Access-Control-* headers.
 """
 
 from __future__ import annotations

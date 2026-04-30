@@ -73,8 +73,17 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       CorsConfiguration:
+        # Wildcard origin: the browser extension calls /api/analyze from
+        # chrome-extension://<id> and moz-extension://<per-install-uuid>.
+        # Firefox's per-install UUID can't be allowlisted by exact string,
+        # and HTTP API CORS only supports exact origins or "*", not
+        # patterns. Safe here: no credentials/cookies are accepted, the
+        # API is intentionally public, and abuse is bounded by the
+        # per-route throttle below + Lambda reserved concurrency + the
+        # account Budget. CORS isn't a meaningful security boundary on
+        # this surface.
         AllowOrigins:
-          - !Sub "https://${DomainName}"
+          - "*"
         AllowMethods:
           - GET
           - POST
