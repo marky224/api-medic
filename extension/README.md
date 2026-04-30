@@ -12,9 +12,10 @@ directly from the main frontend.
 ```sh
 cd extension
 npm install
-npm run build         # one-shot — produces dist/
-npm run dev           # watch — rebuilds on source change
-npm run package       # zips dist/ into packages/ for both Chrome and Firefox
+npm run build           # one-shot — produces dist/
+npm run dev             # watch — rebuilds on source change
+npm run package         # zips dist/ into packages/ for both Chrome and Firefox
+npm run package-source  # zips reviewable source for AMO (Mozilla) submission
 ```
 
 `dist/` contains both `manifest.json` (Chrome) and `manifest.firefox.json`
@@ -52,6 +53,16 @@ so the panel's `chrome.devtools.network.onRequestFinished` listener works
 unchanged. Submission packaging differs — see `scripts/package.mjs`, which
 emits one zip per store with the correct manifest under the canonical
 `manifest.json` name.
+
+## Source submission (AMO)
+
+AMO requires a separate source zip when the published add-on is bundled or
+minified (Vite minifies in production). `npm run package-source` produces
+`packages/api-medic-source-X.Y.Z.zip` containing a top-level `BUILD.md`,
+`LICENSE`, the `extension/` source tree, and the slice of `frontend/` the
+extension imports via the `@frontend` Vite alias. A reviewer following
+`BUILD.md` ends up with a Firefox zip whose `manifest.json` matches the
+submitted add-on byte-for-byte; CI runs that rebuild on every push.
 
 ## Architecture
 

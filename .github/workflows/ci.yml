@@ -157,6 +157,43 @@ jobs:
           test -f "packages/api-medic-chrome-${v}.zip"
           test -f "packages/api-medic-firefox-${v}.zip"
 
+      - name: Package source zip (AMO submission)
+        working-directory: extension
+        run: npm run package-source
+
+      - name: Reproducibility check (rebuild from source zip)
+        working-directory: extension
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          src_zip="packages/api-medic-source-${v}.zip"
+          test -f "$src_zip"
+
+          # Capture the original Firefox manifest before we leave the workspace.
+          unzip -p "packages/api-medic-firefox-${v}.zip" manifest.json \
+            > /tmp/original-firefox-manifest.json
+
+          # Extract source to a clean temp dir, then build per BUILD.md.
+          rm -rf /tmp/amo-repro
+          unzip -q "$src_zip" -d /tmp/amo-repro
+          test -f /tmp/amo-repro/BUILD.md
+          test -f /tmp/amo-repro/LICENSE
+          test -d /tmp/amo-repro/extension
+          test -d /tmp/amo-repro/frontend/src
+
+          (cd /tmp/amo-repro/frontend && npm ci --silent)
+          (cd /tmp/amo-repro/extension && npm ci --silent && npm run build && npm run package)
+
+          test -f "/tmp/amo-repro/extension/packages/api-medic-firefox-${v}.zip"
+          test -f "/tmp/amo-repro/extension/packages/api-medic-chrome-${v}.zip"
+
+          # The rebuilt Firefox manifest must match the originally-submitted one
+          # byte-for-byte; if it doesn't, the source zip is not a faithful
+          # reproduction of what we shipped.
+          unzip -p "/tmp/amo-repro/extension/packages/api-medic-firefox-${v}.zip" manifest.json \
+            > /tmp/rebuilt-firefox-manifest.json
+          diff /tmp/original-firefox-manifest.json /tmp/rebuilt-firefox-manifest.json
+
   schema-check:
     name: Verify TypeScript types are in sync with Pydantic schema
     runs-on: ubuntu-latest

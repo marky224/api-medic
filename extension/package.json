@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build && node scripts/verify-dist.mjs",
     "verify-dist": "node scripts/verify-dist.mjs",
     "package": "node scripts/package.mjs",
+    "package-source": "node scripts/package-source.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest"
