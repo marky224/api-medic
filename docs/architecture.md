@@ -21,7 +21,12 @@ Every scope decision in this document is graded against that bar.
 
 ## Audience
 
-Primary framing in all marketing copy: **technical support engineers triaging customer-reported API issues.** Secondary audiences who use the same tool unchanged: developers debugging their own integrations, MSP and IT techs working in customer environments. The README leads with the TSE story; the tool itself is general-purpose.
+Two surfaces, two voices:
+
+- **README and other developer-facing copy** (PyPI page, GitHub, CLI help): written for developers debugging HTTP integrations. Terse, code-first, no persona pitch.
+- **Portfolio article** (linked from job-search materials): written for recruiters reviewing applications for **technical support engineer (TSE)** roles. Frames the tool as something a TSE would reach for when triaging customer-reported API issues — that framing is load-bearing for recruiters and stays out of the README.
+
+The tool itself is general-purpose. Other audiences — MSP/IT techs in customer environments, developers debugging their own integrations — use the same surface unchanged.
 
 ---
 
@@ -179,7 +184,7 @@ class Report(BaseModel):
 
 Findings are sorted by severity (critical first), then by check id alphabetically for deterministic output.
 
-The `id` field on `Finding` is stable and namespaced (`network.dns.no_records`, `auth.jwt.expired`, `http.cors.missing_origin`). Stable ids let users filter, suppress, and reference specific findings without coupling to the human-readable title.
+The `id` field on `Finding` is stable and namespaced (`network.dns.no_records`, `auth.jwt.expired`, `http.cors.misconfigured`). Stable ids let users filter, suppress, and reference specific findings without coupling to the human-readable title.
 
 ### TypeScript types
 
@@ -219,11 +224,12 @@ Each fixture is a hand-crafted `Report` JSON file matching the Pydantic schema. 
 
 Don't try to implement every possible HTTP check in v1. Pick a focused, high-impact set that covers the most common TSE ticket categories. v1 ships with these:
 
-**Network & transport (5 checks)**
+**Network & transport (6 checks)**
 
 - `network.dns.no_records` — DNS lookup returned no A/AAAA records
 - `network.dns.slow` — DNS resolution took >500ms (configurable)
-- `network.tls.expired` / `network.tls.expiring_soon` — cert expiry checks
+- `network.tls.expired` — cert expiry already past
+- `network.tls.expiring_soon` — cert expires inside the warning window (≤14 days)
 - `network.tls.weak_protocol` — negotiated TLS < 1.2
 - `network.tls.cn_mismatch` — cert subject doesn't match requested host
 
@@ -252,7 +258,7 @@ Don't try to implement every possible HTTP check in v1. Pick a focused, high-imp
 - `rate_limit.hit` — 429 status code
 - `rate_limit.approaching` — `X-RateLimit-Remaining` is < 10% of limit
 
-That's 18 checks. Each one is a small, testable Python function with a clear input contract and a `Finding | None` output. Adding more checks post-v1 is additive — drop a new function in `core/checks/` and register it.
+That's 19 checks. Each one is a small, testable Python function with a clear input contract and a `Finding | None` output. Adding more checks post-v1 is additive — drop a new function in `core/checks/` and register it.
 
 A separate doc, `docs/checks.md`, should be maintained as the public catalog with one entry per check id explaining what it detects, why it matters, and what to do about it. This doubles as TSE study material — the kind of thing that gets shared.
 
@@ -263,9 +269,11 @@ A separate doc, `docs/checks.md`, should be maintained as the public catalog wit
 ```
 api-medic/
 ├── pyproject.toml              # build config, dependencies, entry points
+├── Makefile                    # types codegen, test/lint/format shortcuts
 ├── README.md                   # primary marketing surface — must be excellent
 ├── LICENSE                     # MIT
 ├── CHANGELOG.md
+├── PRIVACY.md                  # privacy policy (linked from hosted demo)
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml              # tests, lint, type-check on PRs
@@ -273,16 +281,20 @@ api-medic/
 │       └── deploy-demo.yml     # auto-deploy hosted demo on main
 ├── docs/
 │   ├── architecture.md         # this document
-│   ├── checks.md               # check catalog
 │   └── examples/               # sample inputs + expected outputs
+├── images/                     # README/marketing screenshots
+├── store-assets/               # Chrome Web Store + AMO listing assets
 ├── src/
 │   └── api_medic/
 │       ├── __init__.py
 │       ├── core/
 │       │   ├── __init__.py
 │       │   ├── models.py       # Pydantic models (Report, Finding, etc.)
+│       │   ├── engine.py       # check registry + analyze() entry point
 │       │   ├── runner.py       # live request execution via httpx
+│       │   ├── runner_safety.py # SSRF guard for the Lambda live path
 │       │   ├── parser.py       # HAR / curl / raw HTTP parsing
+│       │   ├── captured.py     # CapturedRequest internal shape
 │       │   ├── checks/
 │       │   │   ├── __init__.py
 │       │   │   ├── network.py
@@ -326,24 +338,41 @@ api-medic/
 │   ├── README.md               # how to deploy the hosted demo
 │   ├── template.yaml           # AWS SAM template
 │   └── lambda/
-│       └── handler.py          # wraps api_medic.core for Lambda
-├── extension/                  # Phase 7 — browser extension (gitkeep for now)
-├── tests/
-│   ├── unit/
-│   │   ├── test_checks/
-│   │   ├── test_parser.py
-│   │   └── test_models.py
-│   ├── integration/
-│   │   └── test_cli.py
-│   └── fixtures/
-│       ├── reports/            # hand-crafted Report JSON files (Phase 1)
-│       ├── har/
-│       └── curl/
-├── Dockerfile                  # for `docker run api-medic`
-└── .dockerignore
+│       ├── Makefile            # SAM BuildMethod=makefile target
+│       ├── requirements.txt    # Lambda runtime deps (httpx, dnspython, cryptography, pydantic)
+│       └── handler.py          # wraps api_medic.core for Lambda (parser + checks + renderers + live Runner)
+├── extension/                  # Phase 7 — browser extension (Vite + React 18, MV3)
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── tailwind.config.js
+│   ├── public/
+│   │   ├── manifest.json           # Chrome MV3
+│   │   └── manifest.firefox.json   # Firefox MV3
+│   ├── scripts/
+│   │   ├── package.mjs             # one zip per store
+│   │   ├── package-source.mjs      # AMO source-zip generator
+│   │   └── verify-dist.mjs
+│   └── src/
+│       ├── devtools.ts             # registers the panel
+│       ├── panel.tsx               # panel entry point
+│       ├── App.tsx
+│       └── lib/
+│           ├── api.ts              # POST /api/analyze
+│           └── serialize.ts        # request → single-entry HAR
+└── tests/
+    ├── unit/
+    │   ├── test_checks/
+    │   ├── test_parser.py
+    │   └── test_models.py
+    ├── integration/
+    │   └── test_cli.py
+    └── fixtures/
+        ├── reports/            # hand-crafted Report JSON files (Phase 1)
+        ├── har/
+        └── curl/
 ```
 
-The frontend is its own Node project that builds into `src/api_medic/web/frontend/`. The Python package then ships those static assets inside the wheel. The same React build is uploaded to S3 for the hosted demo, with a build-time env var that disables the live-request tab.
+The frontend is its own Node project that builds into `src/api_medic/web/frontend/`. The Python package then ships those static assets inside the wheel. The same React build is uploaded to S3 for the hosted demo with `VITE_DEMO_MODE=1`, which switches the API base to same-origin so requests flow through CloudFront → API Gateway → Lambda. The flag also marks the build as the demo for cosmetic differences (tagline, future cost banners) — it does not hide any tabs, since the Lambda exposes both `/api/analyze` and `/api/run`.
 
 ---
 
@@ -382,11 +411,10 @@ The frontend is its own Node project that builds into `src/api_medic/web/fronten
 ## Distribution
 
 - **PyPI:** `pip install api-medic` — primary install path. Wheel includes the React build.
-- **Docker:** `docker run --rm -p 8765:8765 marky224/api-medic serve` — for users who don't want to install Python. Built and pushed to Docker Hub on every tagged release.
 - **Hosted demo:** `https://api-medic.markandrewmarquez.com` — captured-mode + live-run (HTTPS only, SSRF-guarded, throttled). No install required.
 - **Browser extension** (Phase 7): Chrome Web Store + Firefox Add-ons.
 
-Not in v1: Homebrew formula, pre-built standalone binaries. Add later if there's demand.
+Not in v1: Homebrew formula, pre-built standalone binaries, Docker image. Add later if there's demand.
 
 ---
 
@@ -418,7 +446,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 - Implement `runner.py` with `httpx` and full timing capture
 - Implement `parser.py` for HAR files and curl commands (use a battle-tested library like `uncurl`, don't write the curl parser from scratch)
-- Implement all 18 checks
+- Implement all 19 checks
 - Implement all four renderers (terminal, JSON, Markdown, HTML)
 - Goal: the engine produces real `Report` objects byte-equivalent in shape to the fixtures
 - FastAPI backend in `api_medic/web/app.py` exposing `/api/run` and `/api/analyze` — these replace the fixture-based data source in the frontend
@@ -439,8 +467,8 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 - ACM certificate in `us-east-1` for `api-medic.markandrewmarquez.com`
 - SAM template defining S3, CloudFront, API Gateway, Lambda
-- Lambda handler in `deploy/lambda/handler.py` that wraps `api_medic.core` (parser + checks only — no `httpx`, no `uvicorn`, no `fastapi`)
-- Frontend build flag (`VITE_DEMO_MODE=1`) that hides the live-request tab
+- Lambda handler in `deploy/lambda/handler.py` that wraps `api_medic.core` (parser + checks + renderers + live Runner with SSRF guard; excludes `fastapi`, `uvicorn`, and `rich`)
+- Frontend build flag (`VITE_DEMO_MODE=1`) switches the API base to same-origin so CloudFront routes `/api/*` to API Gateway
 - CNAME in `markandrewmarquez.com`'s DNS pointing `api-medic` at the CloudFront distribution
 - GitHub Actions deploy workflow
 - Mobile responsiveness pass (sanity check)
@@ -463,7 +491,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 - DevTools panel UI built from the same React components used in the web UI (the `ReportView` component is reusable as-is)
 - Capture handler using `chrome.devtools.network.onRequestFinished`
 - "Analyze" action that posts the captured request to `https://api-medic.markandrewmarquez.com/api/analyze`
-- CORS configuration on API Gateway to accept extension origin
+- CORS configuration on API Gateway with wildcard `AllowOrigins` (Firefox's per-install extension UUID can't be allowlisted by exact string, and HTTP API CORS only supports exact origins or `*`; safe here because no credentials are accepted and abuse is bounded by the per-route throttle, reserved concurrency, and AWS Budget)
 - Chrome Web Store submission (review takes 1–3 weeks)
 - Firefox Add-ons submission (faster review, same code)
 

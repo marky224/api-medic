@@ -13,15 +13,12 @@ First public release. Three input surfaces (CLI, local web UI, hosted demo) shar
 - Pydantic v2 data model: `Report`, `Finding`, `RequestSummary`, `ResponseSummary`, `TimingBreakdown`, `CapturedRequest`, `CapturedResponse`, `CapturedDns`, `CapturedTls`. `schema_version` bump-tracked.
 - Parser: HAR 1.2 archives and curl command strings normalized to the same `CapturedRequest` shape.
 - Runner: live HTTP execution via `httpx`, with `dnspython` pre-flight DNS probe and a separate `cryptography`-based TLS cert/protocol probe. Captures DNS / TLS / TTFB / total timing, redirect chain, raw headers (preserving duplicate `Set-Cookie`).
-- Check battery — 20+ diagnostic checks across:
-  - **Network** — `dns.no_records`, `dns.address_class`
-  - **TLS** — `tls.expired`, `tls.expiring_soon`, `tls.hostname_mismatch`, `tls.weak_protocol`
-  - **Transport** — `transport.redirect_loop`, `transport.redirect_to_http`, `transport.slow_tls`
-  - **Auth** — `auth.jwt_expired`, `auth.missing_authorization`, `auth.malformed_authorization`, `auth.suspicious_jwt_signature`
-  - **CORS** — `cors.preflight_failed`, `cors.origin_not_allowed`, `cors.credentials_misconfigured`
-  - **Body** — `body.malformed_json`, `body.content_length_mismatch`, `body.encoding_mismatch`
-  - **Rate limit** — `ratelimit.too_many_requests` (with Retry-After context)
-  - **Status** — `status.client_error`, `status.server_error`
+- Check battery — 19 diagnostic checks across:
+  - **Network & transport** (6) — `network.dns.no_records`, `network.dns.slow`, `network.tls.expired`, `network.tls.expiring_soon`, `network.tls.weak_protocol`, `network.tls.cn_mismatch`
+  - **HTTP semantics** (4) — `http.cors.misconfigured`, `http.headers.duplicate`, `http.redirect.loop`, `http.redirect.protocol_downgrade`
+  - **Auth** (4) — `auth.missing`, `auth.jwt.expired`, `auth.jwt.not_yet_valid`, `auth.header.whitespace`
+  - **Body / content** (3) — `body.malformed_json`, `body.content_length_mismatch`, `body.encoding_mismatch`
+  - **Rate limiting** (2) — `rate_limit.hit` (429 with Retry-After context), `rate_limit.approaching` (X-RateLimit-Remaining < 10% of limit)
 - Renderers: terminal (rich), JSON, Markdown, HTML — pluggable via `--output`.
 
 ### Added — CLI

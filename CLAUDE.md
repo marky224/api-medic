@@ -59,4 +59,4 @@ is explicitly post-v1.
 History/share links, comparison mode, OpenAPI validation, OAuth simulation, WebSocket support, plugin system, pre-built binaries, telemetry. Don''t build these unless Mark explicitly asks.
 
 ## Audience
-README and marketing copy frame this as a tool for technical support engineers triaging customer-reported API issues. Tool itself is general-purpose.
+The README and other developer-facing copy (PyPI, GitHub, CLI help) use a developer voice — terse, code-first, written for engineers finding the tool on its own. The TSE framing (technical support engineers triaging customer-reported API issues) lives only in the portfolio article, where it's load-bearing for recruiters reviewing TSE applications. Don't re-inject TSE language into the README. Tool itself is general-purpose.

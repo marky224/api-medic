@@ -1,12 +1,32 @@
 # api-medic
 
-A diagnostic tool for HTTP API issues. Capture or run a request, get a structured report with plain-language findings — DNS, TLS, auth, CORS, rate limiting, body/encoding, redirects, the lot.
+A diagnostic tool for HTTP API issues. Paste a curl, upload a HAR, or fire a live request — get a structured report with plain-language findings across DNS, TLS, redirects, CORS, auth, body, and rate limiting.
 
-Built primarily for technical support engineers triaging customer-reported API issues, but useful for anyone debugging an HTTP integration.
+## Try it now
 
-## Try it now (no install)
+[**api-medic.markandrewmarquez.com**](https://api-medic.markandrewmarquez.com) — no install. The **Demos** tab has eight pre-built scenarios; the **Run** tab fires a live request from the browser (HTTPS-only, SSRF-guarded, throttled); the **HAR** tab takes any HAR export from DevTools.
 
-[**api-medic.markandrewmarquez.com**](https://api-medic.markandrewmarquez.com) — paste a curl command, upload a HAR, or fire a live request from the browser. Live runs are HTTPS-only and throttled; captured-mode (curl/HAR) accepts anything.
+![api-medic Report — JWT-expired diagnosis showing critical findings, evidence, and suggested fix](images/report-hero.png)
+
+![Run tab — request composer for firing a live HTTP request from the browser](images/run-tab.png)
+
+![HAR tab — drag-and-drop area for analyzing a HAR export from browser DevTools](images/har-tab.png)
+
+## What gets checked
+
+19 diagnostic checks across five categories. IDs are stable and namespaced so you can filter, suppress, or reference individual findings without coupling to the human-readable title.
+
+| Category | Checks |
+|---|---|
+| **Network & transport** (6) | `network.dns.no_records`, `network.dns.slow`, `network.tls.expired`, `network.tls.expiring_soon`, `network.tls.weak_protocol`, `network.tls.cn_mismatch` |
+| **HTTP semantics** (4) | `http.cors.misconfigured`, `http.headers.duplicate`, `http.redirect.loop`, `http.redirect.protocol_downgrade` |
+| **Auth** (4) | `auth.missing`, `auth.jwt.expired`, `auth.jwt.not_yet_valid`, `auth.header.whitespace` |
+| **Body / content** (3) | `body.malformed_json`, `body.content_length_mismatch`, `body.encoding_mismatch` |
+| **Rate limiting** (2) | `rate_limit.hit` (429 + Retry-After context), `rate_limit.approaching` (`X-RateLimit-Remaining` < 10% of limit) |
+
+JWT signatures aren't verified — claims are decoded for `exp` / `nbf` checks only. Signature verification needs the issuer's secret/public key, which is out of scope for a client-side diagnostic.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full check spec, evidence shape, and design rationale per check.
 
 ## Install
 
@@ -14,61 +34,71 @@ Built primarily for technical support engineers triaging customer-reported API i
 pip install api-medic
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. The wheel includes the local web UI bundle — no separate frontend install.
 
 ## Quickstart
 
 ```bash
-# Quickest possible diagnosis
+# Bare URL — shorthand for `api-medic run`
 api-medic https://api.example.com/v1/users
 
-# Full request with method + headers + body
+# Full request: method, headers, body
 api-medic run https://api.example.com/v1/users \
     --method POST \
     --header "Authorization: Bearer ..." \
     --header "Content-Type: application/json" \
     --body '{"name": "Alex Doe"}'
 
-# Analyze a curl command without re-running it
-api-medic from-curl 'curl -X POST https://api.example.com/v1/users -H "Authorization: Bearer ..." -d ''{"name": "Alex Doe"}'''
+# Analyze a curl command (defaults to executing it)
+api-medic from-curl 'curl -X GET https://api.example.com/v1/users -H "Authorization: Bearer ..."'
 
-# Analyze a HAR file (export from browser DevTools → Network → Save HAR)
+# Analyze a captured HAR file (no execution)
 api-medic from-har session.har
 
 # Launch the local web UI on http://localhost:8765
 api-medic serve
 ```
 
-Output formats: `--output {terminal,json,markdown,html}`, default terminal.
+Output flags: `--output {terminal,json,markdown,html}` (default `terminal`), `--save <path>`, `--no-color`, `--verbose`.
 
-## What gets checked
+![api-medic CLI terminal output — rich-rendered Report with colored severity badges, timing block, and finding cards showing evidence and suggested fixes](images/report-terminal.png)
 
-Twenty-plus diagnostic checks across:
+## Surfaces
 
-- **Network:** DNS resolution, no records, address-class issues
-- **TLS:** cert expiry, hostname mismatch, expiring soon, weak protocol
-- **Transport:** redirect loops, redirect-to-http, slow TLS handshake
-- **Auth:** JWT expiry, missing/malformed Authorization, suspicious signature
-- **CORS:** preflight failures, origin not allowed, credentials misconfigured
-- **Body:** malformed JSON, Content-Length mismatch, Content-Encoding mismatch
-- **Rate limiting:** 429 with Retry-After surfaced as a finding
-- **Status:** 4xx/5xx routing, server errors with body context
+Four ways to use it, all powered by the same core engine — every surface produces a byte-identical `Report` given the same input.
 
-Every check produces the same `Report` shape — same fields, same JSON schema — whether it ran in the CLI, local web UI, or hosted demo. See [`docs/architecture.md`](docs/architecture.md) for the full check list and data model.
+```
+            ┌────────┐  ┌──────────────┐  ┌─────────────┐  ┌─────────────────┐
+            │  CLI   │  │ Local web UI │  │ Hosted demo │  │ Browser ext     │
+            └───┬────┘  └──────┬───────┘  └──────┬──────┘  └────────┬────────┘
+                │              │                 │                  │
+                ▼              ▼                 ▼                  ▼
+        ┌────────────────────────────────────────────────────────────────┐
+        │                    api_medic.core.engine                       │
+        │   parser  ·  runner (httpx + dnspython + cryptography)  ·      │
+        │   19 checks  ·  renderers (terminal · json · markdown · html)  │
+        └────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+                              Pydantic Report
+```
+
+- **CLI** — `pip install api-medic`, full feature set, four output formats.
+- **Local web UI** — `api-medic serve` runs the same engine behind a browser frontend at `http://localhost:8765`. No outbound calls except to the target you're diagnosing.
+- **Hosted demo** — [api-medic.markandrewmarquez.com](https://api-medic.markandrewmarquez.com). Captured (HAR/curl) and live-run modes. Live runs are HTTPS-only, SSRF-guarded, and throttled (2 req/sec, burst 5). Stateless — no payload is persisted; see [`PRIVACY.md`](PRIVACY.md).
+- **Browser extension** — Chrome / Firefox MV3 DevTools panel that captures requests in-browser and posts them to the hosted analyzer. See [`extension/README.md`](extension/README.md) for source-install instructions.
+
+![api-medic DevTools panel inside a browser, showing a rendered Report with severity badges, evidence, and suggested fix; the DevTools tab strip (Network, Console, api-medic) visible at the top](images/report-extension.png)
 
 ## Architecture
 
-Three input surfaces, one core engine:
+A pure-Python core engine (parser + runner + 19 checks + four renderers) wrapped by four surfaces. The Lambda surface ships the runner alongside an SSRF guard for live requests; FastAPI / uvicorn are excluded so the cold-start budget stays intact even with `httpx`, `dnspython`, and `cryptography` shipped. The browser extension is a thin capture layer — analysis runs server-side on the hosted Lambda, which is why the same `Report` component renders identically in the panel and on the hosted demo.
 
-- **CLI** (`api-medic ...`): full feature set, terminal/JSON/MD/HTML output
-- **Local web UI** (`api-medic serve`): same engine, browser frontend
-- **Hosted demo** (`api-medic.markandrewmarquez.com`): captured + live, SSRF-guarded, throttled
-
-Shared `Report` shape across all three surfaces — a CLI report and a hosted-demo report are byte-identical given the same input.
+See [`docs/architecture.md`](docs/architecture.md) for the full v1 spec, including the Pydantic data model, per-check rationale, and AWS deployment topology.
 
 ## Contributing
 
-Issues and PRs welcome at [github.com/marky224/api-medic](https://github.com/marky224/api-medic). See [`docs/architecture.md`](docs/architecture.md) for the design rationale before proposing larger changes.
+Issues and PRs welcome at [github.com/marky224/api-medic](https://github.com/marky224/api-medic). Quality gates enforced in CI: `pytest`, `ruff check . && ruff format --check .`, `mypy`, and `make types` to keep the TypeScript types in sync with the Pydantic models.
 
 ## License
 
