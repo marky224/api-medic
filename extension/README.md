@@ -12,16 +12,33 @@ directly from the main frontend.
 ```sh
 cd extension
 npm install
-npm run build         # one-shot
+npm run build         # one-shot — produces dist/
 npm run dev           # watch — rebuilds on source change
+npm run package       # zips dist/ into packages/ for both Chrome and Firefox
 ```
 
-Then load `extension/dist/` as an unpacked extension:
+`dist/` contains both `manifest.json` (Chrome) and `manifest.firefox.json`
+(Firefox). For unpacked development load whichever manifest your browser
+expects — see below.
+
+### Load on Chrome / Edge / Brave / other Chromium
 
 1. Open `chrome://extensions`
 2. Toggle **Developer mode** (top right)
 3. Click **Load unpacked**
 4. Select the `extension/dist` directory
+
+### Load on Firefox
+
+Unpacked Firefox loading reads `manifest.json`, which is the Chrome variant
+in `dist/`. Two options:
+
+- **Quick test:** in `dist/`, rename `manifest.json` → `manifest.chrome.json`
+  and `manifest.firefox.json` → `manifest.json`, then load.
+- **Submission-ready:** run `npm run package` and load
+  `packages/api-medic-firefox-X.Y.Z.zip` via `about:debugging` →
+  **This Firefox** → **Load Temporary Add-on…** (selecting the zip works on
+  Firefox 109+; older versions need an unzipped folder).
 
 Open DevTools on any page → look for the **api-medic** panel beside
 **Network**, **Console**, etc. Requests made while DevTools is open are
@@ -29,10 +46,12 @@ captured into the panel; pick one and click **Analyze with api-medic**.
 
 ## Build target
 
-Manifest v3, Chrome ≥ 102. Firefox add-on packaging is handled in a
-follow-up — the same source builds on both because we use only the
-standard `chrome.devtools.*` API surface (which Firefox implements via
-its compatibility shim).
+Manifest v3. Chrome ≥ 102 and Firefox ≥ 115. The same source compiles for
+both because Firefox MV3 aliases the `chrome.*` namespace to `browser.*`,
+so the panel's `chrome.devtools.network.onRequestFinished` listener works
+unchanged. Submission packaging differs — see `scripts/package.mjs`, which
+emits one zip per store with the correct manifest under the canonical
+`manifest.json` name.
 
 ## Architecture
 

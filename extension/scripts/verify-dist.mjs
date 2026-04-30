@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Validates that the extension build produced a loadable Manifest v3 package.
-// Catches Vite/Rollup misconfiguration before the artifact is shipped to the
-// Chrome Web Store. Runs after `vite build` (chained from the build script).
+// Validates that the extension build produced loadable Manifest v3 packages
+// for both Chrome and Firefox. Catches Vite/Rollup misconfiguration and
+// manifest drift before artifacts are shipped to the Web Store / AMO.
+// Runs after `vite build` (chained from the build script).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -13,6 +14,7 @@ const dist = path.join(root, "dist");
 
 const REQUIRED_FILES = [
   "manifest.json",
+  "manifest.firefox.json",
   "devtools.html",
   "panel.html",
   "devtools.js",
@@ -33,40 +35,68 @@ for (const f of REQUIRED_FILES) {
   }
 }
 
-const manifestPath = path.join(dist, "manifest.json");
-if (fs.existsSync(manifestPath)) {
-  let manifest = null;
+const pkg = JSON.parse(
+  fs.readFileSync(path.join(root, "package.json"), "utf8"),
+);
+
+function loadManifest(filename) {
+  const p = path.join(dist, filename);
+  if (!fs.existsSync(p)) return null;
   try {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    return JSON.parse(fs.readFileSync(p, "utf8"));
   } catch (e) {
-    errors.push(`dist/manifest.json is not valid JSON: ${e.message}`);
+    errors.push(`dist/${filename} is not valid JSON: ${e.message}`);
+    return null;
   }
+}
 
-  if (manifest) {
-    if (manifest.manifest_version !== 3) {
-      errors.push(
-        `dist/manifest.json: manifest_version must be 3 (got ${JSON.stringify(manifest.manifest_version)})`,
-      );
-    }
-    if (typeof manifest.devtools_page !== "string" || !manifest.devtools_page) {
-      errors.push("dist/manifest.json: devtools_page must be a non-empty string");
-    }
-    if (
-      !Array.isArray(manifest.host_permissions) ||
-      manifest.host_permissions.length === 0
-    ) {
-      errors.push(
-        "dist/manifest.json: host_permissions must be a non-empty array",
-      );
-    }
-
-    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-    if (manifest.version !== pkg.version) {
-      errors.push(
-        `dist/manifest.json version (${manifest.version}) does not match package.json version (${pkg.version})`,
-      );
-    }
+function checkCommon(manifest, label) {
+  if (manifest.manifest_version !== 3) {
+    errors.push(
+      `${label}: manifest_version must be 3 (got ${JSON.stringify(manifest.manifest_version)})`,
+    );
   }
+  if (typeof manifest.devtools_page !== "string" || !manifest.devtools_page) {
+    errors.push(`${label}: devtools_page must be a non-empty string`);
+  }
+  if (
+    !Array.isArray(manifest.host_permissions) ||
+    manifest.host_permissions.length === 0
+  ) {
+    errors.push(`${label}: host_permissions must be a non-empty array`);
+  }
+  if (manifest.version !== pkg.version) {
+    errors.push(
+      `${label} version (${manifest.version}) does not match package.json version (${pkg.version})`,
+    );
+  }
+}
+
+const chrome = loadManifest("manifest.json");
+if (chrome) checkCommon(chrome, "dist/manifest.json (Chrome)");
+
+const firefox = loadManifest("manifest.firefox.json");
+if (firefox) {
+  checkCommon(firefox, "dist/manifest.firefox.json (Firefox)");
+  const gecko = firefox.browser_specific_settings?.gecko;
+  if (!gecko || typeof gecko.id !== "string" || !gecko.id) {
+    errors.push(
+      "dist/manifest.firefox.json: browser_specific_settings.gecko.id is required for AMO submission",
+    );
+  } else if (
+    !/^[^@\s]+@[^@\s]+$/.test(gecko.id) &&
+    !/^\{[0-9a-fA-F-]{36}\}$/.test(gecko.id)
+  ) {
+    errors.push(
+      `dist/manifest.firefox.json: gecko.id must be email-style (foo@bar) or UUID-in-braces, got "${gecko.id}"`,
+    );
+  }
+}
+
+if (chrome && firefox && chrome.version !== firefox.version) {
+  errors.push(
+    `Chrome and Firefox manifest versions disagree: ${chrome.version} vs ${firefox.version}`,
+  );
 }
 
 if (errors.length > 0) {
@@ -75,4 +105,4 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log("verify-dist: OK");
+console.log("verify-dist: OK (Chrome + Firefox manifests)");

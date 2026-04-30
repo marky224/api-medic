@@ -145,6 +145,18 @@ jobs:
         working-directory: extension
         run: npm run verify-dist
 
+      - name: Package Chrome and Firefox zips
+        working-directory: extension
+        run: npm run package
+
+      - name: Confirm both submission zips exist
+        working-directory: extension
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          test -f "packages/api-medic-chrome-${v}.zip"
+          test -f "packages/api-medic-firefox-${v}.zip"
+
   schema-check:
     name: Verify TypeScript types are in sync with Pydantic schema
     runs-on: ubuntu-latest
