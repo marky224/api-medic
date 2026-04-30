@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- 16px transparent padding around a 96x96 dark-teal square; "am" monogram in monospace, off-white. -->
+  <rect x="16" y="16" width="96" height="96" fill="#0F3F3D"/>
+  <text x="64" y="64"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="52"
+        font-weight="600"
+        fill="#F4F3EE"
+        text-anchor="middle"
+        dominant-baseline="central"
+        letter-spacing="-0.02em">am</text>
+</svg>

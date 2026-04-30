@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 560" width="1400" height="560" preserveAspectRatio="xMidYMid meet">
+  <!-- Solid teal background -->
+  <rect width="1400" height="560" fill="#0F3F3D"/>
+
+  <!-- LEFT: brand block -->
+  <text x="48" y="276"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="92" font-weight="500" fill="#F4F3EE" letter-spacing="-0.01em">api-medic</text>
+
+  <text x="48" y="310"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="18" font-weight="400" fill="#F4F3EE" opacity="0.58" letter-spacing="0.04em">HTTP request diagnostics</text>
+
+  <text x="48" y="346"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="18" font-weight="400" fill="#F4F3EE" opacity="0.58" letter-spacing="0.01em">Diagnose failing requests, fast.</text>
+
+  <!-- RIGHT: diagnostic report card -->
+  <rect x="560" y="60" width="800" height="440" rx="10" fill="#F4F3EE"/>
+
+  <!-- Card header: status dot + title -->
+  <circle cx="598" cy="110" r="5" fill="#2D6B3A"/>
+  <text x="612" y="115"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="16" font-weight="500" fill="#1a2b2a" letter-spacing="0.01em">api-medic &#8212; diagnostic report</text>
+
+  <!-- Header divider -->
+  <line x1="592" y1="132" x2="1328" y2="132" stroke="#D8D6CF" stroke-width="1"/>
+
+  <!-- Request strip -->
+  <rect x="592" y="148" width="736" height="56" rx="6" fill="#EAE8E1"/>
+  <text x="608" y="184"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="18" font-weight="500" fill="#1a2b2a">GET https://api.example.com/v1/users/42</text>
+
+  <!-- 500 status pill within strip -->
+  <rect x="1236" y="158" width="76" height="36" rx="18" fill="#FCEBEB"/>
+  <text x="1274" y="183"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="16" font-weight="600" fill="#A32D2D" text-anchor="middle" letter-spacing="0.02em">500</text>
+
+  <!-- Stats grid: row 1 (Latency / Body) -->
+  <rect x="592" y="216" width="360" height="76" rx="6" fill="#EAE8E1"/>
+  <text x="608" y="242"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="13" font-weight="500" fill="#4a5857" letter-spacing="0.08em">LATENCY</text>
+  <text x="608" y="278"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="22" font-weight="500" fill="#1a2b2a">1.2 s</text>
+
+  <rect x="968" y="216" width="360" height="76" rx="6" fill="#EAE8E1"/>
+  <text x="984" y="242"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="13" font-weight="500" fill="#4a5857" letter-spacing="0.08em">BODY</text>
+  <text x="984" y="278"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="22" font-weight="500" fill="#1a2b2a">0 B</text>
+
+  <!-- Stats grid: row 2 (Protocol / Findings) -->
+  <rect x="592" y="304" width="360" height="76" rx="6" fill="#EAE8E1"/>
+  <text x="608" y="330"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="13" font-weight="500" fill="#4a5857" letter-spacing="0.08em">PROTOCOL</text>
+  <text x="608" y="366"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="22" font-weight="500" fill="#1a2b2a">h2</text>
+
+  <rect x="968" y="304" width="360" height="76" rx="6" fill="#EAE8E1"/>
+  <text x="984" y="330"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="13" font-weight="500" fill="#4a5857" letter-spacing="0.08em">FINDINGS</text>
+  <text x="984" y="366"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="22" font-weight="500" fill="#1a2b2a">3</text>
+
+  <!-- Findings list -->
+  <text x="592" y="414"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="13" font-weight="600" fill="#4a5857" letter-spacing="0.08em">FINDINGS</text>
+
+  <circle cx="598" cy="438" r="4" fill="#A32D2D"/>
+  <text x="612" y="442"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="15" font-weight="400" fill="#1a2b2a">Server returned 500 with empty body</text>
+
+  <circle cx="598" cy="462" r="4" fill="#854F0B"/>
+  <text x="612" y="466"
+        font-family="'JetBrains Mono', 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+        font-size="15" font-weight="400" fill="#1a2b2a">Latency exceeds 1s threshold</text>
+</svg>
