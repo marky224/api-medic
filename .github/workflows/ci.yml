@@ -141,6 +141,10 @@ jobs:
         working-directory: extension
         run: npm run build
 
+      - name: Verify dist artifact
+        working-directory: extension
+        run: npm run verify-dist
+
   schema-check:
     name: Verify TypeScript types are in sync with Pydantic schema
     runs-on: ubuntu-latest
