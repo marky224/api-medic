@@ -49,7 +49,7 @@ First public release. Three input surfaces (CLI, local web UI, hosted demo) shar
 
 ### Added — Demo polish
 
-- Client-side HAR stripping in three tiers (passthrough → strip request/response bodies → first-entry only) so 12 MB browser exports survive API Gateway's 10 MB body cap. UI banner explains what was dropped.
+- Client-side HAR stripping in three tiers (passthrough → strip request/response bodies → first-entry only) so 12 MB browser exports survive API Gateway's 10 MB body cap. When stripping fires, a banner alongside the rendered Report explains what was stripped.
 - `VITE_DEMO_MODE=1` build path uses same-origin API base so CloudFront routes `/api/*` to the Lambda.
 
 ### Added — Quality

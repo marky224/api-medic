@@ -10,7 +10,7 @@ A diagnostic tool for HTTP API issues. Paste a curl, upload a HAR, or fire a liv
 
 ![Run tab — request composer for firing a live HTTP request from the browser](images/run-tab.png)
 
-![HAR tab — drag-and-drop area for analyzing a HAR export from browser DevTools](images/har-tab.png)
+![HAR tab — file picker for analyzing a HAR export from browser DevTools](images/har-tab.png)
 
 ## What gets checked
 
