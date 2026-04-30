@@ -91,6 +91,14 @@ if (firefox) {
       `dist/manifest.firefox.json: gecko.id must be email-style (foo@bar) or UUID-in-braces, got "${gecko.id}"`,
     );
   }
+  // AMO requires data_collection_permissions on all new submissions; without
+  // it the validator hard-fails before a human reviewer ever sees the listing.
+  const dcp = gecko?.data_collection_permissions;
+  if (!dcp || !Array.isArray(dcp.required) || dcp.required.length === 0) {
+    errors.push(
+      "dist/manifest.firefox.json: browser_specific_settings.gecko.data_collection_permissions.required must be a non-empty array (use [\"none\"] if nothing is collected)",
+    );
+  }
 }
 
 if (chrome && firefox && chrome.version !== firefox.version) {
