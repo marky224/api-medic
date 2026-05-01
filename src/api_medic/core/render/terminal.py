@@ -7,6 +7,7 @@ behaves well in pipes and CI logs.
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 from rich.console import Console
@@ -31,8 +32,20 @@ _SEVERITY_LABEL: dict[Severity, str] = {
 
 
 def render_terminal(report: Report, *, color: bool = True, width: int | None = 88) -> str:
-    """Render to a string using a Console with `record=True`."""
-    console = Console(record=True, width=width, no_color=not color, force_terminal=color)
+    """Render to a string using a Console with `record=True`.
+
+    The Console writes into an in-memory buffer rather than the real stdout —
+    callers are responsible for emitting the returned text. Without this, every
+    `console.print(...)` would also land on stdout and the CLI's subsequent
+    `typer.echo(text)` would render the report a second time.
+    """
+    console = Console(
+        record=True,
+        width=width,
+        no_color=not color,
+        force_terminal=color,
+        file=io.StringIO(),
+    )
     console.print(_request_line(report))
     console.print(_metrics_table(report))
     timing = _timing_table(report.timing)

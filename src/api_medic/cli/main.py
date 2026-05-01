@@ -60,18 +60,26 @@ def _rewrite_bare_url(argv: list[str]) -> list[str]:
     return argv
 
 
-def cli_entry() -> None:
-    """Production entry point referenced by pyproject.toml's `api-medic` script."""
-    # On Windows the default console encoding is cp1252, which can't encode
-    # the arrow / em-dash glyphs the renderers use. Reconfigure to UTF-8 so
-    # output round-trips on every platform the architecture commits to
-    # (macOS, Linux, Windows).
+def _force_utf8_streams() -> None:
+    """Reconfigure sys.stdout / sys.stderr to UTF-8 so the renderers' arrow
+    and em-dash glyphs encode on Windows (default cp1252). No-op on streams
+    that don't support reconfigure (test capture, in-memory buffers).
+
+    Called from `cli_entry` AND from the Typer `@app.callback`. Both paths
+    are needed because pip-generated `.exe` launchers built before the
+    `cli_entry` entry point existed call `app()` directly — those installs
+    skip `cli_entry` entirely until reinstalled.
+    """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             with contextlib.suppress(OSError, ValueError):
                 reconfigure(encoding="utf-8")
 
+
+def cli_entry() -> None:
+    """Production entry point referenced by pyproject.toml's `api-medic` script."""
+    _force_utf8_streams()
     argv = _rewrite_bare_url(sys.argv[1:])
     app(argv)
 
@@ -189,7 +197,7 @@ def main(
     Pass a URL as the first argument as a shortcut for `run <URL>` —
     e.g. `api-medic https://api.example.com/health`.
     """
-    pass
+    _force_utf8_streams()
 
 
 # Subcommands --------------------------------------------------------------

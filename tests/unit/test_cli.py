@@ -220,6 +220,96 @@ class TestRunCommand:
         assert "Header must be" in (result.stderr or result.stdout)
 
 
+# --- Stream-encoding regression -------------------------------------------
+
+
+class TestForceUtf8Streams:
+    """Windows defaults stdout to cp1252, which can't encode the arrow / em-dash
+    glyphs the renderers emit. The CLI must reconfigure to UTF-8 regardless of
+    which entry point launched it (cli_entry vs. typer app() directly), since
+    pip-generated `.exe` launchers built before `cli_entry` existed call `app()`
+    directly. Verify reconfigure runs both via the helper and via the callback.
+    """
+
+    def test_helper_reconfigures_streams_with_reconfigure_method(self, monkeypatch):
+
+        captured: list[tuple[str, str]] = []
+
+        class FakeStream:
+            encoding = "cp1252"
+
+            def reconfigure(self, *, encoding: str) -> None:
+                captured.append((id(self).__class__.__name__, encoding))
+                self.encoding = encoding
+
+        fake_out, fake_err = FakeStream(), FakeStream()
+        monkeypatch.setattr(cli_main.sys, "stdout", fake_out)
+        monkeypatch.setattr(cli_main.sys, "stderr", fake_err)
+        cli_main._force_utf8_streams()
+        assert fake_out.encoding == "utf-8"
+        assert fake_err.encoding == "utf-8"
+
+    def test_helper_skips_streams_without_reconfigure(self, monkeypatch):
+        # Streams that don't expose .reconfigure (BytesIO, custom test wrappers)
+        # must be skipped without raising — common in test runners.
+        import io
+
+        monkeypatch.setattr(cli_main.sys, "stdout", io.BytesIO())
+        monkeypatch.setattr(cli_main.sys, "stderr", io.BytesIO())
+        cli_main._force_utf8_streams()  # must not raise
+
+    def test_callback_invokes_force_utf8(self, runner, fake_runner, monkeypatch):
+        # Even when `app()` is called directly (stale .exe entry point that
+        # bypasses `cli_entry`), the callback runs before any subcommand and
+        # must reconfigure the streams.
+        called: list[bool] = []
+        monkeypatch.setattr(cli_main, "_force_utf8_streams", lambda: called.append(True))
+        result = runner.invoke(app, ["run", "https://api.example.com/v1/users", "--output", "json"])
+        assert result.exit_code == 0
+        assert called, "callback did not invoke _force_utf8_streams"
+
+
+# --- Renderer-emission regression -----------------------------------------
+
+
+class TestNoDuplicateRender:
+    """`render_terminal` historically attached its rich Console to sys.stdout
+    while also recording into an export buffer; the CLI then echoed the
+    buffered text, which surfaced the report twice on a single invocation.
+    The Console is now backed by an in-memory file — verify only one emission
+    reaches stdout for the default terminal output and for --save."""
+
+    def test_request_line_appears_once_in_terminal_output(self, runner, fake_runner):
+        result = runner.invoke(
+            app,
+            ["run", "https://api.example.com/v1/users", "--no-color"],
+        )
+        assert result.exit_code == 0, result.stdout + (result.stderr or "")
+        # The request line is emitted by the terminal renderer for every
+        # rendered Report. If the renderer were double-emitting (printing to
+        # stdout AND returning the recorded text to the CLI for typer.echo),
+        # this would be 2 — the symptom users reported as Bug 2.
+        assert result.stdout.count("https://api.example.com/v1/users") == 1
+
+    def test_save_does_not_also_emit_to_stdout(self, runner, fake_runner, tmp_path):
+        out = tmp_path / "report.txt"
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "https://api.example.com/v1/users",
+                "--no-color",
+                "--save",
+                str(out),
+            ],
+        )
+        assert result.exit_code == 0
+        # With --save, the report goes to the file; stdout should not contain
+        # the rendered report. The "Wrote ..." message lands on stderr.
+        assert "https://api.example.com/v1/users" not in result.stdout
+        assert "https://api.example.com/v1/users" in out.read_text(encoding="utf-8")
+
+
 # --- Verbose --------------------------------------------------------------
 
 
