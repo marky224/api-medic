@@ -201,6 +201,42 @@ class TestRedirectChain:
         ]
 
 
+class TestRunnerEngineIntegration:
+    """Exercise the live request path → engine end-to-end with mocked httpx,
+    ensuring the same Report shape (and the same critical findings) the HAR
+    path produces. These are regression tests for the architecture invariant
+    that every surface produces byte-identical Reports for equivalent inputs.
+    """
+
+    def test_redirect_chain_of_ten_fires_too_many_redirects(self):
+        from api_medic.core.engine import analyze
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # /step/N → /step/N-1, terminating at /step/0 with a 200.
+            n = int(str(request.url).rsplit("/", 1)[-1])
+            if n > 0:
+                return httpx.Response(302, headers={"Location": f"/step/{n - 1}"})
+            return httpx.Response(200, content=b"done")
+
+        cap = run(
+            "GET",
+            "https://example.com/step/10",
+            transport=_transport(handler),
+            probe_network=False,
+        )
+        assert cap.redirect_chain is not None
+        assert len(cap.redirect_chain) == 11
+
+        report = analyze(cap)
+        ids = [f.id for f in report.findings]
+        assert "http.redirect.too_many" in ids, (
+            f"expected http.redirect.too_many in {ids}; live runner path "
+            "should produce the same finding the engine fires for HAR fixtures."
+        )
+        finding = next(f for f in report.findings if f.id == "http.redirect.too_many")
+        assert finding.severity == "critical"
+
+
 class TestRawHeaders:
     def test_preserves_duplicate_set_cookie(self):
         def handler(request: httpx.Request) -> httpx.Response:

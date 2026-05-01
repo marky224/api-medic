@@ -1,6 +1,6 @@
 """HTTP-semantic diagnostic checks.
 
-Four checks. Two of them (`headers.duplicate` and the two `redirect.*`)
+Five checks. Three of them (`headers.duplicate` and the three `redirect.*`)
 depend on data that's only populated by the Runner once Phase 3b-F lands;
 they no-op gracefully when the relevant fields are unset, so existing
 HAR/curl sources don't false-positive.
@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 from ..captured import CapturedRequest
 from ..models import Finding
 from . import register
+
+REDIRECT_TOO_MANY_THRESHOLD = 5
 
 
 @register
@@ -140,6 +142,46 @@ def redirect_loop(captured: CapturedRequest) -> Finding | None:
             )
         seen[url] = i
     return None
+
+
+@register
+def redirect_too_many(captured: CapturedRequest) -> Finding | None:
+    """The redirect chain is longer than well-configured APIs need.
+
+    Below `REDIRECT_TOO_MANY_THRESHOLD` redirects, the occasional HTTP→HTTPS
+    or canonical-host hop is normal. At or above it, the server is almost
+    certainly mis-routing — or stuck in a near-loop the cycle detector
+    can't see (e.g. distinct query strings on each hop).
+    """
+    chain = captured.redirect_chain
+    if not chain:
+        return None
+    redirect_count = len(chain) - 1  # the last URL is the final response, not a redirect
+    if redirect_count < REDIRECT_TOO_MANY_THRESHOLD:
+        return None
+    return Finding(
+        id="http.redirect.too_many",
+        severity="critical",
+        title=f"Redirect chain has {redirect_count} hops",
+        explanation=(
+            f"The request was redirected {redirect_count} times before "
+            "reaching a final response. Most well-configured APIs need at "
+            "most one or two hops (HTTP→HTTPS, canonical host). Long chains "
+            "add latency on every call and usually point to a stale rewrite "
+            "rule, an auth flow bouncing between login and callback, or a "
+            "CDN rule that never matches the origin."
+        ),
+        evidence={
+            "redirect_count": redirect_count,
+            "threshold": REDIRECT_TOO_MANY_THRESHOLD,
+            "chain": chain,
+        },
+        suggested_fix=(
+            "Walk the chain in the evidence and find the hop that's "
+            "redirecting unexpectedly. The fix is usually on the server "
+            "(rewrite rule, auth callback, CDN routing) — not in the client."
+        ),
+    )
 
 
 @register

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.checks.http import (
+    REDIRECT_TOO_MANY_THRESHOLD,
     cors_misconfigured,
     headers_duplicate,
     redirect_loop,
     redirect_protocol_downgrade,
+    redirect_too_many,
 )
 from api_medic.core.models import TimingBreakdown
 
@@ -203,6 +205,43 @@ class TestRedirectLoop:
         assert finding.evidence["repeated_url"] == "https://x.com/"
         assert finding.evidence["first_index"] == 0
         assert finding.evidence["second_index"] == 2
+
+
+class TestRedirectTooMany:
+    def test_no_chain_skipped(self):
+        assert redirect_too_many(_cap()) is None
+
+    def test_short_chain_not_flagged(self):
+        # Single HTTP→HTTPS redirect — chain length 2, redirect count 1.
+        cap = _cap(redirect_chain=["http://x.com/", "https://x.com/"])
+        assert redirect_too_many(cap) is None
+
+    def test_below_threshold_not_flagged(self):
+        # One hop below threshold (THRESHOLD-1 redirects).
+        chain = [f"https://x.com/step{i}" for i in range(REDIRECT_TOO_MANY_THRESHOLD)]
+        # chain length = THRESHOLD → redirect count = THRESHOLD - 1
+        assert redirect_too_many(_cap(redirect_chain=chain)) is None
+
+    def test_at_threshold_flagged_critical(self):
+        # Exactly THRESHOLD redirects — chain length = THRESHOLD + 1.
+        chain = [f"https://x.com/step{i}" for i in range(REDIRECT_TOO_MANY_THRESHOLD + 1)]
+        finding = redirect_too_many(_cap(redirect_chain=chain))
+        assert finding is not None
+        assert finding.id == "http.redirect.too_many"
+        assert finding.severity == "critical"
+        assert finding.evidence is not None
+        assert finding.evidence["redirect_count"] == REDIRECT_TOO_MANY_THRESHOLD
+        assert finding.evidence["threshold"] == REDIRECT_TOO_MANY_THRESHOLD
+        assert finding.evidence["chain"] == chain
+
+    def test_well_above_threshold_flagged(self):
+        # The httpbin.org/redirect/10 case — 10 redirects, chain length 11.
+        chain = [f"https://x.com/step{i}" for i in range(11)]
+        finding = redirect_too_many(_cap(redirect_chain=chain))
+        assert finding is not None
+        assert finding.evidence is not None
+        assert finding.evidence["redirect_count"] == 10
+        assert "10 hops" in finding.title
 
 
 class TestRedirectProtocolDowngrade:

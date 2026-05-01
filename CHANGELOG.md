@@ -4,6 +4,17 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-01
+
+### Added
+
+- New diagnostic check `http.redirect.too_many` (critical) — fires when a request's redirect chain has 5 or more hops. Catches misrouted servers and near-loops the cycle detector misses (e.g. distinct query strings on each hop). Brings the check catalog total to 20.
+
+### Fixed
+
+- CLI `run` no longer prints the report twice. The terminal renderer's rich Console was attached to `sys.stdout` while also recording into an export buffer; the CLI then echoed the buffered text. The Console is now backed by an in-memory file so only the CLI's `typer.echo` reaches stdout.
+- CLI now reconfigures `sys.stdout` / `sys.stderr` to UTF-8 from both `cli_entry` and the Typer callback. Pip-generated `.exe` launchers built before the `cli_entry` entry point existed bypass `cli_entry` and would otherwise leave stdout on cp1252, mangling the renderers' arrow / em-dash glyphs on Windows.
+
 ## [1.0.0] - 2026-04-29
 
 First public release. Three input surfaces (CLI, local web UI, hosted demo) sharing one core engine and a single `Report` shape.

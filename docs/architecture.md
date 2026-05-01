@@ -233,9 +233,10 @@ Don't try to implement every possible HTTP check in v1. Pick a focused, high-imp
 - `network.tls.weak_protocol` — negotiated TLS < 1.2
 - `network.tls.cn_mismatch` — cert subject doesn't match requested host
 
-**HTTP semantics (4 checks)**
+**HTTP semantics (5 checks)**
 
 - `http.redirect.loop` — redirect chain has a cycle
+- `http.redirect.too_many` — redirect chain exceeds the threshold (5+ hops)
 - `http.redirect.protocol_downgrade` — HTTPS → HTTP redirect
 - `http.cors.misconfigured` — CORS response headers contradict request origin
 - `http.headers.duplicate` — duplicate or contradictory request/response headers
@@ -258,7 +259,7 @@ Don't try to implement every possible HTTP check in v1. Pick a focused, high-imp
 - `rate_limit.hit` — 429 status code
 - `rate_limit.approaching` — `X-RateLimit-Remaining` is < 10% of limit
 
-That's 19 checks. Each one is a small, testable Python function with a clear input contract and a `Finding | None` output. Adding more checks post-v1 is additive — drop a new function in `core/checks/` and register it.
+That's 20 checks. Each one is a small, testable Python function with a clear input contract and a `Finding | None` output. Adding more checks post-v1 is additive — drop a new function in `core/checks/` and register it.
 
 A separate doc, `docs/checks.md`, should be maintained as the public catalog with one entry per check id explaining what it detects, why it matters, and what to do about it. This doubles as TSE study material — the kind of thing that gets shared.
 

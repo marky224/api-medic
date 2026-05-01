@@ -1,6 +1,6 @@
 [project]
 name = "api-medic"
-version = "1.0.0"
+version = "1.1.0"
 description = "Diagnostic tool for HTTP API issues. Captures or runs a request, runs a battery of checks, produces a structured report with plain-language findings."
 readme = "README.md"
 license = { file = "LICENSE" }
