@@ -4,6 +4,16 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- HAR picker meta line on the hosted demo's HAR tab now surfaces uncompressed file size, capture date (from `log.pages[0].startedDateTime` or the first entry's `startedDateTime`), and unique-host count alongside the existing entry count. Fields are omitted when absent from the parsed HAR.
+- Report action bar: `Re-run` re-fires whichever input produced the current Report (Run-tab composer state, HAR-tab uploaded file, Demos-tab fixture, or extension panel's captured DevTools entry). `Export markdown` copies a markdown rendering of the Report to the clipboard, mirroring the CLI's `--output markdown` format.
+
+### Fixed
+
+- Report action buttons (`Re-run`, `Export markdown`) are now wired up — they previously rendered but did nothing on click. `Share report` is intentionally hidden in v1: it requires persistence, which is out of scope.
+- Lambda `/api/analyze` now returns 400 with a useful `detail` for malformed HAR entries (missing `request.method`, missing `request.url`, non-integer `response.status`, out-of-range status codes) instead of a silent 500. The HAR parser also validates required request fields up front rather than letting `KeyError` escape. This was hitting any browser-extension capture path that produced a partial entry — the panel previously surfaced "Analyze failed: 500 Internal Server Error" with no actionable hint.
+
 ## [1.1.0] - 2026-05-01
 
 ### Added

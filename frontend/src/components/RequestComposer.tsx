@@ -155,7 +155,9 @@ export function RequestComposer() {
           {error}
         </div>
       ) : null}
-      {report ? <ReportView report={report} /> : null}
+      {report ? (
+        <ReportView report={report} onRerun={onRun} rerunBusy={running} />
+      ) : null}
     </div>
   );
 }

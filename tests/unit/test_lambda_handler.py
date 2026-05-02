@@ -96,6 +96,56 @@ class TestAnalyzeHar:
         assert result["statusCode"] == 400
         assert "HAR" in json.loads(result["body"])["detail"]
 
+    def test_missing_request_method_returns_400_not_500(self):
+        """Regression: chrome.devtools.network entries occasionally arrive
+        with no 'method' field on certain Chromium navigation paths. The
+        handler must surface that as an actionable 400 with a useful detail
+        rather than a silent 500."""
+        result = handler.lambda_handler(
+            self._har_event(
+                {
+                    "log": {
+                        "version": "1.2",
+                        "entries": [
+                            {
+                                "request": {"url": "https://x/"},
+                                "response": {"status": 401},
+                            },
+                        ],
+                    },
+                },
+            ),
+            None,
+        )
+        assert result["statusCode"] == 400
+        assert "method" in json.loads(result["body"])["detail"]
+
+    def test_out_of_range_response_status_returns_400(self):
+        """Regression: Pydantic ValidationError from the engine's model
+        construction is a subclass of ValueError and must be caught at the
+        handler layer so the user sees a 400 with detail, not a 500."""
+        result = handler.lambda_handler(
+            self._har_event(
+                {
+                    "log": {
+                        "version": "1.2",
+                        "entries": [
+                            {
+                                "request": {
+                                    "method": "GET",
+                                    "url": "https://x/",
+                                },
+                                "response": {"status": -1},
+                            },
+                        ],
+                    },
+                },
+            ),
+            None,
+        )
+        assert result["statusCode"] == 400
+        assert "status" in json.loads(result["body"])["detail"]
+
 
 class TestAnalyzeCurl:
     def test_valid_curl_returns_report(self):

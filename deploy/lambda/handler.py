@@ -73,6 +73,10 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
         return _err(400, "Body must include 'kind' (one of 'har', 'curl').")
 
     kind = body["kind"]
+    # Catch ValueError (incl. Pydantic ValidationError, which subclasses it)
+    # and KeyError. Either can be raised deep inside parse_har / analyze when
+    # an input field is missing or malformed. Without this the Lambda would
+    # 500 on payloads it could meaningfully reject as 400.
     try:
         if kind == "har":
             har_payload = body.get("har")
@@ -86,10 +90,10 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
             captured = parse_curl(curl)
         else:
             return _err(400, f"Unknown kind: {kind!r} (expected 'har' or 'curl').")
-    except ValueError as e:
+        report = analyze(captured)
+    except (ValueError, KeyError) as e:
         return _err(400, str(e))
 
-    report = analyze(captured)
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},

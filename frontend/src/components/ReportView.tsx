@@ -1,13 +1,55 @@
+import { useEffect, useState } from "react";
 import type { Report } from "../lib/types";
+import { renderMarkdown } from "../lib/markdown";
 import { HeaderBar } from "./report/HeaderBar";
 import { RequestLine } from "./report/RequestLine";
 import { MetricsGrid } from "./report/MetricsGrid";
 import { TimingWaterfall } from "./report/TimingWaterfall";
 import { FindingCard } from "./report/FindingCard";
 
-export function ReportView({ report }: { report: Report }) {
+// Re-run is universally available across surfaces (Run / HAR / Demos / extension).
+// In Demos and HAR contexts it is conceptually a re-render of the same input,
+// but exposing it everywhere keeps the action bar consistent and avoids per-tab
+// component branching. The parent supplies onRerun; if absent the button is
+// hidden (e.g., static rendering tests).
+//
+// Share is intentionally hidden in v1: it requires persistence (storing the
+// Report so a share URL can retrieve it later), and persistence is explicitly
+// cut from v1 per docs/architecture.md. Re-enable when persistence ships.
+export interface ReportViewProps {
+  report: Report;
+  onRerun?: () => void | Promise<void>;
+  rerunBusy?: boolean;
+  rerunLabel?: string;
+}
+
+export function ReportView({
+  report,
+  onRerun,
+  rerunBusy = false,
+  rerunLabel = "Re-run",
+}: ReportViewProps) {
   const findings = report.findings ?? [];
   const hasCritical = findings.some((f) => f.severity === "critical");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+
+  useEffect(() => {
+    if (copyState === "idle") return;
+    const t = setTimeout(() => setCopyState("idle"), 2000);
+    return () => clearTimeout(t);
+  }, [copyState]);
+
+  const onExport = async () => {
+    const md = renderMarkdown(report);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
 
   return (
     <div className="bg-panel rounded-xl p-5">
@@ -43,22 +85,49 @@ export function ReportView({ report }: { report: Report }) {
           )}
         </section>
 
-        {/* Phase 3 wires these to share-by-URL / engine re-run / markdown renderer. */}
-        <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-black/[0.12]">
-          <ActionButton>Share report</ActionButton>
-          <ActionButton>Re-run</ActionButton>
-          <ActionButton>Export markdown</ActionButton>
+        <div className="flex flex-wrap items-center gap-2 mt-5 pt-4 border-t border-black/[0.12]">
+          {onRerun ? (
+            <ActionButton onClick={onRerun} disabled={rerunBusy}>
+              {rerunBusy ? "Re-running…" : rerunLabel}
+            </ActionButton>
+          ) : null}
+          <ActionButton onClick={onExport}>Export markdown</ActionButton>
+          {copyState === "copied" ? (
+            <span
+              role="status"
+              aria-live="polite"
+              className="text-xs text-muted"
+            >
+              Copied to clipboard
+            </span>
+          ) : copyState === "failed" ? (
+            <span
+              role="status"
+              aria-live="polite"
+              className="text-xs text-red-700"
+            >
+              Copy failed
+            </span>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
-function ActionButton({ children }: { children: React.ReactNode }) {
+interface ActionButtonProps {
+  children: React.ReactNode;
+  onClick?: () => void | Promise<void>;
+  disabled?: boolean;
+}
+
+function ActionButton({ children, onClick, disabled }: ActionButtonProps) {
   return (
     <button
       type="button"
-      className="bg-transparent border border-black/25 text-ink text-[13px] px-3 py-1.5 rounded-lg hover:bg-black/[0.04]"
+      onClick={onClick}
+      disabled={disabled}
+      className="bg-transparent border border-black/25 text-ink text-[13px] px-3 py-1.5 rounded-lg hover:bg-black/[0.04] disabled:opacity-50"
     >
       {children}
     </button>

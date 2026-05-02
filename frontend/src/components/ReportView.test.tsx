@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,5 +105,61 @@ describe("ReportView", () => {
     render(<ReportView report={report} />);
     expect(screen.getByText("exp:")).toBeInTheDocument();
     expect(screen.getByText("2026-04-25T11:23:00Z")).toBeInTheDocument();
+  });
+
+  it("does not render a Share button (v1 persistence cut)", () => {
+    const report = loadFixture("02-jwt-expired.json");
+    render(<ReportView report={report} />);
+    expect(screen.queryByRole("button", { name: /share/i })).toBeNull();
+  });
+
+  it("Re-run button invokes onRerun when supplied", () => {
+    const report = loadFixture("02-jwt-expired.json");
+    const onRerun = vi.fn();
+    render(<ReportView report={report} onRerun={onRerun} />);
+    const button = screen.getByRole("button", { name: /^Re-run$/ });
+    fireEvent.click(button);
+    expect(onRerun).toHaveBeenCalledTimes(1);
+  });
+
+  it("Re-run button is hidden when no onRerun handler is provided", () => {
+    const report = loadFixture("02-jwt-expired.json");
+    render(<ReportView report={report} />);
+    expect(screen.queryByRole("button", { name: /Re-run/i })).toBeNull();
+  });
+
+  it("Re-run shows a busy label and is disabled while rerunBusy=true", () => {
+    const report = loadFixture("02-jwt-expired.json");
+    render(<ReportView report={report} onRerun={vi.fn()} rerunBusy />);
+    const button = screen.getByRole("button", { name: /Re-running/ });
+    expect(button).toBeDisabled();
+  });
+
+  it("Export markdown writes non-empty markdown to the clipboard", async () => {
+    const report = loadFixture("02-jwt-expired.json");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<ReportView report={report} />);
+    fireEvent.click(screen.getByRole("button", { name: /Export markdown/ }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    const written = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(written.length).toBeGreaterThan(0);
+    expect(written).toMatch(/# api-medic/);
+    expect(written).toMatch(/Bearer token has expired/);
+    expect(await screen.findByText(/Copied to clipboard/i)).toBeInTheDocument();
+  });
+
+  it("Export markdown surfaces a failure indicator when clipboard write rejects", async () => {
+    const report = loadFixture("01-healthy.json");
+    const writeText = vi.fn().mockRejectedValue(new Error("nope"));
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<ReportView report={report} />);
+    fireEvent.click(screen.getByRole("button", { name: /Export markdown/ }));
+    expect(await screen.findByText(/Copy failed/i)).toBeInTheDocument();
   });
 });
