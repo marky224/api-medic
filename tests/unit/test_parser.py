@@ -284,6 +284,55 @@ class TestParseHar:
         ids = [f.id for f in report.findings]
         assert "auth.missing" in ids
 
+    @pytest.mark.parametrize(
+        "raw_http_version,expected",
+        [
+            ("http/2.0", "HTTP/2"),  # Chromium HAR format
+            ("HTTP/2.0", "HTTP/2"),  # Firefox HAR format
+            ("http/2", "HTTP/2"),
+            ("h2", "HTTP/2"),  # ALPN identifier
+            ("http/1.1", "HTTP/1.1"),
+            ("HTTP/1.1", "HTTP/1.1"),
+            ("http/1.0", "HTTP/1.0"),
+            ("h3", "HTTP/3"),
+            ("http/3.0", "HTTP/3"),
+        ],
+    )
+    def test_normalizes_http_version_to_runner_format(self, raw_http_version, expected):
+        # Browser HARs disagree on httpVersion casing/formatting (Chromium
+        # 'http/2.0', Firefox 'HTTP/2.0', some tools use ALPN 'h2'). httpx's
+        # response.http_version is always 'HTTP/1.1' or 'HTTP/2'. Normalising
+        # on parse keeps Reports visually consistent across surfaces.
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {
+            "status": 200,
+            "headers": [],
+            "httpVersion": raw_http_version,
+        }
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == expected
+
+    def test_unknown_http_version_passes_through(self):
+        # Don't misrepresent values we don't recognise — a surprising display
+        # is better than a wrong one.
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {
+            "status": 200,
+            "headers": [],
+            "httpVersion": "QUIC-v3-experimental",
+        }
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == "QUIC-v3-experimental"
+
+    def test_missing_http_version_defaults_to_http_1_1(self):
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {"status": 200, "headers": []}
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == "HTTP/1.1"
+
 
 class TestParseCurl:
     def test_post_with_data_and_headers(self):
