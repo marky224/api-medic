@@ -448,7 +448,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 - Implement `runner.py` with `httpx` and full timing capture
 - Implement `parser.py` for HAR files and curl commands (use a battle-tested library like `uncurl`, don't write the curl parser from scratch)
-- Implement all 19 checks
+- Implement all 20 checks
 - Implement all four renderers (terminal, JSON, Markdown, HTML)
 - Goal: the engine produces real `Report` objects byte-equivalent in shape to the fixtures
 - FastAPI backend in `api_medic/web/app.py` exposing `/api/run` and `/api/analyze` — these replace the fixture-based data source in the frontend

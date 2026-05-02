@@ -14,12 +14,12 @@ A diagnostic tool for HTTP API issues. Paste a curl, upload a HAR, or fire a liv
 
 ## What gets checked
 
-19 diagnostic checks across five categories. IDs are stable and namespaced so you can filter, suppress, or reference individual findings without coupling to the human-readable title.
+20 diagnostic checks across five categories. IDs are stable and namespaced so you can filter, suppress, or reference individual findings without coupling to the human-readable title.
 
 | Category | Checks |
 |---|---|
 | **Network & transport** (6) | `network.dns.no_records`, `network.dns.slow`, `network.tls.expired`, `network.tls.expiring_soon`, `network.tls.weak_protocol`, `network.tls.cn_mismatch` |
-| **HTTP semantics** (4) | `http.cors.misconfigured`, `http.headers.duplicate`, `http.redirect.loop`, `http.redirect.protocol_downgrade` |
+| **HTTP semantics** (5) | `http.cors.misconfigured`, `http.headers.duplicate`, `http.redirect.loop`, `http.redirect.too_many`, `http.redirect.protocol_downgrade` |
 | **Auth** (4) | `auth.missing`, `auth.jwt.expired`, `auth.jwt.not_yet_valid`, `auth.header.whitespace` |
 | **Body / content** (3) | `body.malformed_json`, `body.content_length_mismatch`, `body.encoding_mismatch` |
 | **Rate limiting** (2) | `rate_limit.hit` (429 + Retry-After context), `rate_limit.approaching` (`X-RateLimit-Remaining` < 10% of limit) |
@@ -76,7 +76,7 @@ Four ways to use it, all powered by the same core engine — every surface produ
         ┌────────────────────────────────────────────────────────────────┐
         │                    api_medic.core.engine                       │
         │   parser  ·  runner (httpx + dnspython + cryptography)  ·      │
-        │   19 checks  ·  renderers (terminal · json · markdown · html)  │
+        │   20 checks  ·  renderers (terminal · json · markdown · html)  │
         └────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -92,7 +92,7 @@ Four ways to use it, all powered by the same core engine — every surface produ
 
 ## Architecture
 
-A pure-Python core engine (parser + runner + 19 checks + four renderers) wrapped by four surfaces. The Lambda surface ships the runner alongside an SSRF guard for live requests; FastAPI / uvicorn are excluded so the cold-start budget stays intact even with `httpx`, `dnspython`, and `cryptography` shipped. The browser extension is a thin capture layer — analysis runs server-side on the hosted Lambda, which is why the same `Report` component renders identically in the panel and on the hosted demo.
+A pure-Python core engine (parser + runner + 20 checks + four renderers) wrapped by four surfaces. The Lambda surface ships the runner alongside an SSRF guard for live requests; FastAPI / uvicorn are excluded so the cold-start budget stays intact even with `httpx`, `dnspython`, and `cryptography` shipped. The browser extension is a thin capture layer — analysis runs server-side on the hosted Lambda, which is why the same `Report` component renders identically in the panel and on the hosted demo.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full v1 spec, including the Pydantic data model, per-check rationale, and AWS deployment topology.
 
