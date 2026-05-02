@@ -19,6 +19,32 @@ import uncurl  # type: ignore[import-untyped]
 from .captured import CapturedRequest, CapturedResponse
 from .models import TimingBreakdown
 
+# HAR `httpVersion` strings vary by browser: Chromium writes 'http/2.0' lowercase
+# with .0, Firefox writes 'HTTP/2.0' uppercase with .0, and some tools use the
+# ALPN identifier 'h2'. httpx's response.http_version is always 'HTTP/1.1' or
+# 'HTTP/2' (uppercase, no .0 on h2). Normalising on parse keeps the rendered
+# Report's Protocol field visually consistent regardless of which surface
+# produced it. Unknown values pass through unchanged (key-missing in this map).
+_HTTP_VERSION_NORMALIZATIONS = {
+    "http/1.0": "HTTP/1.0",
+    "http/1.1": "HTTP/1.1",
+    "http/2": "HTTP/2",
+    "http/2.0": "HTTP/2",
+    "h2": "HTTP/2",
+    "http/3": "HTTP/3",
+    "http/3.0": "HTTP/3",
+    "h3": "HTTP/3",
+}
+
+
+def _normalize_http_version(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return "HTTP/1.1"
+    stripped = raw.strip()
+    if not stripped:
+        return "HTTP/1.1"
+    return _HTTP_VERSION_NORMALIZATIONS.get(stripped.lower(), stripped)
+
 
 def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     """Parse a HAR 1.2 archive's first entry into a CapturedRequest.
@@ -94,7 +120,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
             status_text=str(status_text_raw) if isinstance(status_text_raw, str) else "",
             headers=resp_headers,
             body=resp_body,
-            protocol=str(response_obj.get("httpVersion", "HTTP/1.1")),
+            protocol=_normalize_http_version(response_obj.get("httpVersion")),
         )
 
     timing = _timing_from_har(entry.get("timings") or {})
