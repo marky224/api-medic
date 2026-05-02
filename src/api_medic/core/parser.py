@@ -40,12 +40,33 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     request = entry["request"]
     if not isinstance(request, dict):
         raise ValueError("HAR entry's 'request' must be an object.")
-    method = request.get("method")
-    if not isinstance(method, str) or not method:
-        raise ValueError("HAR entry's request is missing 'method'.")
-    url = request.get("url")
-    if not isinstance(url, str) or not url:
-        raise ValueError("HAR entry's request is missing 'url'.")
+
+    # Best-effort URL extraction so field-error messages can identify which
+    # captured request failed. Real-world HARs have many entries; v1 only
+    # parses entries[0] but the URL is what tells the user *which* request
+    # that was. Degrades to "HAR entry[0]" when url itself is the bad field.
+    maybe_url = request.get("url")
+    label = (
+        f"HAR entry[0] ({maybe_url})"
+        if isinstance(maybe_url, str) and maybe_url
+        else "HAR entry[0]"
+    )
+
+    if "method" not in request:
+        raise ValueError(f"{label}: request.method is missing.")
+    method = request["method"]
+    if not isinstance(method, str):
+        raise ValueError(f"{label}: request.method must be a string, got {type(method).__name__}.")
+    if not method:
+        raise ValueError(f"{label}: request.method is empty.")
+
+    if "url" not in request:
+        raise ValueError("HAR entry[0]: request.url is missing.")
+    url = request["url"]
+    if not isinstance(url, str):
+        raise ValueError(f"HAR entry[0]: request.url must be a string, got {type(url).__name__}.")
+    if not url:
+        raise ValueError("HAR entry[0]: request.url is empty.")
 
     request_headers = _har_headers(request.get("headers"))
     body_text = (request.get("postData") or {}).get("text", "")

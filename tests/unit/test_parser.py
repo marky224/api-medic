@@ -127,13 +127,19 @@ class TestParseHar:
                 ],
             },
         }
-        with pytest.raises(ValueError, match="missing 'method'"):
+        with pytest.raises(ValueError, match=r"request\.method is missing"):
             parse_har(har)
 
     def test_empty_request_method_raises_value_error(self):
         har = _minimal_har()
         har["log"]["entries"][0]["request"]["method"] = ""
-        with pytest.raises(ValueError, match="missing 'method'"):
+        with pytest.raises(ValueError, match=r"request\.method is empty"):
+            parse_har(har)
+
+    def test_wrong_type_request_method_raises_value_error(self):
+        har = _minimal_har()
+        har["log"]["entries"][0]["request"]["method"] = 42
+        with pytest.raises(ValueError, match=r"request\.method must be a string, got int"):
             parse_har(har)
 
     def test_missing_request_url_raises_value_error(self):
@@ -148,7 +154,47 @@ class TestParseHar:
                 ],
             },
         }
-        with pytest.raises(ValueError, match="missing 'url'"):
+        with pytest.raises(ValueError, match=r"request\.url is missing"):
+            parse_har(har)
+
+    def test_empty_request_url_raises_value_error(self):
+        har = _minimal_har()
+        har["log"]["entries"][0]["request"]["url"] = ""
+        with pytest.raises(ValueError, match=r"request\.url is empty"):
+            parse_har(har)
+
+    def test_wrong_type_request_url_raises_value_error(self):
+        har = _minimal_har()
+        har["log"]["entries"][0]["request"]["url"] = ["not", "a", "string"]
+        with pytest.raises(ValueError, match=r"request\.url must be a string, got list"):
+            parse_har(har)
+
+    def test_error_message_includes_entry_url_when_method_invalid(self):
+        # When the URL is parseable but the method is not, the user wants to
+        # know *which* of the (potentially many) HAR entries failed. v1 only
+        # parses entries[0], so the URL is the load-bearing identifier.
+        har = _minimal_har()
+        har["log"]["entries"][0]["request"]["url"] = "https://api.example.com/foo"
+        har["log"]["entries"][0]["request"]["method"] = ""
+        with pytest.raises(
+            ValueError,
+            match=r"HAR entry\[0\] \(https://api\.example\.com/foo\): "
+            r"request\.method is empty",
+        ):
+            parse_har(har)
+
+    def test_error_label_falls_back_when_url_also_missing(self):
+        # Method *and* url both missing: label can't echo a URL, so the
+        # message degrades to "HAR entry[0]:" without a URL parenthetical.
+        har = {
+            "log": {
+                "version": "1.2",
+                "entries": [
+                    {"request": {"headers": []}, "response": {"status": 200}},
+                ],
+            },
+        }
+        with pytest.raises(ValueError, match=r"^HAR entry\[0\]: request\.method is missing"):
             parse_har(har)
 
     def test_non_dict_request_raises_value_error(self):
