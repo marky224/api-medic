@@ -151,6 +151,25 @@ describe("<App />", () => {
     ).toBeInTheDocument();
   });
 
+  it("Re-run on the rendered Report re-fires analyzeHarEntry with the same captured entry", async () => {
+    mockAnalyze.mockResolvedValue(HEALTHY_REPORT);
+    render(<App />);
+    const entry = fireRequest();
+
+    fireEvent.click(screen.getByText(entry.request.url));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Analyze with api-medic/i }),
+    );
+    await screen.findByText(/https:\/\/api\.example\.com\/v1\/health/);
+    expect(mockAnalyze).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-run$/ }));
+    await waitFor(() => {
+      expect(mockAnalyze).toHaveBeenCalledTimes(2);
+    });
+    expect(mockAnalyze.mock.calls[1]?.[0]).toBe(entry);
+  });
+
   it("shows an error banner and no report when analyze fails", async () => {
     mockAnalyze.mockRejectedValue(new Error("Analyze failed: URL is invalid"));
     render(<App />);
@@ -213,6 +232,79 @@ describe("<App />", () => {
     // Report and selection line gone.
     expect(screen.queryByText(/Timing breakdown/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^Selected:/)).not.toBeInTheDocument();
+  });
+
+  it("renders the auth.missing finding for a captured 401 DevTools entry", async () => {
+    // Regression for the reported "extension fails on httpbin/401" symptom.
+    // We feed the panel a DevTools-shaped 401 entry and assert that when
+    // the analyze call returns the contractually correct Report (the same
+    // shape the parser+engine produces server-side, see
+    // tests/unit/test_parser.py::test_chrome_devtools_401_entry_yields_auth_missing),
+    // the panel renders the `auth.missing` finding's title — confirming
+    // the render path doesn't drop the finding.
+    const httpbin401Report: Report = {
+      schema_version: "1.0",
+      source: "extension",
+      timestamp: "2026-05-01T12:00:00Z",
+      request: {
+        method: "GET",
+        url: "https://httpbin.org/status/401",
+        headers: { Accept: "*/*" },
+        body_size_bytes: 0,
+      },
+      response: {
+        status_code: 401,
+        status_text: "UNAUTHORIZED",
+        headers: { "WWW-Authenticate": 'Basic realm="Fake Realm"' },
+        body_size_bytes: 0,
+        protocol: "HTTP/1.1",
+      },
+      timing: { dns_ms: null, connect_ms: null, tls_ms: null, ttfb_ms: 100, download_ms: 50, total_ms: 150 },
+      findings: [
+        {
+          id: "auth.missing",
+          severity: "critical",
+          title: "No Authorization header sent",
+          explanation:
+            "The server returned 401 and the request didn't include an Authorization header.",
+          evidence: { status_code: 401, had_authorization_header: false },
+          suggested_fix: "Add an Authorization header and retry.",
+        },
+      ],
+    };
+    mockAnalyze.mockResolvedValue(httpbin401Report);
+
+    render(<App />);
+    fireRequest({
+      request: {
+        method: "GET",
+        url: "https://httpbin.org/status/401",
+        headers: [{ name: "Accept", value: "*/*" }],
+      } as unknown as chrome.devtools.network.Request["request"],
+      response: {
+        status: 401,
+        statusText: "UNAUTHORIZED",
+        headers: [
+          { name: "WWW-Authenticate", value: 'Basic realm="Fake Realm"' },
+        ],
+        content: { size: 0, mimeType: "text/html" },
+      } as unknown as chrome.devtools.network.Request["response"],
+    });
+
+    fireEvent.click(screen.getByText("https://httpbin.org/status/401"));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Analyze with api-medic/i }),
+    );
+
+    expect(
+      await screen.findByText(/No Authorization header sent/),
+    ).toBeInTheDocument();
+    // And the analyze call received the full DevTools entry (not stripped).
+    const passedEntry = mockAnalyze.mock.calls[0]?.[0] as
+      | chrome.devtools.network.Request
+      | undefined;
+    expect(passedEntry?.request.url).toBe("https://httpbin.org/status/401");
+    expect(passedEntry?.response?.status).toBe(401);
   });
 
   it("caps the captured list at 100 entries", () => {

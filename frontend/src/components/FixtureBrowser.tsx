@@ -21,6 +21,7 @@ export function FixtureBrowser({ fixtures }: FixtureBrowserProps) {
     : (fixtures[0]?.id ?? DEFAULT_FIXTURE);
   const [selected, setSelected] = useState<string>(initial);
   const [state, setState] = useState<LoadState>({ kind: "idle" });
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +41,7 @@ export function FixtureBrowser({ fixtures }: FixtureBrowserProps) {
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+  }, [selected, reloadTick]);
 
   return (
     <div>
@@ -73,7 +74,11 @@ export function FixtureBrowser({ fixtures }: FixtureBrowserProps) {
           {state.message}
         </div>
       ) : (
-        <ReportView report={state.report} />
+        <ReportView
+          report={state.report}
+          onRerun={() => setReloadTick((n) => n + 1)}
+          rerunBusy={false}
+        />
       )}
     </div>
   );

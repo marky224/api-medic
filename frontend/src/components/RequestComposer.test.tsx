@@ -66,6 +66,26 @@ describe("RequestComposer", () => {
     });
   });
 
+  it("Re-run on the rendered Report re-fires /api/run", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        expect(url.endsWith("/api/run")).toBe(true);
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify(jwtReport), { status: 200 });
+      });
+
+    render(<RequestComposer />);
+    fireEvent.click(screen.getByRole("button", { name: /^Run$/ }));
+    await screen.findByText(/Bearer token has expired/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Re-run$/ }));
+    await screen.findByText(/Bearer token has expired/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("shows an error when the API responds non-2xx", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       return new Response(JSON.stringify({ detail: "boom" }), { status: 500 });

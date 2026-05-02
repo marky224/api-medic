@@ -128,7 +128,9 @@ export function App() {
         </div>
       )}
 
-      {report && <ReportView report={report} />}
+      {report && (
+        <ReportView report={report} onRerun={onAnalyze} rerunBusy={loading} />
+      )}
     </div>
   );
 }

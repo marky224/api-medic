@@ -8,6 +8,9 @@ interface HarFileSummary {
   name: string;
   entryCount: number;
   firstUrl: string | null;
+  sizeBytes: number;
+  capturedAt: string | null;
+  uniqueHostCount: number;
 }
 
 function summarizeHar(name: string, raw: string): HarFileSummary {
@@ -20,13 +23,69 @@ function summarizeHar(name: string, raw: string): HarFileSummary {
   ) {
     throw new Error("File is not a HAR archive (missing 'log' property).");
   }
-  const log = (parsed as { log: { entries?: unknown } }).log;
+  const log = (parsed as {
+    log: { entries?: unknown; pages?: unknown };
+  }).log;
   if (!Array.isArray(log.entries)) {
     throw new Error("HAR is missing 'log.entries' array.");
   }
-  const entries = log.entries as Array<{ request?: { url?: string } }>;
+  const entries = log.entries as Array<{
+    request?: { url?: string };
+    startedDateTime?: string;
+  }>;
   const firstUrl = entries[0]?.request?.url ?? null;
-  return { name, entryCount: entries.length, firstUrl };
+  const sizeBytes = new TextEncoder().encode(raw).length;
+
+  let capturedAt: string | null = null;
+  const pages = log.pages;
+  if (Array.isArray(pages)) {
+    const p0 = pages[0] as { startedDateTime?: unknown } | undefined;
+    if (p0 && typeof p0.startedDateTime === "string") {
+      capturedAt = p0.startedDateTime;
+    }
+  }
+  if (!capturedAt && typeof entries[0]?.startedDateTime === "string") {
+    capturedAt = entries[0].startedDateTime;
+  }
+
+  const hosts = new Set<string>();
+  for (const e of entries) {
+    const u = e?.request?.url;
+    if (typeof u === "string") {
+      try {
+        hosts.add(new URL(u).host);
+      } catch {
+        // Malformed URL — skip; the parser will surface its own error
+        // when /api/analyze runs.
+      }
+    }
+  }
+
+  return {
+    name,
+    entryCount: entries.length,
+    firstUrl,
+    sizeBytes,
+    capturedAt,
+    uniqueHostCount: hosts.size,
+  };
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderHarMetaLine(summary: HarFileSummary): string {
+  const parts: string[] = [formatBytes(summary.sizeBytes)];
+  if (summary.capturedAt) parts.push(`captured ${summary.capturedAt}`);
+  if (summary.uniqueHostCount > 0) {
+    parts.push(
+      `${summary.uniqueHostCount} ${summary.uniqueHostCount === 1 ? "host" : "hosts"}`,
+    );
+  }
+  return parts.join(" · ");
 }
 
 function readAsText(file: File): Promise<string> {
@@ -113,6 +172,11 @@ export function HarUpload() {
                     {summary.entryCount === 1 ? "entry" : "entries"}
                     {summary.firstUrl ? ` · first: ${summary.firstUrl}` : ""}
                   </div>
+                  {renderHarMetaLine(summary) ? (
+                    <div className="text-muted text-xs mt-1">
+                      {renderHarMetaLine(summary)}
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="text-sm text-muted">
@@ -146,7 +210,9 @@ export function HarUpload() {
       {strip && strip.action !== "passthrough" ? (
         <StripBanner strip={strip} />
       ) : null}
-      {report ? <ReportView report={report} /> : null}
+      {report ? (
+        <ReportView report={report} onRerun={onAnalyze} rerunBusy={running} />
+      ) : null}
     </div>
   );
 }

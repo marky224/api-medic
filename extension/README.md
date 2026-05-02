@@ -89,11 +89,13 @@ changes.
 
 - The panel only sees requests the browser actually completes.
   Connections the browser refuses at its own layer — expired or
-  untrusted certs, mixed-content blocks, CSP-blocked subresources —
-  never fire `chrome.devtools.network.onRequestFinished`, so they
-  don't appear in the panel and can't be analyzed. For diagnosing
-  those, capture a curl reproduction or paste a HAR into the hosted
-  demo at `https://api-medic.markandrewmarquez.com`.
+  untrusted certs (e.g. `https://expired.badssl.com`), mixed-content
+  blocks, CSP-blocked subresources — never fire
+  `chrome.devtools.network.onRequestFinished`, so they don't appear in
+  the panel and can't be analyzed. For diagnosing those, capture a
+  curl reproduction (`curl -v https://expired.badssl.com`) and run
+  `api-medic from-curl` locally, or paste the failing request into
+  the hosted demo at `https://api-medic.markandrewmarquez.com`.
 - Captures are scoped to the page DevTools is attached to. Background
   tabs, service-worker requests, and requests issued before DevTools
   was opened won't appear.

@@ -38,6 +38,15 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
         raise ValueError("HAR entry is missing 'request'.")
 
     request = entry["request"]
+    if not isinstance(request, dict):
+        raise ValueError("HAR entry's 'request' must be an object.")
+    method = request.get("method")
+    if not isinstance(method, str) or not method:
+        raise ValueError("HAR entry's request is missing 'method'.")
+    url = request.get("url")
+    if not isinstance(url, str) or not url:
+        raise ValueError("HAR entry's request is missing 'url'.")
+
     request_headers = _har_headers(request.get("headers"))
     body_text = (request.get("postData") or {}).get("text", "")
     body = body_text.encode("utf-8") if isinstance(body_text, str) and body_text else b""
@@ -52,9 +61,16 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
             if isinstance(resp_body_text, str) and resp_body_text
             else b""
         )
+        try:
+            status_code = int(response_obj["status"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"HAR entry's response.status is not an integer: {response_obj['status']!r}"
+            ) from e
+        status_text_raw = response_obj.get("statusText")
         captured_response = CapturedResponse(
-            status_code=int(response_obj["status"]),
-            status_text=str(response_obj.get("statusText", "")),
+            status_code=status_code,
+            status_text=str(status_text_raw) if isinstance(status_text_raw, str) else "",
             headers=resp_headers,
             body=resp_body,
             protocol=str(response_obj.get("httpVersion", "HTTP/1.1")),
@@ -63,8 +79,8 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     timing = _timing_from_har(entry.get("timings") or {})
 
     return CapturedRequest(
-        method=str(request["method"]).upper(),
-        url=str(request["url"]),
+        method=method.upper(),
+        url=url,
         headers=request_headers,
         body=body,
         response=captured_response,
