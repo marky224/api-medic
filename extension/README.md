@@ -18,9 +18,10 @@ npm run package         # zips dist/ into packages/ for both Chrome and Firefox
 npm run package-source  # zips reviewable source for AMO (Mozilla) submission
 ```
 
-`dist/` contains both `manifest.json` (Chrome) and `manifest.firefox.json`
-(Firefox). For unpacked development load whichever manifest your browser
-expects — see below.
+`dist/` is gitignored — run `npm install && npm run build` first to
+populate it. The build emits both `manifest.json` (Chrome) and
+`manifest.firefox.json` (Firefox); for unpacked development load
+whichever manifest your browser expects — see below.
 
 ### Load on Chrome / Edge / Brave / other Chromium
 
@@ -83,3 +84,19 @@ existing Lambda. The panel only:
 `frontend/src/lib/types.ts`, which is auto-generated from the Pydantic
 models by `make types` at the repo root. Run that whenever the schema
 changes.
+
+## Limitations
+
+- The panel only sees requests the browser actually completes.
+  Connections the browser refuses at its own layer — expired or
+  untrusted certs, mixed-content blocks, CSP-blocked subresources —
+  never fire `chrome.devtools.network.onRequestFinished`, so they
+  don't appear in the panel and can't be analyzed. For diagnosing
+  those, capture a curl reproduction or paste a HAR into the hosted
+  demo at `https://api-medic.markandrewmarquez.com`.
+- Captures are scoped to the page DevTools is attached to. Background
+  tabs, service-worker requests, and requests issued before DevTools
+  was opened won't appear.
+- All analysis happens server-side on the hosted Lambda. Without
+  network access to `api-medic.markandrewmarquez.com` the panel
+  can capture but not analyze.

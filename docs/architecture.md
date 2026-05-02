@@ -32,7 +32,7 @@ The tool itself is general-purpose. Other audiences — MSP/IT techs in customer
 
 ## Architecture overview
 
-Three input surfaces (with a fourth coming post-launch), one shared core engine:
+Four input surfaces, one shared core engine:
 
 ```mermaid
 flowchart LR
@@ -41,12 +41,12 @@ flowchart LR
     User --> CLI[CLI<br/>api-medic url]
     User --> LocalWeb[Local web UI<br/>api-medic serve]
     User --> Demo[Hosted demo<br/>captured + live]
-    User -.v1.1.-> Ext[Browser extension<br/>DevTools panel]
+    User --> Ext[Browser extension<br/>DevTools panel]
 
     Demo --> CF[CloudFront + S3]
     CF --> APIGW[API Gateway]
     APIGW --> Lambda[Lambda]
-    Ext -.v1.1.-> APIGW
+    Ext --> APIGW
 
     CLI --> Engine{{Core engine}}
     LocalWeb --> Engine
@@ -58,7 +58,7 @@ flowchart LR
     Engine --> Renderers[Renderers: terminal / json / md / html]
 ```
 
-Key invariant: **the core engine produces byte-identical `Report` objects regardless of which surface invoked it,** given the same input. A report from the CLI, the local web UI, the hosted demo, or (eventually) the browser extension is interchangeable.
+Key invariant: **the core engine produces byte-identical `Report` objects regardless of which surface invoked it,** given the same input. A report from the CLI, the local web UI, the hosted demo, or the browser extension is interchangeable.
 
 The Lambda surface uses Parser + Checks + Renderers + the live Runner, with SSRF mitigations on the Runner (block RFC1918, link-local incl. the EC2 metadata service, multicast, loopback; resolve DNS once and re-check the IP before the request). The browser extension is captured-mode-only by design — no privileged network access from a content script.
 
@@ -115,17 +115,18 @@ Both captured (HAR/curl) and live-run inputs are exposed. Architecture:
 
 Lambda cold-start budget: 1.5s for the analyze-only path; the live-run path is allowed up to ~3s on cold start because of `httpx`'s import cost. `FastAPI` and `uvicorn` are still excluded — the Lambda dispatches routes inline via `lambda_handler`. The package now ships `httpx`, `dnspython`, and `cryptography` alongside `pydantic` and `uncurl`.
 
-### Browser extension (post-v1, Phase 7)
+### Browser extension
 
-Chrome/Firefox extension that adds a panel inside DevTools. Uses `chrome.devtools.network.onRequestFinished` to receive every request the user makes while DevTools is open. The user picks a captured request and clicks "Analyze with api-medic." The extension serializes the request to the same payload shape the hosted demo accepts, posts it to the existing `POST /api/analyze` endpoint, and renders the returned `Report` in the panel.
+Chrome/Firefox MV3 extension that adds a panel inside DevTools. Uses `chrome.devtools.network.onRequestFinished` to receive every request the user makes while DevTools is open. The user picks a captured request and clicks "Analyze with api-medic." The extension serializes the request to the same payload shape the hosted demo accepts, posts it to the existing `POST /api/analyze` endpoint, and renders the returned `Report` in the panel.
 
 Notable design choices:
 
 - **DevTools panel only**, not a background `webRequest` extension. The DevTools approach has a much smaller permission ask (no "this extension can read all your network traffic" warning), is opt-in by virtue of the user opening DevTools, and gives access to richer request data than a saved HAR file.
 - **Server-side analysis.** The extension is a thin capture layer; the analysis runs on the same Lambda that the hosted demo uses. No diagnostic logic duplicated in JavaScript.
-- **No new backend.** The extension reuses `POST /api/analyze`. Zero new infrastructure required when it ships.
+- **No new backend.** The extension reuses `POST /api/analyze`. No new infrastructure was added when it shipped.
+- **Fixed surface, not a plugin system.** The extension cannot extend the check catalog or alter the `Report` contract — it captures requests and renders the `Report` the analyzer returns. New checks land in `core/checks/` and reach every surface at once.
 
-This component is deferred to Phase 7 (post-launch) but the v1 architecture is already extension-ready — adding it later costs nothing today.
+Source-install via load-unpacked from `extension/dist/`; Chrome Web Store and Firefox Add-ons submissions are pending review. The `ReportView` React component is imported directly from the main frontend via the `@frontend` Vite alias, so the panel and the hosted demo render identical reports without a duplicate component tree.
 
 ---
 
@@ -342,7 +343,7 @@ api-medic/
 │       ├── Makefile            # SAM BuildMethod=makefile target
 │       ├── requirements.txt    # Lambda runtime deps (httpx, dnspython, cryptography, pydantic)
 │       └── handler.py          # wraps api_medic.core for Lambda (parser + checks + renderers + live Runner)
-├── extension/                  # Phase 7 — browser extension (Vite + React 18, MV3)
+├── extension/                  # Browser extension (Vite + React 18, MV3)
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tailwind.config.js
@@ -413,7 +414,7 @@ The frontend is its own Node project that builds into `src/api_medic/web/fronten
 
 - **PyPI:** `pip install api-medic` — primary install path. Wheel includes the React build.
 - **Hosted demo:** `https://api-medic.markandrewmarquez.com` — captured-mode + live-run (HTTPS only, SSRF-guarded, throttled). No install required.
-- **Browser extension** (Phase 7): Chrome Web Store + Firefox Add-ons.
+- **Browser extension:** Chrome Web Store and Firefox Add-ons (submissions pending review). Source-install via load-unpacked from `extension/dist/` — see `extension/README.md`.
 
 Not in v1: Homebrew formula, pre-built standalone binaries, Docker image. Add later if there's demand.
 
@@ -486,7 +487,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 
 **End-of-phase demo:** The done definition is met. v1 is shipped.
 
-**Phase 7 (post-launch) — Browser extension**
+**Phase 7 — Browser extension (shipped as part of v1)**
 
 - Manifest v3 setup (Chrome) and Firefox-compatible build
 - DevTools panel UI built from the same React components used in the web UI (the `ReportView` component is reusable as-is)
@@ -496,13 +497,13 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 - Chrome Web Store submission (review takes 1–3 weeks)
 - Firefox Add-ons submission (faster review, same code)
 
-**End-of-phase demo:** Open DevTools on any site, click the api-medic panel, pick a request, click Analyze, get a Report.
+**End-of-phase demo:** Open DevTools on any site, click the api-medic panel, pick a request, click Analyze, get a Report. Source install via load-unpacked from `extension/dist/`; store listings are pending review.
 
 ---
 
 ## Out of scope for v1
 
-These are deferred to post-launch (Phase 7+) or later. None of them block the done definition.
+These are out of scope for v1. None of them block the done definition.
 
 - **History / share links.** Requires persistence. Stateless v1 is intentional.
 - **Comparison mode.** "Diff this working request against this broken one." Compelling but adds significant UI surface area.
@@ -524,7 +525,7 @@ These need answers during the build but don't change the architecture. Most are 
 3. Default user-agent string for live requests: `api-medic/1.0 (+https://api-medic.markandrewmarquez.com)` is conventional and lets servers identify the tool.
 4. Test endpoints for CI integration tests: `httpbin.org` and `postman-echo.com` are conventional but neither is bulletproof. Consider hosting a minimal test server in the `deploy/` stack.
 5. Telemetry: should the tool collect anonymized usage data? Default answer: no. Opt-in only, ever, and only post-v1 if you decide it's worth the trust cost.
-6. Browser extension distribution accounts: register Chrome Web Store developer ($5 one-time) and Firefox Add-ons accounts before Phase 7 — review timelines benefit from accounts being established early.
+6. Browser extension distribution accounts: **Done.** Chrome Web Store and Firefox Add-ons developer accounts were registered ahead of Phase 7; the Chrome and Firefox extension submissions are pending review.
 
 ---
 

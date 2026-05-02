@@ -10,13 +10,14 @@ This is api-medic, an open-source HTTP API troubleshooting tool. Mark Marquez di
 ## Status
 v1 is shipped. All seven phases in `docs/architecture.md` are complete:
 data model, fixtures, web UI, core engine, CLI, hosted demo on AWS,
-Phase 6 polish. The hosted demo at `https://api-medic.markandrewmarquez.com`
-exposes Demos / Run / HAR tabs and the Lambda runs both captured-mode
-and live requests (SSRF-guarded, throttled).
+Phase 6 polish, and Phase 7 browser extension. The hosted demo at
+`https://api-medic.markandrewmarquez.com` exposes Demos / Run / HAR
+tabs and the Lambda runs both captured-mode and live requests
+(SSRF-guarded, throttled). The Chrome/Firefox MV3 extension installs
+via load-unpacked from `extension/dist/`; Chrome Web Store and AMO
+submissions are pending review.
 
 Default work mode is now polish, bug fixes, and post-launch items.
-Phase 7 (browser extension) is the only remaining planned phase and
-is explicitly post-v1.
 
 ## Working style
 - Default to producing actual code, not pseudocode.
