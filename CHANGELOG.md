@@ -4,6 +4,8 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-02
+
 ### Added
 
 - HAR picker meta line on the hosted demo's HAR tab now surfaces uncompressed file size, capture date (from `log.pages[0].startedDateTime` or the first entry's `startedDateTime`), and unique-host count alongside the existing entry count. Fields are omitted when absent from the parsed HAR.
