@@ -333,6 +333,43 @@ class TestParseHar:
         assert cap.response is not None
         assert cap.response.protocol == "HTTP/1.1"
 
+    def test_whitespace_only_http_version_defaults_to_http_1_1(self):
+        # Whitespace-only is treated like empty rather than passed through —
+        # otherwise the Report would render leaky whitespace in the Protocol cell.
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {
+            "status": 200,
+            "headers": [],
+            "httpVersion": "   ",
+        }
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == "HTTP/1.1"
+
+    def test_normalizes_recognized_http_version_with_trailing_whitespace(self):
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {
+            "status": 200,
+            "headers": [],
+            "httpVersion": "  http/2.0  ",
+        }
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == "HTTP/2"
+
+    def test_unknown_http_version_pass_through_strips_whitespace(self):
+        # Unknown values pass through, but stripped — leaking surrounding
+        # whitespace into the Protocol display would be cosmetically broken.
+        har = _minimal_har()
+        har["log"]["entries"][0]["response"] = {
+            "status": 200,
+            "headers": [],
+            "httpVersion": "  QUIC-experimental  ",
+        }
+        cap = parse_har(har)
+        assert cap.response is not None
+        assert cap.response.protocol == "QUIC-experimental"
+
 
 class TestParseCurl:
     def test_post_with_data_and_headers(self):

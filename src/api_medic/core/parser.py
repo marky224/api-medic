@@ -38,9 +38,12 @@ _HTTP_VERSION_NORMALIZATIONS = {
 
 
 def _normalize_http_version(raw: Any) -> str:
-    if not isinstance(raw, str) or not raw:
+    if not isinstance(raw, str):
         return "HTTP/1.1"
-    return _HTTP_VERSION_NORMALIZATIONS.get(raw.strip().lower(), raw)
+    stripped = raw.strip()
+    if not stripped:
+        return "HTTP/1.1"
+    return _HTTP_VERSION_NORMALIZATIONS.get(stripped.lower(), stripped)
 
 
 def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
