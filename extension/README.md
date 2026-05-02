@@ -102,3 +102,14 @@ changes.
 - All analysis happens server-side on the hosted Lambda. Without
   network access to `api-medic.markandrewmarquez.com` the panel
   can capture but not analyze.
+- The **api-medic** tab is missing on some pages. Two causes, neither
+  fixable in the extension:
+  - Chrome blocks every extension's `devtools_page` from loading on
+    `chrome://*`, `chrome-extension://*`, `chrome-untrusted://*`, and
+    the Chrome Web Store. Same restriction hits React DevTools, Redux
+    DevTools, etc. See the
+    [Chromium Extensions Security FAQ](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md).
+  - Upstream Chrome bug since v99: devtools extensions occasionally
+    fail to load on regular sites depending on whether DevTools opened
+    before or after the page finished loading. Workaround: open
+    DevTools first, then reload the page.
