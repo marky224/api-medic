@@ -13,6 +13,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 - Report action buttons (`Re-run`, `Export markdown`) are now wired up — they previously rendered but did nothing on click. `Share report` is intentionally hidden in v1: it requires persistence, which is out of scope.
 - Lambda `/api/analyze` now returns 400 with a useful `detail` for malformed HAR entries (missing `request.method`, missing `request.url`, non-integer `response.status`, out-of-range status codes) instead of a silent 500. The HAR parser also validates required request fields up front rather than letting `KeyError` escape. This was hitting any browser-extension capture path that produced a partial entry — the panel previously surfaced "Analyze failed: 500 Internal Server Error" with no actionable hint.
+- HAR parser error messages for `request.method` / `request.url` now distinguish *missing key*, *wrong type*, and *empty string* (previously all three collapsed into one "missing" message), and prefix the failure with `HAR entry[0] (<url>):` when the entry's URL is parseable. With multi-entry HARs the URL is what tells the user which captured request actually failed; the label degrades to `HAR entry[0]:` when the URL itself is the bad field.
 
 ## [1.1.0] - 2026-05-01
 
