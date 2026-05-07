@@ -41,6 +41,9 @@ coverage.xml
 .idea/
 .vscode/
 .claude/
+.cursor/
+.aider*
+CLAUDE.md
 *.swp
 *.swo
 .DS_Store
