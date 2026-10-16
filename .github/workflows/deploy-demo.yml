@@ -22,7 +22,7 @@ jobs:
       AWS_REGION: us-east-1
       STACK_NAME: api-medic-demo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
