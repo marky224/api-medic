@@ -141,3 +141,16 @@ def test_dns_failure_surfaces_as_unsafe_url_error(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fail)
     with pytest.raises(UnsafeURLError, match="DNS resolution failed"):
         check_url_safe("https://does-not-exist.example/")
+
+
+def test_unencodable_hostname_surfaces_as_unsafe_url_error(monkeypatch):
+    """getaddrinfo IDNA-encodes the name first and raises UnicodeError (not
+    gaierror) for labels it can't encode, e.g. one over 63 characters."""
+    import socket
+
+    def fail(*a, **kw):
+        raise UnicodeError("label empty or too long")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    with pytest.raises(UnsafeURLError, match="DNS resolution failed"):
+        check_url_safe("https://" + "a" * 64 + ".example/")
