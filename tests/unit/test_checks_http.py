@@ -243,6 +243,32 @@ class TestRedirectTooMany:
         assert finding.evidence["redirect_count"] == 10
         assert "10 hops" in finding.title
 
+    def test_reached_final_response_keeps_default_wording(self):
+        chain = [f"https://x.com/step{i}" for i in range(6)]
+        finding = redirect_too_many(_cap(response=_resp(200), redirect_chain=chain))
+        assert finding is not None
+        assert finding.title == "Redirect chain has 5 hops"
+        assert "before reaching a final response" in finding.explanation
+        assert finding.evidence is not None
+        assert "stopped" not in finding.evidence
+
+    def test_chain_stopped_on_a_redirect_says_so(self):
+        # A runner that caps hops (the hosted demo's live run) returns the
+        # last redirect unfollowed; the finding must not claim a final
+        # response was reached.
+        chain = [f"https://x.com/step{i}" for i in range(6)]
+        last = _resp(302, headers={"Location": "/step6"})
+        finding = redirect_too_many(_cap(response=last, redirect_chain=chain))
+        assert finding is not None
+        assert finding.title == "Redirect chain stopped after 5 hops"
+        assert "before reaching a final response" not in finding.explanation
+        assert "https://x.com/step6" in finding.explanation
+        assert finding.evidence is not None
+        assert finding.evidence["stopped"] is True
+        assert finding.evidence["unfollowed_location"] == "https://x.com/step6"
+        assert finding.evidence["redirect_count"] == 5
+        assert finding.evidence["chain"] == chain
+
 
 class TestRedirectProtocolDowngrade:
     def test_empty_chain_skipped(self):
