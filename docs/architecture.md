@@ -141,28 +141,32 @@ from pydantic import BaseModel
 
 Severity = Literal["info", "warning", "critical"]
 
+
 class Finding(BaseModel):
-    id: str                    # stable check id, e.g. "auth.jwt.expired"
+    id: str  # stable check id, e.g. "auth.jwt.expired"
     severity: Severity
-    title: str                 # plain-language headline
-    explanation: str           # plain-language body
-    evidence: dict | None      # structured raw data for the technical reader
+    title: str  # plain-language headline
+    explanation: str  # plain-language body
+    evidence: dict | None  # structured raw data for the technical reader
     suggested_fix: str | None
 
+
 class TimingBreakdown(BaseModel):
-    dns_ms: float | None       # null for captured-mode where timing wasn't recorded
+    dns_ms: float | None  # null for captured-mode where timing wasn't recorded
     connect_ms: float | None
     tls_ms: float | None
     ttfb_ms: float | None
     download_ms: float | None
     total_ms: float | None
 
+
 class RequestSummary(BaseModel):
     method: str
     url: str
     headers: dict[str, str]
     body_size_bytes: int
-    body_preview: str | None   # first ~500 chars, or null if binary
+    body_preview: str | None  # first ~500 chars, or null if binary
+
 
 class ResponseSummary(BaseModel):
     status_code: int
@@ -170,11 +174,12 @@ class ResponseSummary(BaseModel):
     headers: dict[str, str]
     body_size_bytes: int
     body_preview: str | None
-    protocol: str              # "HTTP/1.1", "HTTP/2", etc.
+    protocol: str  # "HTTP/1.1", "HTTP/2", etc.
+
 
 class Report(BaseModel):
-    id: str                    # uuid4
-    schema_version: str        # "1.0"
+    id: str  # uuid4
+    schema_version: str  # "1.0"
     timestamp: datetime
     source: Literal["live", "har", "curl", "raw", "extension"]
     request: RequestSummary
