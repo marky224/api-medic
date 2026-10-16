@@ -221,20 +221,28 @@ class TestRouting:
 
 Routes = Callable[[httpx.Request], httpx.Response]
 
+# Names (as the resolver sees them, after socket's IDNA 2003 encoding) that
+# resolve to a private address in TestRunUrlGuard; everything else is public.
+_PRIVATE_NAMES = {"internal.example.com", "xn--x-qfa.example"}
 
-class TestRunRedirectGuard:
-    """/api/run must vet every redirect hop with the SSRF guard before it is
+
+class TestRunUrlGuard:
+    """/api/run must vet every URL it fetches with the SSRF guard: the
+    submitted URL as httpx will send it, and each redirect hop before it is
     fetched. MockTransport stands in for the network and records what was
-    actually requested; getaddrinfo is stubbed so hostnames resolve to a
-    public address and the guard's DNS step stays offline."""
+    actually requested; getaddrinfo is stubbed so the guard's DNS step
+    stays offline."""
 
     @pytest.fixture(autouse=True)
-    def _public_dns(self, monkeypatch):
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
-        )
+    def _stub_dns(self, monkeypatch):
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            # The real call IDNA-encodes str hosts first (and raises
+            # UnicodeError for labels it can't encode); mirror that.
+            name = host.encode("idna").decode("ascii")
+            ip = "10.0.0.5" if name in _PRIVATE_NAMES else "93.184.216.34"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
 
     def _post_run(
         self, monkeypatch: pytest.MonkeyPatch, url: str, routes: Routes
@@ -290,15 +298,60 @@ class TestRunRedirectGuard:
         assert "Only https" in detail
         assert fetched == ["https://api.example.com/start"]
 
-    def test_redirect_to_cgnat_address_is_blocked(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "https://127.0.0.1/",  # loopback, https
+            "https://169.254.169.254/latest/meta-data/",  # EC2 metadata
+            "https://[::1]/",  # IPv6 loopback
+            "https://100.64.0.1/",  # CGNAT
+            "https://internal.example.com/",  # hostname resolving to 10.0.0.5
+            "https://" + "a" * 64 + ".example/",  # label getaddrinfo can't encode
+        ],
+    )
+    def test_https_hop_to_unsafe_target_is_blocked(self, monkeypatch, location):
         result, fetched, _ = self._post_run(
-            monkeypatch,
-            "https://api.example.com/start",
-            self._redirect_to("https://100.64.0.1/"),
+            monkeypatch, "https://api.example.com/start", self._redirect_to(location)
         )
         assert result["statusCode"] == 400
-        assert "100.64.0.1" in json.loads(result["body"])["detail"]
+        assert location in json.loads(result["body"])["detail"]
         assert fetched == ["https://api.example.com/start"]
+
+    def test_idna_hostname_is_checked_as_httpx_sends_it(self, monkeypatch):
+        """socket encodes 'xß' with IDNA 2003 ('xss'); httpx sends IDNA 2008
+        ('xn--x-qfa'). The guard must vet the name httpx connects to."""
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://xß.example/start", lambda r: httpx.Response(200)
+        )
+        assert result["statusCode"] == 400
+        assert "10.0.0.5" in json.loads(result["body"])["detail"]
+        assert fetched == []
+
+    def test_url_httpx_rejects_returns_400(self, monkeypatch):
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://api.example.com:abc/", lambda r: httpx.Response(200)
+        )
+        assert result["statusCode"] == 400
+        assert "Invalid URL" in json.loads(result["body"])["detail"]
+        assert fetched == []
+
+    def test_hop_userinfo_is_not_turned_into_basic_auth(self, monkeypatch):
+        """httpx's auto-follow ignores user:pass@ in a Location; a hand-
+        followed hop must not turn it into an Authorization header either."""
+        seen: dict[str, str | None] = {}
+
+        def routes(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/start":
+                return httpx.Response(
+                    302, headers={"Location": "https://user:secret@api.example.com/next"}
+                )
+            seen["authorization"] = request.headers.get("Authorization")
+            return httpx.Response(200)
+
+        result, fetched, _ = self._post_run(monkeypatch, "https://api.example.com/start", routes)
+        assert result["statusCode"] == 200
+        assert len(fetched) == 2
+        assert seen["authorization"] is None
 
     def test_chain_longer_than_five_hops_stops_after_five(self, monkeypatch):
         def routes(request: httpx.Request) -> httpx.Response:
@@ -319,6 +372,11 @@ class TestRunRedirectGuard:
         too_many = next(f for f in report["findings"] if f["id"] == "http.redirect.too_many")
         assert too_many["evidence"]["redirect_count"] == 5
         assert too_many["evidence"]["chain"] == fetched
+        # The Report must not claim a final response was reached.
+        assert too_many["title"] == "Redirect chain stopped after 5 hops"
+        assert "before reaching a final response" not in too_many["explanation"]
+        assert too_many["evidence"]["stopped"] is True
+        assert too_many["evidence"]["unfollowed_location"] == "https://api.example.com/step/1"
 
     @pytest.mark.parametrize("hops", [1, 5])
     def test_https_redirects_produce_same_report_as_unguarded_runner(self, monkeypatch, hops):

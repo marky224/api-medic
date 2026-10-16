@@ -7,8 +7,9 @@ Routes:
 
 The /api/run path goes through `core.runner_safety` first to block
 SSRF (non-https, RFC1918, link-local incl. EC2 metadata, multicast,
-loopback, any other non-global address). Redirects are followed by hand
-and every hop's target goes through the same guard before it is fetched.
+loopback, any other non-global address), on the URL both as given and
+as httpx will send it. Redirects are followed by hand and every hop's
+target goes through the same guard before it is fetched.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -31,6 +32,8 @@ from __future__ import annotations
 import base64
 import json
 from typing import Any
+
+import httpx
 
 from api_medic.core.engine import analyze
 from api_medic.core.parser import parse_curl, parse_har
@@ -128,10 +131,17 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
     ):
         return _err(400, "'headers' must be a dict[str, str].")
 
+    # Vet the URL in both forms that get connected to: as given (the TLS
+    # probe connects by this hostname through the socket module, IDNA 2003)
+    # and as httpx will send it (IDNA 2008). Some names differ between the
+    # two, e.g. "xß" is "xss" to one and "xn--x-qfa" to the other.
     try:
         check_url_safe(url)
+        check_url_safe(str(httpx.URL(url)))
     except UnsafeURLError as e:
         return _err(400, str(e))
+    except httpx.InvalidURL as e:
+        return _err(400, f"Invalid URL: {e}")
 
     try:
         captured = run_request(

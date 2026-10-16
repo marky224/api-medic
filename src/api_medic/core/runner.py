@@ -167,13 +167,16 @@ def _follow_guarded_redirects(
     each hop is sent exactly as auto-follow would send it. `history` is set
     the way auto-follow sets it, so `_build_redirect_chain` sees the same
     chain.
+
+    `auth=httpx.Auth()` (a no-op) matters: by default `send()` turns
+    user:pass@ in the hop URL into Basic auth, which auto-follow never does.
     """
     history: list[httpx.Response] = []
     while response.next_request is not None and len(history) < MAX_GUARDED_REDIRECTS:
         next_request = response.next_request
         url_guard(str(next_request.url))
         history.append(response)
-        response = client.send(next_request)
+        response = client.send(next_request, auth=httpx.Auth())
     response.history = history
     return response
 
