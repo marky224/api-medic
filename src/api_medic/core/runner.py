@@ -18,6 +18,7 @@ from __future__ import annotations
 import socket
 import ssl
 import time
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 import dns.exception
@@ -32,6 +33,11 @@ from .models import TimingBreakdown
 DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
+
+# Redirect cap when `url_guard` is set (the hosted-demo path). A chain
+# that hits the cap still trips `http.redirect.too_many`, whose threshold
+# is also 5.
+MAX_GUARDED_REDIRECTS = 5
 
 # Encodings httpx transparently decompresses on response.content. Used to
 # decide when to drop Content-Encoding from the captured headers so checks
@@ -49,12 +55,20 @@ def run(
     follow_redirects: bool = True,
     transport: httpx.BaseTransport | None = None,
     probe_network: bool = True,
+    url_guard: Callable[[str], object] | None = None,
 ) -> CapturedRequest:
     """Execute an HTTP request and capture the result.
 
     `transport` is for tests (pass an `httpx.MockTransport`); not used in
     production. `probe_network=False` skips DNS + TLS pre-flight probes —
     unit tests pass it to stay offline; production leaves it on.
+
+    `url_guard` is for the public Lambda. When set, redirects are followed
+    by hand instead of by httpx: each hop's target is passed to the guard
+    before it is fetched, and whatever the guard raises propagates to the
+    caller. At most MAX_GUARDED_REDIRECTS hops are followed; past that the
+    last redirect response is returned unfollowed. The caller is still
+    responsible for vetting the initial URL.
 
     Network failures (DNS, connection refused, timeout) produce a
     CapturedRequest with `response=None`. Diagnostic checks that need a
@@ -89,7 +103,7 @@ def run(
     try:
         with httpx.Client(
             timeout=timeout,
-            follow_redirects=follow_redirects,
+            follow_redirects=follow_redirects and url_guard is None,
             transport=transport,
         ) as client:
             response = client.request(
@@ -98,6 +112,8 @@ def run(
                 headers=request_headers,
                 content=body_bytes if body_bytes else None,
             )
+            if follow_redirects and url_guard is not None:
+                response = _follow_guarded_redirects(client, response, url_guard)
     except httpx.HTTPError:
         response = None
     total_ms = (time.monotonic() - start) * 1000.0
@@ -137,6 +153,32 @@ def run(
         tls=captured_tls,
         source="live",
     )
+
+
+def _follow_guarded_redirects(
+    client: httpx.Client,
+    response: httpx.Response,
+    url_guard: Callable[[str], object],
+) -> httpx.Response:
+    """Follow redirects one hop at a time, guarding each target first.
+
+    With follow_redirects off, httpx still builds the next request (method
+    rewrite, header stripping, cookies) and parks it on `next_request`, so
+    each hop is sent exactly as auto-follow would send it. `history` is set
+    the way auto-follow sets it, so `_build_redirect_chain` sees the same
+    chain.
+
+    `auth=httpx.Auth()` (a no-op) matters: by default `send()` turns
+    user:pass@ in the hop URL into Basic auth, which auto-follow never does.
+    """
+    history: list[httpx.Response] = []
+    while response.next_request is not None and len(history) < MAX_GUARDED_REDIRECTS:
+        next_request = response.next_request
+        url_guard(str(next_request.url))
+        history.append(response)
+        response = client.send(next_request, auth=httpx.Auth())
+    response.history = history
+    return response
 
 
 def _resolve_dns(

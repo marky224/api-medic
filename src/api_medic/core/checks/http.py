@@ -9,7 +9,7 @@ HAR/curl sources don't false-positive.
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from ..captured import CapturedRequest
 from ..models import Finding
@@ -159,23 +159,40 @@ def redirect_too_many(captured: CapturedRequest) -> Finding | None:
     redirect_count = len(chain) - 1  # the last URL is the final response, not a redirect
     if redirect_count < REDIRECT_TOO_MANY_THRESHOLD:
         return None
+    evidence: dict[str, Any] = {
+        "redirect_count": redirect_count,
+        "threshold": REDIRECT_TOO_MANY_THRESHOLD,
+        "chain": chain,
+    }
+    unfollowed = _unfollowed_redirect(captured, chain[-1])
+    if unfollowed is None:
+        title = f"Redirect chain has {redirect_count} hops"
+        lead = (
+            f"The request was redirected {redirect_count} times before reaching a final response."
+        )
+    else:
+        # A hop-capped runner (the hosted demo's live run) hands back the
+        # last redirect unfollowed, so no final response was reached.
+        title = f"Redirect chain stopped after {redirect_count} hops"
+        lead = (
+            f"The request was redirected {redirect_count} times and the last "
+            f"response was still a redirect, to {unfollowed}. Following "
+            "stopped at the hop limit, so the full chain is longer than shown."
+        )
+        evidence["stopped"] = True
+        evidence["unfollowed_location"] = unfollowed
     return Finding(
         id="http.redirect.too_many",
         severity="critical",
-        title=f"Redirect chain has {redirect_count} hops",
+        title=title,
         explanation=(
-            f"The request was redirected {redirect_count} times before "
-            "reaching a final response. Most well-configured APIs need at "
+            f"{lead} Most well-configured APIs need at "
             "most one or two hops (HTTP→HTTPS, canonical host). Long chains "
             "add latency on every call and usually point to a stale rewrite "
             "rule, an auth flow bouncing between login and callback, or a "
             "CDN rule that never matches the origin."
         ),
-        evidence={
-            "redirect_count": redirect_count,
-            "threshold": REDIRECT_TOO_MANY_THRESHOLD,
-            "chain": chain,
-        },
+        evidence=evidence,
         suggested_fix=(
             "Walk the chain in the evidence and find the hop that's "
             "redirecting unexpectedly. The fix is usually on the server "
@@ -215,6 +232,21 @@ def redirect_protocol_downgrade(captured: CapturedRequest) -> Finding | None:
                 ),
             )
     return None
+
+
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _unfollowed_redirect(captured: CapturedRequest, final_url: str) -> str | None:
+    """Absolute target of a final response that is itself a redirect, i.e.
+    one the runner returned without following. None otherwise."""
+    response = captured.response
+    if response is None or response.status_code not in _REDIRECT_STATUSES:
+        return None
+    location = _find(response.headers, "Location")
+    if not location:
+        return None
+    return urljoin(final_url, location)
 
 
 def _find(headers: dict[str, str], name: str) -> str | None:

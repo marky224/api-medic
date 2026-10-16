@@ -11,12 +11,13 @@ public surfaces, and restricting them would block legitimate
 localhost-debugging.
 
 Note on TOCTOU: the resolved IPs are returned for diagnostic logging,
-not used to pin httpx's connection. The window between resolve-and-check
-and httpx's own DNS resolution is small (microseconds); the typical SSRF
-attack here is "user submits a URL pointing at an internal target," not
-DNS rebinding. Closing the TOCTOU gap fully would require a custom
-httpcore transport — out of scope for v1, tracked in the architecture
-doc as a hardening item.
+not used to pin any connection. httpx resolves the name again when it
+connects, and so does the runner's pre-flight TLS probe. Between this
+check and httpx's connection the runner also runs its DNS and TLS
+probes, each with multi-second timeouts, so the window is seconds, not
+microseconds: ample for a low-TTL DNS-rebinding answer. Closing the
+gap needs connection pinning (e.g. a custom httpcore transport) — out
+of scope for v1, tracked under "Hardening items" in docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -52,18 +53,23 @@ def check_url_safe(url: str) -> list[str]:
     if not hostname:
         raise UnsafeURLError("URL has no hostname.")
 
-    # IP literal in URL: validate directly, no DNS needed.
+    # IP literal in URL: validate directly, no DNS needed. The check stays
+    # outside the try: UnsafeURLError is a ValueError and must not be
+    # swallowed as "not an IP literal".
     try:
         literal = ipaddress.ip_address(hostname)
-        _check_ip_safe(literal)
-        return [str(literal)]
     except ValueError:
         # Not an IP literal — proceed to DNS resolution.
-        pass
+        literal = None
+    if literal is not None:
+        _check_ip_safe(literal)
+        return [str(literal)]
 
+    # getaddrinfo IDNA-encodes the name first and raises UnicodeError, not
+    # gaierror, for labels it can't encode (empty, or over 63 characters).
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as e:
+    except (socket.gaierror, UnicodeError) as e:
         raise UnsafeURLError(f"DNS resolution failed for {hostname}: {e}") from e
 
     # info[4] is the sockaddr; for AF_INET that's (host, port), for AF_INET6
@@ -95,3 +101,7 @@ def _check_ip_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
         raise UnsafeURLError(f"Refusing to fetch private address {ip}.")
     if ip.is_reserved:
         raise UnsafeURLError(f"Refusing to fetch reserved address {ip}.")
+    # Catch-all for ranges the named checks above miss, e.g. CGNAT
+    # 100.64.0.0/10 is neither private nor global.
+    if not ip.is_global:
+        raise UnsafeURLError(f"Refusing to fetch non-public address {ip}.")
