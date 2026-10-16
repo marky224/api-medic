@@ -52,14 +52,17 @@ def check_url_safe(url: str) -> list[str]:
     if not hostname:
         raise UnsafeURLError("URL has no hostname.")
 
-    # IP literal in URL: validate directly, no DNS needed.
+    # IP literal in URL: validate directly, no DNS needed. The check stays
+    # outside the try: UnsafeURLError is a ValueError and must not be
+    # swallowed as "not an IP literal".
     try:
         literal = ipaddress.ip_address(hostname)
-        _check_ip_safe(literal)
-        return [str(literal)]
     except ValueError:
         # Not an IP literal — proceed to DNS resolution.
-        pass
+        literal = None
+    if literal is not None:
+        _check_ip_safe(literal)
+        return [str(literal)]
 
     try:
         infos = socket.getaddrinfo(hostname, None)
@@ -95,3 +98,7 @@ def _check_ip_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
         raise UnsafeURLError(f"Refusing to fetch private address {ip}.")
     if ip.is_reserved:
         raise UnsafeURLError(f"Refusing to fetch reserved address {ip}.")
+    # Catch-all for ranges the named checks above miss, e.g. CGNAT
+    # 100.64.0.0/10 is neither private nor global.
+    if not ip.is_global:
+        raise UnsafeURLError(f"Refusing to fetch non-public address {ip}.")

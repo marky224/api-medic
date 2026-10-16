@@ -42,11 +42,32 @@ def test_rejects_no_hostname():
         "fe80::1",  # IPv6 link-local
         "fc00::1",  # IPv6 unique-local (private)
         "ff02::1",  # IPv6 multicast
+        "100.64.0.1",  # CGNAT shared address space (not private, not global)
     ],
 )
 def test_rejects_unsafe_ip_literal(ip_literal: str):
     with pytest.raises(UnsafeURLError):
         check_url_safe(f"https://{ip_literal}/path")
+
+
+def test_rejects_cgnat_as_non_public():
+    # 100.64.0.0/10 is neither is_private nor is_global, so only the
+    # catch-all `not is_global` rule names it.
+    with pytest.raises(UnsafeURLError, match=r"non-public address 100\.64\.0\.1"):
+        check_url_safe("https://100.64.0.1/")
+
+
+def test_unsafe_ip_literal_rejected_without_dns(monkeypatch):
+    """A blocked literal must be rejected by the literal check itself, not
+    rescued by falling through to DNS."""
+    import socket
+
+    def no_dns(*a, **kw):
+        raise AssertionError("IP literal should not be resolved")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    with pytest.raises(UnsafeURLError, match="loopback"):
+        check_url_safe("https://127.0.0.1/")
 
 
 def test_accepts_public_ip_literal():
