@@ -1,0 +1,43 @@
+# Weekly version updates. Minor and patch bumps are grouped into one PR
+# per ecosystem entry; majors still arrive as their own PRs so breaking
+# changes get reviewed one at a time.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /extension
+    schedule:
+      interval: weekly
+    groups:
+      extension-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # Bump the exact dev-tool pins (ruff, mypy) but leave the runtime
+    # `>=` floors alone while they already allow the new release.
+    versioning-strategy: increase-if-necessary
+    groups:
+      pip-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
