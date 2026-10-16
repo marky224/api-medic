@@ -4,6 +4,11 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- Hosted demo `/api/run` now follows redirects by hand, at most 5 hops, and runs the SSRF guard (HTTPS only, public addresses only) on every hop's target before fetching it. Previously only the submitted URL was checked and `httpx` followed redirects on its own, so a public HTTPS URL could redirect the Lambda to plain HTTP, loopback, or an internal address. A blocked hop returns 400 naming the target and is never requested; a chain longer than 5 hops stops there and reports `http.redirect.too_many`. Redirects within the cap produce the same Report as before. The CLI and `api-medic serve` are unchanged.
+- The SSRF guard now rejects any address that isn't globally routable (`not ip.is_global`). This covers CGNAT `100.64.0.0/10` and other special-use ranges the named checks missed.
+
 ## [1.1.1] - 2026-05-02
 
 ### Added

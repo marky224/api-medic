@@ -60,7 +60,7 @@ flowchart LR
 
 Key invariant: **the core engine produces byte-identical `Report` objects regardless of which surface invoked it,** given the same input. A report from the CLI, the local web UI, the hosted demo, or the browser extension is interchangeable.
 
-The Lambda surface uses Parser + Checks + Renderers + the live Runner, with SSRF mitigations on the Runner (block RFC1918, link-local incl. the EC2 metadata service, multicast, loopback; resolve DNS once and re-check the IP before the request). The browser extension is captured-mode-only by design — no privileged network access from a content script.
+The Lambda surface uses Parser + Checks + Renderers + the live Runner, with SSRF mitigations on the Runner (HTTPS only; block RFC1918, link-local incl. the EC2 metadata service, multicast, loopback, and any other non-global address; resolve DNS and check the IPs before the request; follow redirects by hand and re-check every hop before it is fetched). The browser extension is captured-mode-only by design — no privileged network access from a content script.
 
 ---
 
@@ -109,7 +109,7 @@ Both captured (HAR/curl) and live-run inputs are exposed. Architecture:
 
 - **S3 + CloudFront.** Hosts the same React build as the local web UI. Subdomain `api-medic.markandrewmarquez.com` via CNAME pointing at the CloudFront distribution. ACM certificate must be issued in `us-east-1` regardless of where any other infrastructure lives — that's a CloudFront constraint.
 - **API Gateway + Lambda.** Single Lambda function handling `POST /api/analyze`, `POST /api/run`, and `GET /api/health`. Wraps `api_medic.core` and runs the parser + check battery, plus the live Runner for `/api/run`. Returns the `Report` and exits.
-- **Outbound HTTP is allowed but constrained.** `/api/run` goes through the SSRF guard (block RFC1918, link-local incl. 169.254.169.254, multicast, loopback; resolve hostname once, re-check the resolved IP, then connect via that IP) and a short per-request timeout (≤10s). Body and response size are capped well under the 10 MB API Gateway payload limit.
+- **Outbound HTTP is allowed but constrained.** `/api/run` goes through the SSRF guard (HTTPS only; block RFC1918, link-local incl. 169.254.169.254, multicast, loopback, and any other non-global address such as CGNAT 100.64.0.0/10; resolve the hostname and check every resolved IP) and a short per-request timeout (≤10s). Redirects are followed by hand, at most 5 hops, and every hop's target goes through the same guard before it is fetched; a blocked hop returns 400 and is never requested. The connection is not yet pinned to the checked IP — see [Hardening items](#hardening-items). Body and response size are capped well under the 10 MB API Gateway payload limit.
 - **Cost / abuse controls.** API Gateway throttle on `/api/run` (low default; tunable in the SAM template), Lambda reserved concurrency on the function, AWS Budget at $10/month with 50%/100%/forecast alerts. The function is publicly callable; assume any URL the user submits will be fetched.
 - **No DynamoDB, no S3 writes, no CloudWatch persistence beyond default 14-day log retention.** Stateless by design.
 
@@ -518,6 +518,14 @@ These are out of scope for v1. None of them block the done definition.
 - **Plugin system for custom checks.** Worth doing eventually but premature for v1 — first prove the built-in checks land.
 - **Pre-built binaries (Mac/Win/Linux).** PyInstaller / Briefcase. Add if `pip install` proves to be a friction point.
 - **Homebrew formula.** Easy to add post-launch.
+
+---
+
+## Hardening items
+
+Known gaps in shipped behavior, tracked here until they're closed.
+
+- **DNS rebinding (TOCTOU) in the SSRF guard.** `core.runner_safety.check_url_safe` resolves the hostname and rejects any non-global address, but the checked IPs aren't pinned to the connection. httpx resolves the name again when it connects, and so does the pre-flight TLS probe (`runner._probe_tls`). A hostname with a short TTL can answer the guard with a public address and the connection with an internal one. The same gap applies to every redirect hop. Closing it means connecting to the checked IP while keeping the hostname for SNI and `Host` (e.g. a custom httpcore transport), for the TLS probe and each hop alike.
 
 ---
 
