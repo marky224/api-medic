@@ -6,8 +6,10 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ### Security
 
-- Hosted demo `/api/run` now follows redirects by hand, at most 5 hops, and runs the SSRF guard (HTTPS only, public addresses only) on every hop's target before fetching it. Previously only the submitted URL was checked and `httpx` followed redirects on its own, so a public HTTPS URL could redirect the Lambda to plain HTTP, loopback, or an internal address. A blocked hop returns 400 naming the target and is never requested; a chain longer than 5 hops stops there and reports `http.redirect.too_many`. Redirects within the cap produce the same Report as before. The CLI and `api-medic serve` are unchanged.
+- Hosted demo `/api/run` now follows redirects by hand, at most 5 hops, and runs the SSRF guard (HTTPS only, public addresses only) on every hop's target before fetching it. Previously only the submitted URL was checked and `httpx` followed redirects on its own, so a public HTTPS URL could redirect the Lambda to plain HTTP, loopback, or an internal address. A blocked hop returns 400 naming the target and is never requested; a chain longer than 5 hops stops there and reports `http.redirect.too_many`, worded as a stopped chain rather than one that reached a final response. Because plain-HTTP hops are refused, `http.redirect.protocol_downgrade` can't fire on a hosted live run. Redirects within the cap produce the same Report as before. The CLI and `api-medic serve` are unchanged.
 - The SSRF guard now rejects any address that isn't globally routable (`not ip.is_global`). This covers CGNAT `100.64.0.0/10` and other special-use ranges the named checks missed.
+- `/api/run` also vets the submitted URL as `httpx` will send it. Python's socket module and `httpx` IDNA-encode some hostnames differently (`xß` becomes `xss` for one and `xn--x-qfa` for the other), so the guard could check a different name than the one fetched.
+- `/api/run` returns 400 instead of 500 for a hostname `getaddrinfo` can't encode (e.g. a label over 63 characters) and for a URL `httpx` can't parse (e.g. a non-numeric port).
 
 ## [1.1.1] - 2026-05-02
 

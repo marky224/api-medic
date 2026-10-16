@@ -85,7 +85,7 @@ Four ways to use it, all powered by the same core engine — every surface produ
 
 - **CLI** — `pip install api-medic`, full feature set, four output formats.
 - **Local web UI** — `api-medic serve` runs the same engine behind a browser frontend at `http://localhost:8765`. No outbound calls except to the target you're diagnosing.
-- **Hosted demo** — [api-medic.markandrewmarquez.com](https://api-medic.markandrewmarquez.com). Captured (HAR/curl) and live-run modes. Live runs are HTTPS-only, SSRF-guarded, and throttled (2 req/sec, burst 5). Stateless — no payload is persisted; see [`PRIVACY.md`](PRIVACY.md).
+- **Hosted demo** — [api-medic.markandrewmarquez.com](https://api-medic.markandrewmarquez.com). Captured (HAR/curl) and live-run modes. Live runs are HTTPS-only, SSRF-guarded, and throttled (2 req/sec, burst 5). A redirect to plain HTTP is refused with an error, so `http.redirect.protocol_downgrade` can't fire on a hosted live run; use the CLI or `api-medic serve` to diagnose a downgrade. Stateless — no payload is persisted; see [`PRIVACY.md`](PRIVACY.md).
 - **Browser extension** — Chrome / Firefox MV3 DevTools panel that captures requests in-browser and posts them to the hosted analyzer. See [`extension/README.md`](extension/README.md) for source-install instructions.
 
 ![api-medic DevTools panel inside a browser, showing a rendered Report with severity badges, evidence, and suggested fix; the DevTools tab strip (Network, Console, api-medic) visible at the top](images/report-extension.png)
