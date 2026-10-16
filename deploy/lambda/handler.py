@@ -6,7 +6,9 @@ Routes:
   POST /api/run      execute a live HTTP request, then check it
 
 The /api/run path goes through `core.runner_safety` first to block
-SSRF (RFC1918, link-local incl. EC2 metadata, multicast, loopback).
+SSRF (non-https, RFC1918, link-local incl. EC2 metadata, multicast,
+loopback, any other non-global address). Redirects are followed by hand
+and every hop's target goes through the same guard before it is fetched.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -131,20 +133,32 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
     except UnsafeURLError as e:
         return _err(400, str(e))
 
-    captured = run_request(
-        method=method,
-        url=url,
-        headers=headers,
-        body=req_body,
-        timeout=LIVE_RUN_TIMEOUT_SECONDS,
-        probe_network=True,
-    )
+    try:
+        captured = run_request(
+            method=method,
+            url=url,
+            headers=headers,
+            body=req_body,
+            timeout=LIVE_RUN_TIMEOUT_SECONDS,
+            probe_network=True,
+            url_guard=_check_redirect_safe,
+        )
+    except UnsafeURLError as e:
+        return _err(400, str(e))
     report = analyze(captured)
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
         "body": report.model_dump_json(),
     }
+
+
+def _check_redirect_safe(url: str) -> None:
+    """SSRF guard for redirect hops; names the blocked target in the error."""
+    try:
+        check_url_safe(url)
+    except UnsafeURLError as e:
+        raise UnsafeURLError(f"Blocked redirect to {url}: {e}") from e
 
 
 def _extract_route(event: dict[str, Any]) -> tuple[str, str]:
