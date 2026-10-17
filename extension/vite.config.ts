@@ -16,6 +16,9 @@ export default defineConfig({
     },
   },
   build: {
+    // Match minimum_chrome_version / strict_min_version in the manifests;
+    // Vite's default target is newer than both.
+    target: ["chrome102", "firefox115"],
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
