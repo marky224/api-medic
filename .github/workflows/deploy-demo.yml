@@ -1,7 +1,15 @@
 name: Deploy hosted demo
 
+# Runs after the CI workflow completes, never in parallel with it. The
+# deploy job below only proceeds for a successful CI run on a push to main,
+# and checks out the exact commit that run tested. workflow_run also fires
+# for pull_request CI runs (fork PRs included), and it always runs this
+# file from main with secrets and id-token available, so the job-level
+# `if` is what keeps PR code away from AWS. See deploy/README.md.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -13,22 +21,43 @@ jobs:
   deploy:
     name: Deploy api-medic-demo to AWS
     runs-on: ubuntu-latest
-    # Repo variable DEMO_DEPLOY_ENABLED gates this — set it to 'true' in
-    # repo Settings → Variables once AWS prerequisites are in place
-    # (see deploy/README.md). Manual dispatch always runs so it can be
+    # Repo variable DEMO_DEPLOY_ENABLED gates the automatic deploy — set it
+    # to 'true' in repo Settings → Variables once AWS prerequisites are in
+    # place (see deploy/README.md). Manual dispatch always runs so it can be
     # tested before flipping the gate.
-    if: vars.DEMO_DEPLOY_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
+    #
+    # The automatic deploy also needs the triggering CI run to have
+    # succeeded on a push to main. `branches: [main]` above still matches a
+    # fork PR whose branch is named main; the event check is what stops it.
+    # The tested commit must also still be main's tip (github.sha is main's
+    # head when this run was triggered), so re-running an older commit's CI,
+    # or two pushes whose CI finishes out of order, can't deploy an older
+    # commit over a newer one.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.DEMO_DEPLOY_ENABLED == 'true' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_sha == github.sha)
+    # One deploy at a time; a newer pending deploy replaces an older one.
+    # Job-level, not workflow-level: every CI completion (PR runs included)
+    # starts a run of this workflow, and at workflow level those runs would
+    # join the group before their job is skipped and cancel a pending
+    # deploy. A job skipped by its `if` never joins a job-level group.
+    concurrency:
+      group: deploy-demo
+      cancel-in-progress: false
     env:
       AWS_REGION: us-east-1
       STACK_NAME: api-medic-demo
     steps:
+      # Deploy the commit CI tested, not whatever main points at now.
+      # Manual dispatch has no workflow_run payload and uses the
+      # dispatched ref.
       - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -62,6 +91,15 @@ jobs:
       - name: SAM build
         working-directory: deploy
         run: sam build
+
+      # Assume the deploy role only after the build steps. npm ci runs
+      # third-party install scripts and sam build pip-installs packages,
+      # and this step exports the role's keys to every step after it.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: SAM deploy
         working-directory: deploy

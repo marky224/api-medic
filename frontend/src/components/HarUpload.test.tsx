@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { HarUpload } from "./HarUpload";
 import corsReport from "../../../tests/fixtures/reports/04-cors-misconfigured.json";
 
@@ -98,8 +98,11 @@ describe("HarUpload", () => {
     expect(calls).toBe(1);
 
     fireEvent.click(screen.getByRole("button", { name: /^Re-run$/ }));
-    await screen.findByText(/CORS preflight/);
-    expect(calls).toBe(2);
+    // The first Report is still on screen, so findByText would match it
+    // without waiting for the re-run. Wait on the call count instead.
+    await waitFor(() => {
+      expect(calls).toBe(2);
+    });
   });
 
   it("shows size, capture date, and unique host count when present in the HAR", async () => {

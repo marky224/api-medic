@@ -25,6 +25,18 @@ Lambda. DNS is managed by Route 53.
 3. **GitHub OIDC role** so the deploy workflow can assume an IAM role
    without long-lived keys. The role's trust policy should allow
    `sts:AssumeRoleWithWebIdentity` from `repo:marky224/api-medic:ref:refs/heads/main`.
+   Its trust and inline policies live in `deploy/iam/` and are applied
+   by hand, not by CI. The inline policy's role statements cover only
+   `role/api-medic-demo-ApiAnalyzeFunctionRole-*`, which is SAM's
+   generated function role: SAM gives it the logical ID
+   `<function logical ID>Role`, and CloudFormation names it
+   `<stack>-<logical ID>-<unique id>`. They can't touch the deploy role
+   or any other `api-medic-demo-*` role. On that role, the deploy role
+   can attach only `AWSLambdaBasicExecutionRole`, can pass it only to
+   Lambda, and can't add inline policies. That's all the role needs
+   while `ApiAnalyzeFunction` has no `Policies` (or other properties that
+   make SAM add policies). Renaming the stack or the function, or adding
+   policies, means widening `inline-policy.json` first.
 4. **GitHub Actions secrets** in the repo:
    - `AWS_DEPLOY_ROLE_ARN` — the OIDC role's ARN
    - `ACM_CERTIFICATE_ARN` — the ARN of the cert from step 2
@@ -59,14 +71,62 @@ aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/
 
 ## Deploying via GitHub Actions
 
-Pushes to `main` trigger `.github/workflows/deploy-demo.yml`, which:
+`.github/workflows/deploy-demo.yml` runs on `workflow_run` when the CI
+workflow completes, not on the push itself. The deploy job proceeds only
+when all of these hold:
 
-1. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
-2. Runs `sam build` and `sam deploy` with the secrets as parameter overrides.
-3. Builds the frontend with `VITE_DEMO_MODE=1`.
+- the repo variable `DEMO_DEPLOY_ENABLED` is `true`,
+- the CI run concluded `success` (the integration job is
+  `continue-on-error`, so a live-network flake there doesn't block it),
+- the CI run was for a `push` event,
+- its head branch is `main`, and
+- its commit (`workflow_run.head_sha`) is still `main`'s tip
+  (`github.sha`, which is `main`'s head when the deploy run is
+  triggered).
+
+It checks out `workflow_run.head_sha`, the exact commit CI tested. If CI
+fails, nothing deploys. Re-running CI to green triggers the deploy only
+if that commit is still `main`'s tip; once a newer commit has landed, its
+own CI run is the one that deploys. The same check stops an older commit
+from deploying over a newer one when two pushes finish CI out of order.
+
+Deploys run one at a time (job-level `concurrency: deploy-demo`, with
+`cancel-in-progress: false`). A running deploy is never cancelled; a
+newer pending deploy replaces an older pending one. The group is on the
+job, not the workflow, because every CI completion starts a run of this
+workflow; at workflow level, the runs that get skipped (PR CI, for
+example) would still join the group and cancel a pending deploy.
+
+`workflow_run` also fires for pull_request CI runs, including fork PRs,
+and always runs the workflow file from `main` with secrets and
+`id-token: write`. The job-level `if` is what keeps PR code away from
+AWS: a pull_request run fails the `event == 'push'` check. The
+`branches: [main]` filter alone isn't enough, because a fork PR from a
+branch named `main` matches it. The OIDC trust policy isn't a backstop
+here either: a `workflow_run` job's token carries the default branch ref,
+so it matches `ref:refs/heads/main` whatever triggered it.
+
+Once triggered, the workflow:
+
+1. Builds the frontend with `VITE_DEMO_MODE=1` and runs `sam build`,
+   without AWS credentials.
+2. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
+3. Runs `sam deploy` with the secrets as parameter overrides.
 4. Syncs `frontend/dist/` to the S3 bucket and invalidates CloudFront.
 
-The workflow is also dispatchable manually from the Actions tab.
+The role is assumed only after the build because `npm ci` runs
+third-party install scripts, `sam build` pip-installs packages, and
+`configure-aws-credentials` exports the role's keys to every later step.
+That keeps ready-made keys away from package code. It isn't full
+isolation: with `id-token: write` on the job, any step can ask the
+runner for an OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`) and exchange it for the role if it
+knows the role ARN. Building in a separate job without `id-token: write`
+would close that.
+
+The workflow is also dispatchable manually from the Actions tab. Manual
+dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the
+dispatched ref (the trust policy only accepts `main`).
 
 ## Tearing down
 

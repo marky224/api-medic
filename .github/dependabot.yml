@@ -1,25 +1,56 @@
-# Weekly version updates. Minor and patch bumps are grouped into one PR
-# per ecosystem entry; majors still arrive as their own PRs so breaking
-# changes get reviewed one at a time.
+# Weekly version updates, grouped to keep the PR count down:
+# - npm (frontend, extension): minor and patch bumps in one PR per
+#   directory. Semver-major version updates are ignored for now (see the
+#   note on the npm entries).
+# - pip: minor and patch in one PR; majors still arrive as their own PRs.
+# - GitHub Actions: every update, majors included, in one PR.
+# Security updates get their own group per entry (`applies-to:
+# security-updates`), so they arrive as one PR per ecosystem directory
+# instead of one per package. A group without `applies-to` covers version
+# updates only.
+#
+# Key reference: https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
+    # Majors (vite 8, tailwind 4, vitest 5, jsdom 30, ...) are a planned
+    # separate migration. An `update-types` ignore doesn't apply to
+    # security updates, so a security fix that needs a major still opens
+    # a PR. The options reference doesn't say this; the source is
+    # dependabot-core's common/lib/dependabot/config/ignore_condition.rb,
+    # where `ignored_versions` returns only explicit `versions` for
+    # security updates:
+    # https://github.com/dependabot/dependabot-core/blob/a026401a0604a43d12f04dfa4a3557ac0d5bf0bb/common/lib/dependabot/config/ignore_condition.rb#L41-L46
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       frontend-minor-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+      frontend-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /extension
     schedule:
       interval: weekly
+    # Same as /frontend: majors are a planned separate migration; security
+    # updates still come through.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       extension-minor-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+      extension-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: pip
     directory: /
@@ -32,12 +63,17 @@ updates:
       pip-minor-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+      pip-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     groups:
-      actions-minor-patch:
+      actions:
         patterns: ["*"]
-        update-types: [minor, patch]
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
