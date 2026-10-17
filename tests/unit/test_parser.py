@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
 from api_medic.core.parser import parse_curl, parse_har
 
 
-def _minimal_har(**overrides):
-    entry = {
+def _minimal_har(**overrides: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "request": {
             "method": "GET",
             "url": "https://api.example.com/v1/health",

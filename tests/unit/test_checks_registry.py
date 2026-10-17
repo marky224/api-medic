@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from api_medic.core.captured import CapturedRequest
 from api_medic.core.checks import CheckRegistry
 from api_medic.core.models import Finding, TimingBreakdown
 
 
-def _cap(**overrides) -> CapturedRequest:
-    base = {
+def _cap(**overrides: Any) -> CapturedRequest:
+    base: dict[str, Any] = {
         "method": "GET",
         "url": "https://example.com/",
         "headers": {},

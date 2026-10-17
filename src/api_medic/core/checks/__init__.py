@@ -15,19 +15,22 @@ than touching `default_registry`.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TypeVar
 
 from ..captured import CapturedRequest
 from ..models import Finding
 
 CheckResult = Finding | list[Finding] | None
 CheckFn = Callable[[CapturedRequest], CheckResult]
+# Lets @register keep each check's own signature (e.g. -> Finding | None).
+_CheckT = TypeVar("_CheckT", bound=CheckFn)
 
 
 class CheckRegistry:
     def __init__(self) -> None:
         self._checks: list[CheckFn] = []
 
-    def register(self, fn: CheckFn) -> CheckFn:
+    def register(self, fn: _CheckT) -> _CheckT:
         self._checks.append(fn)
         return fn
 

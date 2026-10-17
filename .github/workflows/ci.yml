@@ -36,7 +36,7 @@ jobs:
         run: ruff format --check .
 
       - name: Type-check with mypy
-        run: mypy src
+        run: mypy
 
       - name: Run tests
         run: pytest -m "not integration" --cov --cov-report=term-missing

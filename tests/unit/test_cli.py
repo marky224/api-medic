@@ -8,6 +8,8 @@ return a synthetic CapturedRequest so tests stay offline. One
 from __future__ import annotations
 
 import json
+import sys
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -51,9 +53,9 @@ def runner() -> CliRunner:
 @pytest.fixture
 def fake_runner(monkeypatch):
     """Replace runner.run with a stub that records its call args."""
-    calls: list[dict] = []
+    calls: list[dict[str, Any]] = []
 
-    def fake_run(method: str, url: str, **kwargs):
+    def fake_run(method: str, url: str, **kwargs: Any) -> CapturedRequest:
         calls.append({"method": method, "url": url, **kwargs})
         return _captured(method=method.upper(), url=url, headers=kwargs.get("headers") or {})
 
@@ -243,8 +245,8 @@ class TestForceUtf8Streams:
                 self.encoding = encoding
 
         fake_out, fake_err = FakeStream(), FakeStream()
-        monkeypatch.setattr(cli_main.sys, "stdout", fake_out)
-        monkeypatch.setattr(cli_main.sys, "stderr", fake_err)
+        monkeypatch.setattr(sys, "stdout", fake_out)
+        monkeypatch.setattr(sys, "stderr", fake_err)
         cli_main._force_utf8_streams()
         assert fake_out.encoding == "utf-8"
         assert fake_err.encoding == "utf-8"
@@ -254,8 +256,8 @@ class TestForceUtf8Streams:
         # must be skipped without raising — common in test runners.
         import io
 
-        monkeypatch.setattr(cli_main.sys, "stdout", io.BytesIO())
-        monkeypatch.setattr(cli_main.sys, "stderr", io.BytesIO())
+        monkeypatch.setattr(sys, "stdout", io.BytesIO())
+        monkeypatch.setattr(sys, "stderr", io.BytesIO())
         cli_main._force_utf8_streams()  # must not raise
 
     def test_callback_invokes_force_utf8(self, runner, fake_runner, monkeypatch):
@@ -407,7 +409,7 @@ class TestFromHar:
 
 class TestServe:
     def test_serve_calls_uvicorn_with_app_path(self, runner, monkeypatch):
-        seen: dict = {}
+        seen: dict[str, Any] = {}
 
         def fake_uvicorn_run(app_path, **kwargs):
             seen["app_path"] = app_path

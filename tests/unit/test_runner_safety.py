@@ -59,7 +59,7 @@ def test_rejects_no_hostname():
         "100.64.0.1",  # CGNAT shared address space (not private, not global)
     ],
 )
-def test_rejects_unsafe_ip_literal(ip_literal: str):
+def test_rejects_unsafe_ip_literal(ip_literal: str) -> None:
     # IPv6 literals need brackets in a URL; without them the host is
     # malformed and the IP rule is never reached.
     host = f"[{ip_literal}]" if ":" in ip_literal else ip_literal

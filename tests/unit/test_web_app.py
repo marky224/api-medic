@@ -120,9 +120,10 @@ class TestRunRejectsMalformedInput:
     def _post(client: TestClient, fields: dict[str, Any]) -> httpx.Response:
         # json.dumps escapes lone surrogates; TestClient's json= can't encode them.
         payload = {"method": "GET", "url": "https://api.example.com/", **fields}
-        return client.post(
+        response: httpx.Response = client.post(
             "/api/run", content=json.dumps(payload), headers={"content-type": "application/json"}
         )
+        return response
 
     @pytest.mark.parametrize(
         ("fields", "message"),

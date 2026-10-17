@@ -7,6 +7,7 @@ exercise the DNS/TLS pre-flight pieces monkeypatch `_resolve_dns` and
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import httpx
@@ -16,7 +17,7 @@ from api_medic.core.captured import CapturedDns, CapturedTls
 from api_medic.core.runner import DEFAULT_USER_AGENT, run
 
 
-def _transport(handler):
+def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
@@ -324,7 +325,7 @@ class TestContentEncodingStripping:
 
 class TestDnsProbing:
     def test_dns_populated_when_probing_enabled(self, monkeypatch):
-        def fake_resolve(host: str, timeout: float = 5.0):
+        def fake_resolve(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
             return CapturedDns(records=["93.184.216.34"]), 11.5
 
         monkeypatch.setattr("api_medic.core.runner._resolve_dns", fake_resolve)
@@ -371,7 +372,7 @@ class TestTlsProbing:
             negotiated_protocol_version="TLSv1.3",
         )
 
-        def fake_probe(host: str, port: int, timeout: float = 5.0):
+        def fake_probe(host: str, port: int, timeout: float = 5.0) -> tuple[CapturedTls, float]:
             assert host == "example.com"
             assert port == 443
             return fake_tls, 41.0
@@ -400,7 +401,7 @@ class TestTlsProbing:
     def test_http_request_does_not_probe_tls(self, monkeypatch):
         called = {"probed": False}
 
-        def fake_probe(host: str, port: int, timeout: float = 5.0):
+        def fake_probe(host: str, port: int, timeout: float = 5.0) -> tuple[None, float]:
             called["probed"] = True
             return None, 0.0
 

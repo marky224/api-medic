@@ -54,7 +54,7 @@ class TestHealth:
 
 
 class TestAnalyzeHar:
-    def _har_event(self, har: dict) -> dict:
+    def _har_event(self, har: dict[str, Any]) -> dict[str, Any]:
         return _event("POST", "/api/analyze", json.dumps({"kind": "har", "har": har}))
 
     def test_valid_har_returns_report(self):
@@ -294,7 +294,7 @@ class TestRunUrlGuard:
             fetched.append(str(request.url))
             return routes(request)
 
-        real_run = handler.run_request
+        real_run = run
 
         def run_offline(**kwargs: Any) -> CapturedRequest:
             kwargs.update(transport=httpx.MockTransport(record), probe_network=False)

@@ -36,6 +36,7 @@ Access-Control-* headers.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 import traceback
@@ -221,7 +222,7 @@ def _decode_body(event: dict[str, Any]) -> str:
     if event.get("isBase64Encoded"):
         try:
             raw = base64.b64decode(raw).decode("utf-8", errors="replace")
-        except (ValueError, base64.binascii.Error):
+        except (ValueError, binascii.Error):
             return ""
     return raw
 

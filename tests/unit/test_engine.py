@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
 
 
-def _live(**overrides) -> CapturedRequest:
+def _live(**overrides: Any) -> CapturedRequest:
     base = {
         "method": "GET",
         "url": "https://api.example.com/v1/health",
