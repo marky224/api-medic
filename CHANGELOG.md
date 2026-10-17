@@ -15,6 +15,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ### Fixed
 
+- `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It also gives the right reason the deploy's concurrency group is job-level.
 - The frontend `HarUpload` and `RequestComposer` Re-run tests now wait for the second request instead of asserting the call count as soon as the already-rendered Report matched. The `HarUpload` one failed CI intermittently.
 
 ### Security
@@ -24,7 +25,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - `/api/run` also vets the submitted URL as `httpx` will send it. Python's socket module and `httpx` IDNA-encode some hostnames differently (`xß` becomes `xss` for one and `xn--x-qfa` for the other), so the guard could check a different name than the one fetched.
 - `/api/run` returns 400 instead of 500 for a hostname `getaddrinfo` can't encode (e.g. a label over 63 characters) and for a URL `httpx` can't parse (e.g. a non-numeric port).
 - The deploy role policy in `deploy/iam/inline-policy.json` is narrower. Its role statements now cover only SAM's generated function role (`role/api-medic-demo-ApiAnalyzeFunctionRole-*`) instead of every `api-medic-demo-*` role, so they can't touch the deploy role itself. On that role it allows `iam:AttachRolePolicy`/`DetachRolePolicy` only for `AWSLambdaBasicExecutionRole`, allows `iam:PassRole` only to Lambda, and drops `iam:PutRolePolicy`. Before, a workflow on `main` could create a role with `AdministratorAccess` and a Lambda function that used it. SAM's generated function role needs nothing more. The policy is applied to AWS by hand.
-- The demo deploy workflow assumes the AWS deploy role only after the frontend and Lambda builds, so `npm ci` install scripts and `sam build` no longer run with the role's keys in their environment. The job still has `id-token: write`, so build steps could request an OIDC token themselves; see `deploy/README.md`.
+- The demo deploy workflow assumes the AWS deploy role only after the frontend and Lambda builds, so `npm ci` install scripts and `sam build` no longer run with the role's keys in their environment. Build code can still reach the role: the job still has `id-token: write`, so build steps could request an OIDC token themselves, and an install script could put an `aws` or `sam` wrapper on `$GITHUB_PATH` for the deploy steps to run; see `deploy/README.md`.
 
 ## [1.1.1] - 2026-05-02
 
