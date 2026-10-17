@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { analyzeHarEntry } from "./api";
+import {
+  expectNoSecrets,
+  loadRedactionScenario,
+} from "../test/redaction-fixtures";
 
 const mockFetch = vi.fn();
 
@@ -34,6 +38,19 @@ describe("analyzeHarEntry", () => {
     expect(body.har.log.version).toBe("1.2");
     expect(body.har.log.entries).toHaveLength(1);
     expect(body.har.log.entries[0]).toEqual(entry);
+  });
+
+  it("sends no secret from the captured entry to the analyzer", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ source: "extension" }),
+    });
+    const fixture = loadRedactionScenario("90-no-leak");
+
+    await analyzeHarEntry(fixture.entry);
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expectNoSecrets(init.body as string, fixture.secrets);
   });
 
   it("returns the parsed Report on success", async () => {

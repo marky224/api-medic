@@ -1,0 +1,51 @@
+{
+  "description": "Truncated JSON response. Bodies JSON.parse rejects pass through unchanged, so body.malformed_json still fires (and the password in it is sent: a documented limit).",
+  "expect_findings": [
+    "body.malformed_json"
+  ],
+  "secrets": [],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/session",
+      "httpVersion": "HTTP/1.1",
+      "headers": [],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 200,
+      "statusText": "OK",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "cookies": [],
+      "content": {
+        "size": 43,
+        "mimeType": "application/json",
+        "text": "{\"password\": \"PW-malformed-Hy62\", \"user\": "
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 42
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

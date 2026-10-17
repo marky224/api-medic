@@ -1,0 +1,55 @@
+{
+  "description": "Expired JWT with a leading tab and a newline inside the signature.",
+  "expect_findings": [
+    "auth.header.whitespace",
+    "auth.jwt.expired"
+  ],
+  "secrets": [
+    "SIG5ws_Aa1Bb2Cc3Dd4Ee5Ff6",
+    "Gg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4",
+    "deploy-bot@zentrovia.test"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/deploys",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "\tBearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzdmMtZGVwbG95IiwiZXhwIjoxNjAwMDAwMDAwLCJlbWFpbCI6ImRlcGxveS1ib3RAemVudHJvdmlhLnRlc3QifQ.SIG5ws_Aa1Bb2Cc3Dd4Ee5Ff6\nGg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [],
+      "cookies": [],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

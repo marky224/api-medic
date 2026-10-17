@@ -1,0 +1,14 @@
+[
+  "Access-Control-Allow-Origin",
+  "Authorization",
+  "Content-Encoding",
+  "Content-Length",
+  "Content-Type",
+  "Location",
+  "Origin",
+  "Retry-After",
+  "Transfer-Encoding",
+  "X-RateLimit-Limit",
+  "X-RateLimit-Remaining",
+  "X-RateLimit-Reset"
+]

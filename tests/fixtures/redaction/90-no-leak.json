@@ -1,0 +1,228 @@
+{
+  "description": "A secret in every place the redactor covers. No secret, and no 8-character piece of one, may appear in the payload.",
+  "expect_findings": [],
+  "secrets": [
+    "URLPASS-h7Gk2Wz",
+    "QS-APIKEY-k29XzTb",
+    "QS-CODE-mN83bVc",
+    "FRAG-AT-p0Lq7Yd",
+    "YmFzaWN1c2VyOkJBU0lDLXB3LVJ0NUtxOA==",
+    "PROXY-tok-Vb62NpRe",
+    "COOKIE-sid-Hq72LxFa",
+    "XAPIKEY-n4Ws8QmTr",
+    "XAUTH-tok-j6Pd1Kv",
+    "CSRF-tok-e9Rz4Hb",
+    "PRIVTOK-g3Lm7Xc",
+    "APIM-key-t5Nv2Js",
+    "CUSTOM-sec-y8Qw6Fd",
+    "REF-CODE-w8Yt3Ua",
+    "FORM-PW-c4Nd9Qs",
+    "INIT-TOK-u7Rb1Ge",
+    "WS-TOK-e5Ka8Zi",
+    "SETCOOKIE-Gp41ZsMw",
+    "SETCOOKIE2-Jd93WmHx",
+    "LOC-CODE-b6Tn2Rq",
+    "RESP-AUTHTOK-z3Vq8Ly",
+    "BODY-APIKEY-r2Wd6Nq",
+    "BODY-ARR-TOK-x5Fh1Lp",
+    "BODY-PW-ARR-k8Mz3",
+    "CLOC-SIG-q2Hs5Ub"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "POST",
+      "url": "https://basicuser:URLPASS-h7Gk2Wz@api.example.com/v1/login?api_key=QS-APIKEY-k29XzTb&page=2&code=QS-CODE-mN83bVc#access_token=FRAG-AT-p0Lq7Yd&state=xyz",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": ":authority",
+          "value": "api.example.com"
+        },
+        {
+          "name": ":method",
+          "value": "POST"
+        },
+        {
+          "name": ":path",
+          "value": "/v1/login?api_key=QS-APIKEY-k29XzTb&page=2&code=QS-CODE-mN83bVc"
+        },
+        {
+          "name": ":scheme",
+          "value": "https"
+        },
+        {
+          "name": "authorization",
+          "value": "Basic YmFzaWN1c2VyOkJBU0lDLXB3LVJ0NUtxOA=="
+        },
+        {
+          "name": "proxy-authorization",
+          "value": "Bearer PROXY-tok-Vb62NpRe"
+        },
+        {
+          "name": "cookie",
+          "value": "sid=COOKIE-sid-Hq72LxFa; theme=dark"
+        },
+        {
+          "name": "x-api-key",
+          "value": "XAPIKEY-n4Ws8QmTr"
+        },
+        {
+          "name": "x-auth-token",
+          "value": "XAUTH-tok-j6Pd1Kv"
+        },
+        {
+          "name": "x-csrf-token",
+          "value": "CSRF-tok-e9Rz4Hb"
+        },
+        {
+          "name": "private-token",
+          "value": "PRIVTOK-g3Lm7Xc"
+        },
+        {
+          "name": "ocp-apim-subscription-key",
+          "value": "APIM-key-t5Nv2Js"
+        },
+        {
+          "name": "x-custom-secret",
+          "value": "CUSTOM-sec-y8Qw6Fd"
+        },
+        {
+          "name": "referer",
+          "value": "https://app.example.com/callback?code=REF-CODE-w8Yt3Ua&state=abc"
+        },
+        {
+          "name": "content-type",
+          "value": "application/x-www-form-urlencoded"
+        }
+      ],
+      "queryString": [
+        {
+          "name": "api_key",
+          "value": "QS-APIKEY-k29XzTb"
+        },
+        {
+          "name": "page",
+          "value": "2"
+        },
+        {
+          "name": "code",
+          "value": "QS-CODE-mN83bVc"
+        }
+      ],
+      "cookies": [
+        {
+          "name": "sid",
+          "value": "COOKIE-sid-Hq72LxFa"
+        },
+        {
+          "name": "theme",
+          "value": "dark"
+        }
+      ],
+      "headersSize": -1,
+      "bodySize": 50,
+      "postData": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "text": "username=alice&password=FORM-PW-c4Nd9Qs&remember=1",
+        "params": [
+          {
+            "name": "username",
+            "value": "alice"
+          },
+          {
+            "name": "password",
+            "value": "FORM-PW-c4Nd9Qs"
+          },
+          {
+            "name": "remember",
+            "value": "1"
+          }
+        ]
+      }
+    },
+    "response": {
+      "status": 302,
+      "statusText": "Found",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "set-cookie",
+          "value": "session=SETCOOKIE-Gp41ZsMw; Path=/; HttpOnly; Secure; SameSite=Lax\nrefresh=SETCOOKIE2-Jd93WmHx; Path=/auth"
+        },
+        {
+          "name": "location",
+          "value": "https://app.example.com/home?code=LOC-CODE-b6Tn2Rq&state=abc"
+        },
+        {
+          "name": "content-location",
+          "value": "/v1/login/result?signature=CLOC-SIG-q2Hs5Ub"
+        },
+        {
+          "name": "x-auth-token",
+          "value": "RESP-AUTHTOK-z3Vq8Ly"
+        },
+        {
+          "name": "content-type",
+          "value": "application/json"
+        }
+      ],
+      "cookies": [
+        {
+          "name": "session",
+          "value": "SETCOOKIE-Gp41ZsMw",
+          "path": "/",
+          "httpOnly": true,
+          "secure": true,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "refresh",
+          "value": "SETCOOKIE2-Jd93WmHx",
+          "path": "/auth"
+        }
+      ],
+      "content": {
+        "size": 147,
+        "mimeType": "application/json",
+        "text": "{\"user\": {\"id\": 7, \"api_key\": \"BODY-APIKEY-r2Wd6Nq\"}, \"tokens\": [\"BODY-ARR-TOK-x5Fh1Lp\"], \"items\": [{\"password\": \"BODY-PW-ARR-k8Mz3\"}], \"count\": 2}"
+      },
+      "redirectURL": "https://app.example.com/home?code=LOC-CODE-b6Tn2Rq&state=abc",
+      "headersSize": -1,
+      "bodySize": 147
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    },
+    "_initiator": {
+      "type": "script",
+      "stack": {
+        "callFrames": [
+          {
+            "functionName": "login",
+            "url": "https://app.example.com/app.js?token=INIT-TOK-u7Rb1Ge",
+            "lineNumber": 10,
+            "columnNumber": 4
+          }
+        ]
+      }
+    },
+    "_resourceType": "fetch",
+    "_webSocketMessages": [
+      {
+        "type": "send",
+        "time": 1.5,
+        "opcode": 1,
+        "data": "{\"token\": \"WS-TOK-e5Ka8Zi\"}"
+      }
+    ]
+  }
+}

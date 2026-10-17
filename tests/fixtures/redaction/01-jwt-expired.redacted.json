@@ -1,0 +1,56 @@
+{
+  "startedDateTime": "2026-10-17T12:00:00.000Z",
+  "time": 150,
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/me",
+    "httpVersion": "HTTP/1.1",
+    "headers": [
+      {
+        "name": "Accept",
+        "value": "application/json"
+      },
+      {
+        "name": "Authorization",
+        "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTQ4MjEiLCJleHAiOjE2MDAwMDAwMDB9.REDACTED"
+      }
+    ],
+    "queryString": [],
+    "cookies": [],
+    "headersSize": -1,
+    "bodySize": 0
+  },
+  "response": {
+    "status": 401,
+    "statusText": "Unauthorized",
+    "httpVersion": "HTTP/1.1",
+    "headers": [
+      {
+        "name": "WWW-Authenticate",
+        "value": "Bearer error=\"invalid_token\""
+      },
+      {
+        "name": "Content-Type",
+        "value": "application/json"
+      }
+    ],
+    "cookies": [],
+    "content": {
+      "size": 0,
+      "mimeType": "application/json"
+    },
+    "redirectURL": "",
+    "headersSize": -1,
+    "bodySize": 0
+  },
+  "cache": {},
+  "timings": {
+    "blocked": -1,
+    "dns": -1,
+    "connect": -1,
+    "ssl": -1,
+    "send": 1,
+    "wait": 100,
+    "receive": 49
+  }
+}

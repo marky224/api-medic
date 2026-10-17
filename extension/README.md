@@ -80,8 +80,11 @@ existing Lambda. The panel only:
 
 1. Listens for `chrome.devtools.network.onRequestFinished`. Chrome
    delivers entries that already match the HAR `entries[i]` shape.
-2. Wraps the user's selected entry in a single-entry HAR log via
-   `lib/serialize.ts`.
+2. Masks credentials in a copy of the user's selected entry
+   (`lib/redact.ts`; what is masked is listed in `PRIVACY.md`) and wraps it
+   in a single-entry HAR log via `lib/serialize.ts`. The masking keeps what
+   the checks read, and `tests/unit/test_redaction_parity.py` proves the
+   findings match on masked and unmasked fixtures.
 3. POSTs to `/api/analyze`. The manifest's `host_permissions` declaration
    for the analyzer host lets the DevTools panel's `fetch()` skip the
    CORS preflight, so no API Gateway change is needed for the extension.
@@ -107,6 +110,9 @@ changes.
 - Captures are scoped to the page DevTools is attached to. Background
   tabs, service-worker requests, and requests issued before DevTools
   was opened won't appear.
+- Masking works by name. A secret under a name the extension doesn't
+  recognize, inside a URL path, in a body that isn't valid JSON or a
+  URL-encoded form, or stored as a number is sent as captured.
 - All analysis happens server-side on the hosted Lambda. Without
   network access to `api-medic.markandrewmarquez.com` the panel
   can capture but not analyze.
