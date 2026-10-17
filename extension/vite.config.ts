@@ -14,6 +14,10 @@ export default defineConfig({
     alias: {
       "@frontend": path.resolve(here, "..", "frontend", "src"),
     },
+    // Files under @frontend would otherwise resolve react from
+    // ../frontend/node_modules and bundle a second copy (invalid hook
+    // call). @vitejs/plugin-react set this itself before v6.
+    dedupe: ["react", "react-dom"],
   },
   build: {
     // Match minimum_chrome_version / strict_min_version in the manifests;
@@ -21,7 +25,7 @@ export default defineConfig({
     target: ["chrome102", "firefox115"],
     outDir: "dist",
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         devtools: path.resolve(here, "devtools.html"),
         panel: path.resolve(here, "panel.html"),

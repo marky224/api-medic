@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Validates that the extension build produced loadable Manifest v3 packages
-// for both Chrome and Firefox. Catches Vite/Rollup misconfiguration and
+// for both Chrome and Firefox. Catches Vite/Rolldown misconfiguration and
 // manifest drift before artifacts are shipped to the Web Store / AMO.
 // Runs after `vite build` (chained from the build script).
 
