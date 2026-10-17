@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import socket
 import sys
 from collections.abc import Callable
@@ -177,6 +178,17 @@ class TestAnalyzeCurl:
         assert result["statusCode"] == 400
         assert "Missing 'curl'" in json.loads(result["body"])["detail"]
 
+    def test_rejected_curl_writes_nothing_to_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Lambda sends stderr to CloudWatch; argparse would print the
+        unrecognized --cookie and its value there."""
+        curl = "curl https://api.example.com/ --cookie 'session=SECRET-7f3a'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
+        assert capsys.readouterr().err == ""
+
 
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
@@ -204,6 +216,33 @@ class TestAnalyzeRouting:
             _event("POST", "/api/analyze", encoded, is_base64=True), None
         )
         assert result["statusCode"] == 200
+
+
+class TestUnhandledErrors:
+    def test_logged_without_request_data(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unexpected exception becomes a plain 500, and the log names only
+        its type and location: its message can quote request data."""
+        secret = "SECRET-7f3a"
+
+        def boom(captured: CapturedRequest) -> Any:
+            raise RuntimeError(f"cannot analyze https://api.example.com/?token={secret}")
+
+        monkeypatch.setattr(handler, "analyze", boom)
+        curl = f"curl 'https://api.example.com/?token={secret}'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        with caplog.at_level(logging.DEBUG):
+            result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+
+        assert result["statusCode"] == 500
+        assert json.loads(result["body"]) == {"detail": "Internal error."}
+        out, err = capsys.readouterr()
+        assert secret not in caplog.text + out + err
+        assert "Unhandled RuntimeError at " in caplog.text
 
 
 class TestRouting:
@@ -371,6 +410,21 @@ class TestRunUrlGuard:
         assert "Blocked redirect to https://example.com:99999/" in detail
         assert "port must be a whole number from 1 to 65535" in detail
         assert fetched == ["https://api.example.com/start"]
+
+    def test_request_url_is_not_logged_by_httpx(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """httpx logs each request's URL at INFO; that must not reach the
+        Lambda's logs even if they're configured to keep INFO."""
+        with caplog.at_level(logging.INFO):
+            result, fetched, _ = self._post_run(
+                monkeypatch,
+                "https://api.example.com/start?token=SECRET-7f3a",
+                lambda r: httpx.Response(200),
+            )
+        assert result["statusCode"] == 200
+        assert fetched == ["https://api.example.com/start?token=SECRET-7f3a"]
+        assert "SECRET-7f3a" not in caplog.text
 
     def test_hop_userinfo_is_not_turned_into_basic_auth(self, monkeypatch):
         """httpx's auto-follow ignores user:pass@ in a Location; a hand-

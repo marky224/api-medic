@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import traceback
 from typing import Any
 
 import httpx
@@ -57,8 +59,28 @@ from api_medic.core.runner_safety import (
 # burn its 30s ceiling on a slow target.
 LIVE_RUN_TIMEOUT_SECONDS = 10.0
 
+logger = logging.getLogger(__name__)
+
+# httpx logs every request's URL at INFO. The function's plain-text logs
+# drop INFO today, but a JSON log config at INFO would not; keep request
+# URLs out of CloudWatch either way.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    try:
+        return _route(event)
+    except Exception as e:
+        # Log only the exception type and where it was raised. Its message
+        # can quote the request URL, a header or the body (pydantic errors
+        # quote their input), and PRIVACY.md keeps request data out of the
+        # logs. Re-raising would have the Lambda runtime log the message.
+        frame = traceback.extract_tb(e.__traceback__)[-1]
+        logger.error("Unhandled %s at %s:%s", type(e).__name__, frame.filename, frame.lineno)
+        return _err(500, "Internal error.")
+
+
+def _route(event: dict[str, Any]) -> dict[str, Any]:
     method, path = _extract_route(event)
 
     if method == "GET" and path == "/api/health":

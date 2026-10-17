@@ -153,6 +153,12 @@ sam delete --stack-name api-medic-demo --region us-east-1
   `tests/unit/test_lambda_handler.py`.
 - **No persistence**: no DynamoDB, no S3 writes for user data, no
   CloudWatch persistence beyond the function's 14-day log retention.
+- **No request data in the logs** (see `PRIVACY.md`): the handler logs
+  an unhandled exception's type and location only, never its message,
+  and answers a plain 500; the httpx logger is held at WARNING so request
+  URLs aren't logged; `parse_curl` swallows argparse's stderr, which
+  quotes rejected curl arguments. Verified by `TestUnhandledErrors` and
+  the stderr and logging tests in `tests/unit/test_lambda_handler.py`.
 
 ## Building locally
 
