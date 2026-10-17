@@ -19,7 +19,11 @@ updates:
     # Majors (vite 8, tailwind 4, vitest 5, jsdom 30, ...) are a planned
     # separate migration. An `update-types` ignore doesn't apply to
     # security updates, so a security fix that needs a major still opens
-    # a PR.
+    # a PR. The options reference doesn't say this; the source is
+    # dependabot-core's common/lib/dependabot/config/ignore_condition.rb,
+    # where `ignored_versions` returns only explicit `versions` for
+    # security updates:
+    # https://github.com/dependabot/dependabot-core/blob/a026401a0604a43d12f04dfa4a3557ac0d5bf0bb/common/lib/dependabot/config/ignore_condition.rb#L41-L46
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
