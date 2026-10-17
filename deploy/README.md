@@ -103,10 +103,21 @@ so it matches `ref:refs/heads/main` whatever triggered it.
 
 Once triggered, the workflow:
 
-1. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
-2. Runs `sam build` and `sam deploy` with the secrets as parameter overrides.
-3. Builds the frontend with `VITE_DEMO_MODE=1`.
+1. Builds the frontend with `VITE_DEMO_MODE=1` and runs `sam build`,
+   without AWS credentials.
+2. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
+3. Runs `sam deploy` with the secrets as parameter overrides.
 4. Syncs `frontend/dist/` to the S3 bucket and invalidates CloudFront.
+
+The role is assumed only after the build because `npm ci` runs
+third-party install scripts, `sam build` pip-installs packages, and
+`configure-aws-credentials` exports the role's keys to every later step.
+That keeps ready-made keys away from package code. It isn't full
+isolation: with `id-token: write` on the job, any step can ask the
+runner for an OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`) and exchange it for the role if it
+knows the role ARN. Building in a separate job without `id-token: write`
+would close that.
 
 The workflow is also dispatchable manually from the Actions tab. Manual
 dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the

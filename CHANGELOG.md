@@ -20,6 +20,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - `/api/run` also vets the submitted URL as `httpx` will send it. Python's socket module and `httpx` IDNA-encode some hostnames differently (`xß` becomes `xss` for one and `xn--x-qfa` for the other), so the guard could check a different name than the one fetched.
 - `/api/run` returns 400 instead of 500 for a hostname `getaddrinfo` can't encode (e.g. a label over 63 characters) and for a URL `httpx` can't parse (e.g. a non-numeric port).
 - The deploy role policy in `deploy/iam/inline-policy.json` is narrower. On `api-medic-demo-*` roles it now allows `iam:AttachRolePolicy`/`DetachRolePolicy` only for `AWSLambdaBasicExecutionRole`, allows `iam:PassRole` only to Lambda, and drops `iam:PutRolePolicy`. Before, a workflow on `main` could create a role with `AdministratorAccess` and a Lambda function that used it. SAM's generated function role needs nothing more. The policy is applied to AWS by hand.
+- The demo deploy workflow assumes the AWS deploy role only after the frontend and Lambda builds, so `npm ci` install scripts and `sam build` no longer run with the role's keys in their environment. The job still has `id-token: write`, so build steps could request an OIDC token themselves; see `deploy/README.md`.
 
 ## [1.1.1] - 2026-05-02
 

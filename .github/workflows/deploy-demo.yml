@@ -59,12 +59,6 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -97,6 +91,15 @@ jobs:
       - name: SAM build
         working-directory: deploy
         run: sam build
+
+      # Assume the deploy role only after the build steps. npm ci runs
+      # third-party install scripts and sam build pip-installs packages,
+      # and this step exports the role's keys to every step after it.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: SAM deploy
         working-directory: deploy
