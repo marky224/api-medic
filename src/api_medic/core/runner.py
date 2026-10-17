@@ -27,10 +27,11 @@ import httpx
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID, NameOID
 
+from .. import __version__
 from .captured import CapturedDns, CapturedRequest, CapturedResponse, CapturedTls
 from .models import TimingBreakdown
 
-DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
+DEFAULT_USER_AGENT = f"api-medic/{__version__} (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
 
