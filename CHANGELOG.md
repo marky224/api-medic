@@ -7,6 +7,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 ### Changed
 
 - The hosted demo deploy now waits for CI. `deploy-demo.yml` runs on `workflow_run` after the CI workflow completes and deploys only when that run succeeded for a push to `main`, checking out the exact commit CI tested. It never deploys for pull_request CI runs. Previously it ran on every push to `main` in parallel with CI, so a commit with red CI still deployed. Manual dispatch and the `DEMO_DEPLOY_ENABLED` gate are unchanged.
+- Dependabot opens fewer PRs. Security updates are grouped into one PR per ecosystem directory, GitHub Actions updates (majors included) arrive as one PR, and npm semver-major version updates are ignored until the planned major-version migration. Security updates that need a major bump still come through.
 
 ### Fixed
 
