@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RequestComposer } from "./RequestComposer";
 import jwtReport from "../../../tests/fixtures/reports/02-jwt-expired.json";
 
@@ -82,8 +82,11 @@ describe("RequestComposer", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: /^Re-run$/ }));
-    await screen.findByText(/Bearer token has expired/);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The first Report is still on screen, so findByText would match it
+    // without waiting for the re-run. Wait on the call count instead.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("shows an error when the API responds non-2xx", async () => {
