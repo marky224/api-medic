@@ -73,12 +73,24 @@ when all of these hold:
 - the repo variable `DEMO_DEPLOY_ENABLED` is `true`,
 - the CI run concluded `success` (the integration job is
   `continue-on-error`, so a live-network flake there doesn't block it),
-- the CI run was for a `push` event, and
-- its head branch is `main`.
+- the CI run was for a `push` event,
+- its head branch is `main`, and
+- its commit (`workflow_run.head_sha`) is still `main`'s tip
+  (`github.sha`, which is `main`'s head when the deploy run is
+  triggered).
 
-It checks out `workflow_run.head_sha`, so it deploys the exact commit CI
-tested even if `main` has moved since. If CI fails, nothing deploys;
-re-running CI to green triggers the deploy.
+It checks out `workflow_run.head_sha`, the exact commit CI tested. If CI
+fails, nothing deploys. Re-running CI to green triggers the deploy only
+if that commit is still `main`'s tip; once a newer commit has landed, its
+own CI run is the one that deploys. The same check stops an older commit
+from deploying over a newer one when two pushes finish CI out of order.
+
+Deploys run one at a time (job-level `concurrency: deploy-demo`, with
+`cancel-in-progress: false`). A running deploy is never cancelled; a
+newer pending deploy replaces an older pending one. The group is on the
+job, not the workflow, because every CI completion starts a run of this
+workflow; at workflow level, the runs that get skipped (PR CI, for
+example) would still join the group and cancel a pending deploy.
 
 `workflow_run` also fires for pull_request CI runs, including fork PRs,
 and always runs the workflow file from `main` with secrets and

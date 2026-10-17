@@ -29,12 +29,25 @@ jobs:
     # The automatic deploy also needs the triggering CI run to have
     # succeeded on a push to main. `branches: [main]` above still matches a
     # fork PR whose branch is named main; the event check is what stops it.
+    # The tested commit must also still be main's tip (github.sha is main's
+    # head when this run was triggered), so re-running an older commit's CI,
+    # or two pushes whose CI finishes out of order, can't deploy an older
+    # commit over a newer one.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (vars.DEMO_DEPLOY_ENABLED == 'true' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'main')
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_sha == github.sha)
+    # One deploy at a time; a newer pending deploy replaces an older one.
+    # Job-level, not workflow-level: every CI completion (PR runs included)
+    # starts a run of this workflow, and at workflow level those runs would
+    # join the group before their job is skipped and cancel a pending
+    # deploy. A job skipped by its `if` never joins a job-level group.
+    concurrency:
+      group: deploy-demo
+      cancel-in-progress: false
     env:
       AWS_REGION: us-east-1
       STACK_NAME: api-medic-demo
