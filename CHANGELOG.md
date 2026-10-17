@@ -4,6 +4,10 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- `README.md` and `extension/README.md` link the extension's Chrome Web Store and Firefox Add-ons listings.
+
 ### Changed
 
 - The hosted demo deploy now waits for CI. `deploy-demo.yml` runs on `workflow_run` after the CI workflow completes and deploys only when that run succeeded for a push to `main`, checking out the exact commit CI tested. It skips the deploy if that commit is no longer `main`'s tip, so re-running an older commit's CI, or two pushes whose CI finishes out of order, can't deploy an older commit over a newer one. Deploys run one at a time. It never deploys for pull_request CI runs. Previously it ran on every push to `main` in parallel with CI, so a commit with red CI still deployed. Manual dispatch and the `DEMO_DEPLOY_ENABLED` gate are unchanged.

@@ -7,6 +7,13 @@ shape every other api-medic surface (CLI, web UI, hosted demo) returns is
 rendered inline in the panel via the `ReportView` React component imported
 directly from the main frontend.
 
+## Install
+
+- Chrome / Edge / other Chromium: [Chrome Web Store](https://chromewebstore.google.com/detail/api-medic/fhopbgedlmhdfbmnljihdfiijnmdjdoe)
+- Firefox: [Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/api-medic/)
+
+To build and load it from source instead, see below.
+
 ## Develop
 
 ```sh
