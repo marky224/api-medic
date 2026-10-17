@@ -15,6 +15,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ### Fixed
 
+- The `auth.jwt.expired` finding says the expired token is "the most likely cause of the 401" only when the response is a 401. Before, it said so for any status, and for a captured request with no response.
 - `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It also gives the right reason the deploy's concurrency group is job-level.
 - The frontend `HarUpload` and `RequestComposer` Re-run tests now wait for the second request instead of asserting the call count as soon as the already-rendered Report matched. The `HarUpload` one failed CI intermittently.
 
