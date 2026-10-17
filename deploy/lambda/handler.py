@@ -9,7 +9,11 @@ The /api/run path goes through `core.runner_safety` first to block
 SSRF (non-https, RFC1918, link-local incl. EC2 metadata, multicast,
 loopback, any other non-global address), on the URL both as given and
 as httpx will send it. Redirects are followed by hand and every hop's
-target goes through the same guard before it is fetched.
+target goes through the same guard before it is fetched. Every
+connection (the TLS probe, the request and each hop) is pinned: it
+resolves the name once and connects only to an address that passed the
+same check, so a DNS answer that changes after the guard ran can't
+point it somewhere else.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -152,6 +156,7 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
             timeout=LIVE_RUN_TIMEOUT_SECONDS,
             probe_network=True,
             url_guard=_check_redirect_safe,
+            pin_connections=True,
         )
     except UnsafeURLError as e:
         return _err(400, str(e))

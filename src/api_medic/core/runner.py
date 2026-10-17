@@ -29,6 +29,7 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 
 from .captured import CapturedDns, CapturedRequest, CapturedResponse, CapturedTls
 from .models import TimingBreakdown
+from .runner_safety import PinnedTransport, connect_pinned
 
 DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -56,6 +57,7 @@ def run(
     transport: httpx.BaseTransport | None = None,
     probe_network: bool = True,
     url_guard: Callable[[str], object] | None = None,
+    pin_connections: bool = False,
 ) -> CapturedRequest:
     """Execute an HTTP request and capture the result.
 
@@ -69,6 +71,13 @@ def run(
     caller. At most MAX_GUARDED_REDIRECTS hops are followed; past that the
     last redirect response is returned unfollowed. The caller is still
     responsible for vetting the initial URL.
+
+    `pin_connections` is for the public Lambda too. Every connection (the
+    TLS probe, the request and each redirect hop) then resolves the name
+    once, refuses any non-public address with UnsafeURLError, and
+    connects to the checked IP, so a DNS answer that changes after the
+    caller's check can't redirect it. Ignored for the request when
+    `transport` is given.
 
     Network failures (DNS, connection refused, timeout) produce a
     CapturedRequest with `response=None`. Diagnostic checks that need a
@@ -96,7 +105,13 @@ def run(
         captured_dns, dns_ms = _resolve_dns(parsed.hostname)
         if is_https:
             port = parsed.port or 443
-            captured_tls, tls_ms = _probe_tls(parsed.hostname, port)
+            if pin_connections:
+                captured_tls, tls_ms = _probe_tls(parsed.hostname, port, connect=connect_pinned)
+            else:
+                captured_tls, tls_ms = _probe_tls(parsed.hostname, port)
+
+    if transport is None and pin_connections:
+        transport = PinnedTransport()
 
     start = time.monotonic()
     response: httpx.Response | None = None
@@ -213,23 +228,30 @@ def _resolve_dns(
 
 
 def _probe_tls(
-    host: str, port: int, timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS
+    host: str,
+    port: int,
+    timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
+    connect: Callable[[str, int, float], socket.socket] | None = None,
 ) -> tuple[CapturedTls | None, float]:
     """Open a separate TLS connection just to inspect the cert + protocol.
 
     Verification is disabled — we want to *detect* mismatches in checks,
     not error out before reaching them. Returns (None, elapsed) on any
-    socket/TLS failure.
+    socket/TLS failure. `connect`, if given, opens the TCP connection
+    instead of socket.create_connection (the pinned, guarded path); any
+    UnsafeURLError it raises propagates.
     """
     start = time.monotonic()
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with (
-            socket.create_connection((host, port), timeout=timeout) as sock,
-            ctx.wrap_socket(sock, server_hostname=host) as ssock,
-        ):
+        sock = (
+            socket.create_connection((host, port), timeout=timeout)
+            if connect is None
+            else connect(host, port, timeout)
+        )
+        with sock, ctx.wrap_socket(sock, server_hostname=host) as ssock:
             der = ssock.getpeercert(binary_form=True)
             version = ssock.version() or ""
             if not der:

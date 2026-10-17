@@ -5,8 +5,9 @@ both captured-mode and live-run paths:
 
 - `POST /api/analyze` — HAR/curl input, runs through the engine
 - `POST /api/run` — live request execution. SSRF-guarded (rejects
-  RFC1918, link-local incl. EC2 metadata, multicast, loopback, http://);
-  10 s per-request timeout; 2 req/sec sustained throttle (burst 5)
+  RFC1918, link-local incl. EC2 metadata, multicast, loopback, http://,
+  and connects only to the address it checked, so DNS rebinding can't
+  swap in another); 10 s per-request timeout; 2 req/sec sustained throttle (burst 5)
   via API Gateway; Lambda capped at 5 concurrent executions.
 
 Architecture: S3 (React build) + CloudFront + API Gateway HTTP API +
@@ -145,6 +146,11 @@ sam delete --stack-name api-medic-demo --region us-east-1
 - `/api/run` MUST go through `core.runner_safety.check_url_safe`
   before any socket is opened. Verified by an explicit assertion in
   the same test module.
+- `/api/run` MUST open every connection (TLS probe, request, redirect
+  hops) through `core.runner_safety`'s pinned connector
+  (`run(..., pin_connections=True)`), so each socket goes to an address
+  checked in the same step. Verified by `TestRunConnectionPinning` in
+  `tests/unit/test_lambda_handler.py`.
 - **No persistence**: no DynamoDB, no S3 writes for user data, no
   CloudWatch persistence beyond the function's 14-day log retention.
 

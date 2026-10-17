@@ -74,7 +74,7 @@ Pure Python library. No web, no CLI, no AWS dependencies. Importable and usable 
 
 Responsibilities:
 
-- **Runner.** Given a request specification, execute it using `httpx` and capture full timing breakdown (DNS, connect, TLS, TTFB, download), cert chain details, negotiated protocol version, redirect chain. Used by CLI, local web UI, and the hosted-demo Lambda. The Lambda call path additionally goes through an SSRF guard (`core.runner_safety`) before any socket is opened.
+- **Runner.** Given a request specification, execute it using `httpx` and capture full timing breakdown (DNS, connect, TLS, TTFB, download), cert chain details, negotiated protocol version, redirect chain. Used by CLI, local web UI, and the hosted-demo Lambda. The Lambda call path additionally goes through an SSRF guard (`core.runner_safety`) before any socket is opened, and every connection it opens is pinned to an address the guard checked.
 - **Parser.** Given a HAR file, a curl command string, or a raw HTTP request/response pair, normalize into the same internal `CapturedRequest` representation that the Runner produces.
 - **Check battery.** Run all applicable checks against a normalized request/response pair. Produce a list of `Finding` objects.
 - **Renderers.** Convert a `Report` into terminal output, JSON, Markdown, or HTML.
@@ -111,7 +111,7 @@ Both captured (HAR/curl) and live-run inputs are exposed. Architecture:
 
 - **S3 + CloudFront.** Hosts the same React build as the local web UI. Subdomain `api-medic.markandrewmarquez.com` via CNAME pointing at the CloudFront distribution. ACM certificate must be issued in `us-east-1` regardless of where any other infrastructure lives — that's a CloudFront constraint.
 - **API Gateway + Lambda.** Single Lambda function handling `POST /api/analyze`, `POST /api/run`, and `GET /api/health`. Wraps `api_medic.core` and runs the parser + check battery, plus the live Runner for `/api/run`. Returns the `Report` and exits.
-- **Outbound HTTP is allowed but constrained.** `/api/run` goes through the SSRF guard (HTTPS only; block RFC1918, link-local incl. 169.254.169.254, multicast, loopback, and any other non-global address such as CGNAT 100.64.0.0/10; resolve the hostname, both as given and as httpx will send it since their IDNA encodings can differ, and check every resolved IP) and a short per-request timeout (≤10s). Redirects are followed by hand, at most 5 hops, and every hop's target goes through the same guard before it is fetched; a blocked hop returns 400 and is never requested. The connection is not yet pinned to the checked IP — see [Hardening items](#hardening-items). Body and response size are capped well under the 10 MB API Gateway payload limit.
+- **Outbound HTTP is allowed but constrained.** `/api/run` goes through the SSRF guard (HTTPS only; block RFC1918, link-local incl. 169.254.169.254, multicast, loopback, and any other non-global address such as CGNAT 100.64.0.0/10; resolve the hostname, both as given and as httpx will send it since their IDNA encodings can differ, and check every resolved IP) and a short per-request timeout (≤10s). Redirects are followed by hand, at most 5 hops, and every hop's target goes through the same guard before it is fetched; a blocked hop returns 400 and is never requested. Every connection (the TLS probe, the request and each hop) is pinned: it resolves the name once, rejects the lot if any address isn't public, and connects to the checked IP while keeping the hostname for `Host`, SNI and certificate verification, so a DNS-rebinding answer that changes after the guard ran can't redirect it. The guarded path never uses a proxy. Body and response size are capped well under the 10 MB API Gateway payload limit.
 - **Cost / abuse controls.** API Gateway throttle on `/api/run` (low default; tunable in the SAM template), Lambda reserved concurrency on the function, AWS Budget at $10/month with 50%/100%/forecast alerts. The function is publicly callable; assume any URL the user submits will be fetched.
 - **No DynamoDB, no S3 writes, no CloudWatch persistence beyond default 14-day log retention.** Stateless by design.
 
@@ -527,7 +527,7 @@ These are out of scope for v1. None of them block the done definition.
 
 Known gaps in shipped behavior, tracked here until they're closed.
 
-- **DNS rebinding (TOCTOU) in the SSRF guard.** `core.runner_safety.check_url_safe` resolves the hostname and rejects any non-global address, but the checked IPs aren't pinned to the connection. httpx resolves the name again when it connects, and so does the pre-flight TLS probe (`runner._probe_tls`). A hostname with a short TTL can answer the guard with a public address and the connection with an internal one. The same gap applies to every redirect hop. Closing it means connecting to the checked IP while keeping the hostname for SNI and `Host` (e.g. a custom httpcore transport), for the TLS probe and each hop alike.
+None open. (DNS rebinding in the SSRF guard was closed by pinning every guarded connection to a checked address; see `core.runner_safety`.)
 
 ---
 

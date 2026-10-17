@@ -15,10 +15,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpcore
 import httpx
 import pytest
 
-from api_medic.core.captured import CapturedRequest
+from api_medic.core.captured import CapturedDns, CapturedRequest
 from api_medic.core.engine import analyze
 from api_medic.core.runner import run
 
@@ -424,3 +425,116 @@ class TestRunUrlGuard:
 def _path_cleanup():
     """Each test runs with handler module in sys.modules; that's fine."""
     yield
+
+
+_OK = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+
+def _redirect(location: str) -> bytes:
+    return f"HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n".encode()
+
+
+class TestRunConnectionPinning:
+    """Every connection /api/run opens (the TLS probe, the request, each
+    redirect hop) must go to an address checked in the same step, never to a
+    fresh lookup of the name. The fake resolver answers each name from a
+    script, one answer per lookup with the last repeating, so a name can look
+    public to the guard and private to the connection, as a DNS-rebinding
+    server would arrange. Nothing is opened: the probe's
+    socket.create_connection and httpcore's connect_tcp are recorded, and
+    connect_tcp answers from canned responses."""
+
+    @pytest.fixture
+    def net(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        state: dict[str, Any] = {"answers": {}, "probe": [], "tcp": [], "responses": []}
+
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            script = state["answers"][host]
+            ip = script.pop(0) if len(script) > 1 else script[0]
+            family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            return [(family, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+        def create_connection(address: tuple[str, int], *a: Any, **kw: Any) -> Any:
+            state["probe"].append(address)
+            raise ConnectionRefusedError("offline test")
+
+        def connect_tcp(
+            self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
+        ) -> httpcore.NetworkStream:
+            state["tcp"].append((host, port))
+            return httpcore.MockStream([state["responses"].pop(0)])
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(socket, "create_connection", create_connection)
+        monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+        monkeypatch.setattr(
+            "api_medic.core.runner._resolve_dns",
+            lambda host, timeout=5.0: (CapturedDns(records=[]), 0.0),
+        )
+        return state
+
+    @staticmethod
+    def _post(url: str) -> dict[str, Any]:
+        body = json.dumps({"method": "GET", "url": url})
+        return handler.lambda_handler(_event("POST", "/api/run", body), None)
+
+    def test_name_that_rebinds_after_the_guard_is_never_connected(
+        self, net: dict[str, Any]
+    ) -> None:
+        # The guard looks the name up twice (as typed, as httpx sends it).
+        net["answers"] = {"rebind.example": ["93.184.216.34", "93.184.216.34", "10.0.0.5"]}
+        net["responses"] = [_OK]
+
+        result = self._post("https://rebind.example/")
+
+        assert (net["probe"], net["tcp"]) == ([], [])
+        assert result["statusCode"] == 400
+        assert "10.0.0.5" in json.loads(result["body"])["detail"]
+
+    def test_probe_and_request_connect_to_the_checked_address(self, net: dict[str, Any]) -> None:
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+
+        result = self._post("https://api.example.com/")
+
+        assert result["statusCode"] == 200
+        assert net["probe"] == [("93.184.216.34", 443)]
+        assert net["tcp"] == [("93.184.216.34", 443)]
+
+    def test_hop_that_rebinds_after_its_check_is_never_connected(self, net: dict[str, Any]) -> None:
+        net["answers"] = {
+            "api.example.com": ["93.184.216.34"],
+            "hop.example": ["93.184.216.35", "169.254.169.254"],
+        }
+        net["responses"] = [_redirect("https://hop.example/next"), _OK]
+
+        result = self._post("https://api.example.com/start")
+
+        assert result["statusCode"] == 400
+        assert "169.254.169.254" in json.loads(result["body"])["detail"]
+        assert net["tcp"] == [("93.184.216.34", 443)]
+
+    def test_hop_to_an_ipv6_address_and_port_is_pinned(self, net: dict[str, Any]) -> None:
+        v6 = "2606:2800:220:1:248:1893:25c8:1946"
+        net["answers"] = {"api.example.com": ["93.184.216.34"], "hop.example": [v6]}
+        net["responses"] = [_redirect("https://hop.example:8443/next"), _OK]
+
+        result = self._post("https://api.example.com/start")
+
+        assert result["statusCode"] == 200
+        assert net["tcp"] == [("93.184.216.34", 443), (v6, 8443)]
+
+    def test_proxy_environment_is_ignored(
+        self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A proxy resolves the name itself, out of reach of the check, so the
+        guarded path must connect directly even if the environment sets one."""
+        for var in ("https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.9:3128")
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+
+        self._post("https://api.example.com/")
+
+        assert net["tcp"] == [("93.184.216.34", 443)]
