@@ -25,6 +25,13 @@ Lambda. DNS is managed by Route 53.
 3. **GitHub OIDC role** so the deploy workflow can assume an IAM role
    without long-lived keys. The role's trust policy should allow
    `sts:AssumeRoleWithWebIdentity` from `repo:marky224/api-medic:ref:refs/heads/main`.
+   Its trust and inline policies live in `deploy/iam/` and are applied
+   by hand, not by CI. For `api-medic-demo-*` roles, the inline policy
+   lets the deploy role attach only `AWSLambdaBasicExecutionRole`, pass
+   them only to Lambda, and not add inline policies at all.
+   That covers the function role SAM generates while
+   `ApiAnalyzeFunction` has no `Policies` (or other properties that make
+   SAM add policies). Widen `inline-policy.json` before adding any.
 4. **GitHub Actions secrets** in the repo:
    - `AWS_DEPLOY_ROLE_ARN` — the OIDC role's ARN
    - `ACM_CERTIFICATE_ARN` — the ARN of the cert from step 2

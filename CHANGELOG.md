@@ -19,6 +19,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - The SSRF guard now rejects any address that isn't globally routable (`not ip.is_global`). This covers CGNAT `100.64.0.0/10` and other special-use ranges the named checks missed.
 - `/api/run` also vets the submitted URL as `httpx` will send it. Python's socket module and `httpx` IDNA-encode some hostnames differently (`xß` becomes `xss` for one and `xn--x-qfa` for the other), so the guard could check a different name than the one fetched.
 - `/api/run` returns 400 instead of 500 for a hostname `getaddrinfo` can't encode (e.g. a label over 63 characters) and for a URL `httpx` can't parse (e.g. a non-numeric port).
+- The deploy role policy in `deploy/iam/inline-policy.json` is narrower. On `api-medic-demo-*` roles it now allows `iam:AttachRolePolicy`/`DetachRolePolicy` only for `AWSLambdaBasicExecutionRole`, allows `iam:PassRole` only to Lambda, and drops `iam:PutRolePolicy`. Before, a workflow on `main` could create a role with `AdministratorAccess` and a Lambda function that used it. SAM's generated function role needs nothing more. The policy is applied to AWS by hand.
 
 ## [1.1.1] - 2026-05-02
 
