@@ -55,24 +55,24 @@ jobs:
       # Deploy the commit CI tested, not whatever main points at now.
       # Manual dispatch has no workflow_run payload and uses the
       # dispatched ref.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+        uses: aws-actions/setup-sam@v3
         with:
           use-installer: true
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -96,7 +96,7 @@ jobs:
       # third-party install scripts and sam build pip-installs packages,
       # and this step exports the role's keys to every step after it.
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
