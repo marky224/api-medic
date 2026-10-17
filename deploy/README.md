@@ -26,12 +26,17 @@ Lambda. DNS is managed by Route 53.
    without long-lived keys. The role's trust policy should allow
    `sts:AssumeRoleWithWebIdentity` from `repo:marky224/api-medic:ref:refs/heads/main`.
    Its trust and inline policies live in `deploy/iam/` and are applied
-   by hand, not by CI. For `api-medic-demo-*` roles, the inline policy
-   lets the deploy role attach only `AWSLambdaBasicExecutionRole`, pass
-   them only to Lambda, and not add inline policies at all.
-   That covers the function role SAM generates while
-   `ApiAnalyzeFunction` has no `Policies` (or other properties that make
-   SAM add policies). Widen `inline-policy.json` before adding any.
+   by hand, not by CI. The inline policy's role statements cover only
+   `role/api-medic-demo-ApiAnalyzeFunctionRole-*`, which is SAM's
+   generated function role: SAM gives it the logical ID
+   `<function logical ID>Role`, and CloudFormation names it
+   `<stack>-<logical ID>-<unique id>`. They can't touch the deploy role
+   or any other `api-medic-demo-*` role. On that role, the deploy role
+   can attach only `AWSLambdaBasicExecutionRole`, can pass it only to
+   Lambda, and can't add inline policies. That's all the role needs
+   while `ApiAnalyzeFunction` has no `Policies` (or other properties that
+   make SAM add policies). Renaming the stack or the function, or adding
+   policies, means widening `inline-policy.json` first.
 4. **GitHub Actions secrets** in the repo:
    - `AWS_DEPLOY_ROLE_ARN` — the OIDC role's ARN
    - `ACM_CERTIFICATE_ARN` — the ARN of the cert from step 2

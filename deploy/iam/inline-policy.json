@@ -217,7 +217,7 @@
         "iam:UntagRole",
         "iam:UpdateAssumeRolePolicy"
       ],
-      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-*"
+      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-ApiAnalyzeFunctionRole-*"
     },
     {
       "Sid": "IamLambdaExecutionRoleBasicPolicyOnly",
@@ -226,7 +226,7 @@
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy"
       ],
-      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-*",
+      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-ApiAnalyzeFunctionRole-*",
       "Condition": {
         "ArnEquals": {
           "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -237,7 +237,7 @@
       "Sid": "IamPassLambdaExecutionRoleToLambda",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-*",
+      "Resource": "arn:aws:iam::444977504043:role/api-medic-demo-ApiAnalyzeFunctionRole-*",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "lambda.amazonaws.com"
