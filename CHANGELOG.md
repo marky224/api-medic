@@ -17,7 +17,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 - Every surface reports the real package version. `/api/health` (local web UI and hosted demo) said `0.1`, the live-run User-Agent said `api-medic/0.1`, and `api_medic.__version__` was `0.1.0`, while the package was 1.1.1. The version now lives only in `src/api_medic/__init__.py`; `pyproject.toml` reads it at build time, and the CLI, web app, Lambda handler and runner import it. Release bumps now edit `__init__.py`. The hosted-demo Lambda copies the source without installing the package, which is why the version can't come from package metadata.
 - The `auth.jwt.expired` finding says the expired token is "the most likely cause of the 401" only when the response is a 401. Before, it said so for any status, and for a captured request with no response.
-- `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It also gives the right reason the deploy's concurrency group is job-level.
+- `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It and the comment in `deploy-demo.yml` also give the right reason the deploy's concurrency group is job-level.
 - The frontend `HarUpload` and `RequestComposer` Re-run tests now wait for the second request instead of asserting the call count as soon as the already-rendered Report matched. The `HarUpload` one failed CI intermittently.
 
 ### Security
