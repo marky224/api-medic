@@ -1,7 +1,7 @@
 # Weekly version updates, grouped to keep the PR count down:
 # - npm (frontend, extension): minor and patch bumps in one PR per
-#   directory. Semver-major version updates are ignored for now (see the
-#   note on the npm entries).
+#   directory. Semver-major version updates are ignored (see the note on
+#   the npm entries).
 # - pip: minor and patch in one PR; majors still arrive as their own PRs.
 # - GitHub Actions: every update, majors included, in one PR.
 # Security updates get their own group per entry (`applies-to:
@@ -16,8 +16,9 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
-    # Majors (vite 8, tailwind 4, vitest 5, jsdom 30, ...) are a planned
-    # separate migration. An `update-types` ignore doesn't apply to
+    # Majors are done as planned migrations that move the build tooling
+    # together (as vite 8, tailwind 4, vitest 5 and jsdom 30 were), not as
+    # Dependabot PRs. An `update-types` ignore doesn't apply to
     # security updates, so a security fix that needs a major still opens
     # a PR. The options reference doesn't say this; the source is
     # dependabot-core's common/lib/dependabot/config/ignore_condition.rb,
@@ -39,7 +40,7 @@ updates:
     directory: /extension
     schedule:
       interval: weekly
-    # Same as /frontend: majors are a planned separate migration; security
+    # Same as /frontend: majors are done as planned migrations; security
     # updates still come through.
     ignore:
       - dependency-name: "*"

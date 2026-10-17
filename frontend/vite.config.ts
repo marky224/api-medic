@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,7 +72,7 @@ function fixturesPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), fixturesPlugin()],
+  plugins: [react(), tailwindcss(), fixturesPlugin()],
   server: {
     fs: {
       allow: [path.resolve(here, ".."), here],

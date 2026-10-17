@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // React UI. Output goes to extension/dist/, which is what the user loads
 // as an unpacked extension. Manifest is copied from public/ by Vite.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@frontend": path.resolve(here, "..", "frontend", "src"),
