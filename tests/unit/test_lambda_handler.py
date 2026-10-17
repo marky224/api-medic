@@ -327,6 +327,18 @@ class TestRunUrlGuard:
         assert "10.0.0.5" in json.loads(result["body"])["detail"]
         assert fetched == []
 
+    def test_idna_hostname_is_checked_as_typed(self, monkeypatch):
+        """The TLS probe connects by the name as typed, which socket encodes
+        with IDNA 2003 ('xß' -> 'xss'), not as httpx sends it ('xn--x-qfa').
+        The guard must vet that name too."""
+        monkeypatch.setattr(sys.modules[__name__], "_PRIVATE_NAMES", {"xss.example"})
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://xß.example/start", lambda r: httpx.Response(200)
+        )
+        assert result["statusCode"] == 400
+        assert "10.0.0.5" in json.loads(result["body"])["detail"]
+        assert fetched == []
+
     def test_url_httpx_rejects_returns_400(self, monkeypatch):
         result, fetched, _ = self._post_run(
             monkeypatch, "https://api.example.com:abc/", lambda r: httpx.Response(200)
