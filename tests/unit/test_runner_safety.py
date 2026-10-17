@@ -406,3 +406,40 @@ def test_check_url_safe_validates_before_any_lookup(monkeypatch: pytest.MonkeyPa
     with pytest.raises(InvalidURLError, match=_BRACKETS):
         check_url_safe("https://[example.com]/")
     assert lookups == []
+
+
+# ---- Site-local and embedded IPv4 ---------------------------------------
+
+
+def test_rejects_ipv6_site_local() -> None:
+    # fec0::/10 is deprecated, and Python still calls it is_global.
+    with pytest.raises(UnsafeURLError, match="site-local address fec0::1"):
+        check_url_safe("https://[fec0::1]/")
+
+
+@pytest.mark.parametrize(
+    ("literal", "message"),
+    [
+        ("::10.0.0.1", r"private address 10\.0\.0\.1 \(embedded in ::a00:1\)"),
+        ("::127.0.0.1", r"loopback address 127\.0\.0\.1 \(embedded in ::7f00:1\)"),
+    ],
+)
+def test_checks_ipv4_embedded_in_ipv4_compatible_address(literal: str, message: str) -> None:
+    with pytest.raises(UnsafeURLError, match=message):
+        check_url_safe(f"https://[{literal}]/")
+
+
+def test_checks_ipv4_embedded_in_nat64_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    _scripted_resolver(monkeypatch, ["64:ff9b::a9fe:a9fe"])
+    with pytest.raises(
+        UnsafeURLError,
+        match=r"link-local address 169\.254\.169\.254 \(embedded in 64:ff9b::a9fe:a9fe\)",
+    ):
+        check_url_safe("https://nat64.example/")
+
+
+@pytest.mark.parametrize("literal", ["::8.8.8.8", "64:ff9b::808:808"])
+def test_public_embedded_ipv4_is_still_rejected_as_reserved(literal: str) -> None:
+    # Both ranges sit in ::/8, which Python marks reserved.
+    with pytest.raises(UnsafeURLError, match="reserved address"):
+        check_url_safe(f"https://[{literal}]/")

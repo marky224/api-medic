@@ -260,24 +260,40 @@ class PinnedTransport(httpx.HTTPTransport):
         )
 
 
-def _check_ip_safe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+# IPv6 ranges whose last 32 bits are an IPv4 address: IPv4-compatible
+# (::a.b.c.d, deprecated) and the NAT64 well-known prefix. Where they're
+# routed, a connection to one reaches that IPv4 address.
+_EMBEDS_IPV4 = (ipaddress.IPv6Network("::/96"), ipaddress.IPv6Network("64:ff9b::/96"))
+
+
+def _check_ip_safe(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    embedded_in: ipaddress.IPv6Address | None = None,
+) -> None:
+    name = str(ip) if embedded_in is None else f"{ip} (embedded in {embedded_in})"
     # Order matters: link-local and loopback are technically subsets of
     # is_private in Python's classification. Check the more specific
     # categories first so the error message names the actual reason
     # (e.g. "link-local 169.254.169.254" rather than "private").
     if ip.is_loopback:
-        raise UnsafeURLError(f"Refusing to fetch loopback address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch loopback address {name}.")
     if ip.is_link_local:
-        raise UnsafeURLError(f"Refusing to fetch link-local address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch link-local address {name}.")
     if ip.is_multicast:
-        raise UnsafeURLError(f"Refusing to fetch multicast address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch multicast address {name}.")
     if ip.is_unspecified:
-        raise UnsafeURLError(f"Refusing to fetch unspecified address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch unspecified address {name}.")
+    if isinstance(ip, ipaddress.IPv6Address):
+        # Deprecated site-local fec0::/10 still passes is_global.
+        if ip.is_site_local:
+            raise UnsafeURLError(f"Refusing to fetch site-local address {name}.")
+        if any(ip in net for net in _EMBEDS_IPV4):
+            _check_ip_safe(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF), embedded_in=ip)
     if ip.is_private:
-        raise UnsafeURLError(f"Refusing to fetch private address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch private address {name}.")
     if ip.is_reserved:
-        raise UnsafeURLError(f"Refusing to fetch reserved address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch reserved address {name}.")
     # Catch-all for ranges the named checks above miss, e.g. CGNAT
     # 100.64.0.0/10 is neither private nor global.
     if not ip.is_global:
-        raise UnsafeURLError(f"Refusing to fetch non-public address {ip}.")
+        raise UnsafeURLError(f"Refusing to fetch non-public address {name}.")
