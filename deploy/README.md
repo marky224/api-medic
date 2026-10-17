@@ -59,14 +59,39 @@ aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/
 
 ## Deploying via GitHub Actions
 
-Pushes to `main` trigger `.github/workflows/deploy-demo.yml`, which:
+`.github/workflows/deploy-demo.yml` runs on `workflow_run` when the CI
+workflow completes, not on the push itself. The deploy job proceeds only
+when all of these hold:
+
+- the repo variable `DEMO_DEPLOY_ENABLED` is `true`,
+- the CI run concluded `success` (the integration job is
+  `continue-on-error`, so a live-network flake there doesn't block it),
+- the CI run was for a `push` event, and
+- its head branch is `main`.
+
+It checks out `workflow_run.head_sha`, so it deploys the exact commit CI
+tested even if `main` has moved since. If CI fails, nothing deploys;
+re-running CI to green triggers the deploy.
+
+`workflow_run` also fires for pull_request CI runs, including fork PRs,
+and always runs the workflow file from `main` with secrets and
+`id-token: write`. The job-level `if` is what keeps PR code away from
+AWS: a pull_request run fails the `event == 'push'` check. The
+`branches: [main]` filter alone isn't enough, because a fork PR from a
+branch named `main` matches it. The OIDC trust policy isn't a backstop
+here either: a `workflow_run` job's token carries the default branch ref,
+so it matches `ref:refs/heads/main` whatever triggered it.
+
+Once triggered, the workflow:
 
 1. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
 2. Runs `sam build` and `sam deploy` with the secrets as parameter overrides.
 3. Builds the frontend with `VITE_DEMO_MODE=1`.
 4. Syncs `frontend/dist/` to the S3 bucket and invalidates CloudFront.
 
-The workflow is also dispatchable manually from the Actions tab.
+The workflow is also dispatchable manually from the Actions tab. Manual
+dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the
+dispatched ref (the trust policy only accepts `main`).
 
 ## Tearing down
 
