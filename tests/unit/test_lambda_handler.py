@@ -348,6 +348,30 @@ class TestRunUrlGuard:
         assert "Invalid URL" in json.loads(result["body"])["detail"]
         assert fetched == []
 
+    @pytest.mark.parametrize("location", ["https://xn--zz.example/", "https:example.com"])
+    def test_unusable_location_gives_a_report_without_response(self, monkeypatch, location):
+        """httpx builds the next request as soon as a redirect arrives and
+        raises for a Location it can't use. That's the target server's
+        doing, so it fails the exchange (no response) instead of a 500."""
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://api.example.com/start", self._redirect_to(location)
+        )
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["response"] is None
+        assert fetched == ["https://api.example.com/start"]
+
+    def test_hop_with_out_of_range_port_is_blocked(self, monkeypatch):
+        result, fetched, _ = self._post_run(
+            monkeypatch,
+            "https://api.example.com/start",
+            self._redirect_to("https://example.com:99999/"),
+        )
+        assert result["statusCode"] == 400
+        detail = json.loads(result["body"])["detail"]
+        assert "Blocked redirect to https://example.com:99999/" in detail
+        assert "port must be a whole number from 1 to 65535" in detail
+        assert fetched == ["https://api.example.com/start"]
+
     def test_hop_userinfo_is_not_turned_into_basic_auth(self, monkeypatch):
         """httpx's auto-follow ignores user:pass@ in a Location; a hand-
         followed hop must not turn it into an Authorization header either."""
@@ -538,3 +562,108 @@ class TestRunConnectionPinning:
         self._post("https://api.example.com/")
 
         assert net["tcp"] == [("93.184.216.34", 443)]
+
+
+_PORT = "port must be a whole number from 1 to 65535"
+_BRACKETS = "square brackets are only allowed around an IPv6 address"
+_IDNA = "is not a valid internationalized hostname"
+_DNS = "can't be looked up in DNS"
+_ASCII_HEADERS = "Header names and values must be ASCII"
+
+
+class TestRunRejectsMalformedInput:
+    """Input /api/run can't send gets a 400 naming the problem, before any
+    DNS lookup or fetch. Each of these used to be a 500 on this route, on
+    api-medic serve's, or both."""
+
+    @pytest.fixture
+    def seen(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+        seen: dict[str, list[str]] = {"lookups": [], "fetched": []}
+
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            seen["lookups"].append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def record(request: httpx.Request) -> httpx.Response:
+            seen["fetched"].append(str(request.url))
+            return httpx.Response(200)
+
+        real_run = run
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(transport=httpx.MockTransport(record), probe_network=False)
+            return real_run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        return seen
+
+    @staticmethod
+    def _post(fields: dict[str, Any]) -> tuple[int, str]:
+        body = json.dumps({"method": "GET", "url": "https://api.example.com/", **fields})
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        return result["statusCode"], json.loads(result["body"]).get("detail", "")
+
+    @pytest.mark.parametrize(
+        ("url", "message"),
+        [
+            ("https://api.example.com:99999/", _PORT),
+            ("https://api.example.com:65536/", _PORT),
+            ("https://api.example.com:0/", _PORT),
+            ("https://api.example.com:-1/", _PORT),
+            ("https://api.example.com:+443/", _PORT),
+            ("https://api.example.com: 443/", _PORT),
+            ("https://api.example.com:\u0663/", _PORT),
+            ("https://api.example.com:1_0/", _PORT),
+            ("https://api.example.com:443:443/", _PORT),
+            ("https://api.example.com:abc/", _PORT),
+            ("https://[2001:db8::1]:99999/", _PORT),
+            ("https://[example.com]/", _BRACKETS),
+            ("https://[1.2.3.4]/", _BRACKETS),
+            ("https://[]/", _BRACKETS),
+            ("https://[::1/", _BRACKETS),
+            ("https://::1]/", _BRACKETS),
+            ("https://ex[ample].com/", _BRACKETS),
+            ("https://[2001:db8::1]x/", _BRACKETS),
+            ("https://user@[example.com]/", _BRACKETS),
+            ("https://[v1.fe]/", _BRACKETS),
+            ("https://xn--zz.example/", _IDNA),
+            ("https://xn--/", _IDNA),
+            ("https://xn--a.example/", _IDNA),
+            ("https://xn--abc-.example/", _IDNA),
+            ("https://xn--ls8h.la/", _IDNA),
+            ("https://xn--n3h.net/", _IDNA),
+            ("https://" + "a" * 64 + ".example/", _DNS),
+            ("https://a..b.example/", _DNS),
+            ("https://exa\tmple.com/", "Invalid URL"),
+            ("https://256.1.1.1/", "Invalid URL"),
+            ("https://example.com/\ud800", "can't be encoded as UTF-8"),
+        ],
+    )
+    def test_malformed_url(self, seen: dict[str, list[str]], url: str, message: str) -> None:
+        status, detail = self._post({"url": url})
+        assert status == 400
+        assert message in detail
+        assert seen == {"lookups": [], "fetched": []}
+
+    @pytest.mark.parametrize(
+        ("fields", "message"),
+        [
+            ({"body": 5}, "'body' must be a string or null"),
+            ({"body": {"a": 1}}, "'body' must be a string or null"),
+            ({"body": ["password=secret"]}, "'body' must be a string or null"),
+            ({"body": True}, "'body' must be a string or null"),
+            ({"body": "\ud800"}, "Body can't be encoded as UTF-8"),
+            ({"headers": {"X-T\u00f6ken": "v"}}, _ASCII_HEADERS),
+            ({"headers": {"X-A": "caf\u00e9"}}, _ASCII_HEADERS),
+            ({"headers": {"X-A": "\ud800"}}, _ASCII_HEADERS),
+            ({"method": "G\u00c9T"}, "Method must be ASCII"),
+        ],
+    )
+    def test_request_httpx_cannot_send(
+        self, seen: dict[str, list[str]], fields: dict[str, Any], message: str
+    ) -> None:
+        status, detail = self._post(fields)
+        assert status == 400
+        assert message in detail
+        assert seen == {"lookups": [], "fetched": []}

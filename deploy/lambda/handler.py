@@ -13,7 +13,9 @@ target goes through the same guard before it is fetched. Every
 connection (the TLS probe, the request and each hop) is pinned: it
 resolves the name once and connects only to an address that passed the
 same check, so a DNS answer that changes after the guard ran can't
-point it somewhere else.
+point it somewhere else. A request that can't be sent at all (a
+malformed URL, a non-ASCII header, a non-string body) gets a 400 before
+any DNS lookup.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -42,7 +44,13 @@ import httpx
 from api_medic.core.engine import analyze
 from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run as run_request
-from api_medic.core.runner_safety import UnsafeURLError, check_url_safe
+from api_medic.core.runner import validate_request
+from api_medic.core.runner_safety import (
+    InvalidRequestError,
+    InvalidURLError,
+    UnsafeURLError,
+    check_url_safe,
+)
 
 # Hard cap per the architecture invariants: a single live request can't
 # exceed this regardless of httpx defaults. Bounded so the Lambda doesn't
@@ -134,18 +142,20 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
         isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
     ):
         return _err(400, "'headers' must be a dict[str, str].")
+    if req_body is not None and not isinstance(req_body, str):
+        return _err(400, "'body' must be a string or null.")
 
-    # Vet the URL in both forms that get connected to: as given (the TLS
-    # probe connects by this hostname through the socket module, IDNA 2003)
-    # and as httpx will send it (IDNA 2008). Some names differ between the
+    # Reject what can't be sent at all before any DNS lookup. Then vet the
+    # URL in both forms that get connected to: as given (the TLS probe
+    # connects by this hostname through the socket module, IDNA 2003) and
+    # as httpx will send it (IDNA 2008). Some names differ between the
     # two, e.g. "xß" is "xss" to one and "xn--x-qfa" to the other.
     try:
+        validate_request(method, url, headers, req_body)
         check_url_safe(url)
         check_url_safe(str(httpx.URL(url)))
-    except UnsafeURLError as e:
+    except (InvalidRequestError, UnsafeURLError) as e:
         return _err(400, str(e))
-    except httpx.InvalidURL as e:
-        return _err(400, f"Invalid URL: {e}")
 
     try:
         captured = run_request(
@@ -172,7 +182,7 @@ def _check_redirect_safe(url: str) -> None:
     """SSRF guard for redirect hops; names the blocked target in the error."""
     try:
         check_url_safe(url)
-    except UnsafeURLError as e:
+    except (InvalidURLError, UnsafeURLError) as e:
         raise UnsafeURLError(f"Blocked redirect to {url}: {e}") from e
 
 

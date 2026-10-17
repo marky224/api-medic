@@ -6,9 +6,11 @@ it to fetch RFC1918 addresses, the EC2 metadata service
 validates the URL and resolves DNS before any socket is opened, and
 rejects anything that resolves to a special-use address.
 
-The CLI and local web UI deliberately do NOT call this — they're not
-public surfaces, and restricting them would block legitimate
-localhost-debugging.
+The CLI and local web UI deliberately do NOT use the SSRF checks
+(check_url_safe, the pinned connector) — they're not public surfaces,
+and restricting them would block legitimate localhost-debugging. They
+do use `validate_url` (through core.runner.run), which only rejects URLs
+that can't be fetched at all, so those get a 400 instead of a 500.
 
 Connections are pinned. Checking a name and then letting httpx (or the
 runner's TLS probe) resolve it again would leave a window of seconds in
@@ -22,9 +24,10 @@ SNI and certificate checks still use the original name.
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from collections.abc import Iterable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpcore
 import httpx
@@ -34,18 +37,117 @@ class UnsafeURLError(ValueError):
     """Raised when a URL fails the SSRF guard."""
 
 
+class InvalidRequestError(ValueError):
+    """Raised when a request can't be sent as given; callers answer 400."""
+
+
+class InvalidURLError(InvalidRequestError):
+    """Raised by validate_url for a URL that can't be fetched as given."""
+
+
+# scheme "://" authority; the authority ends at the first "/", "?" or "#".
+_AUTHORITY = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://([^/?#]*)")
+
+
+def validate_url(url: str) -> None:
+    """Reject a URL that can't be fetched as given, before any DNS lookup.
+
+    Raises InvalidURLError with a message fit for a 400. Covers the URLs
+    that used to surface as 500s: a port outside 1-65535 or not plain
+    ASCII digits, square brackets around anything but an IPv6 address,
+    a hostname httpx can't IDNA-decode or the socket module can't
+    IDNA-encode, and anything else httpx or urllib refuses to parse.
+    """
+    _check_host_and_port(url)
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL as e:
+        raise InvalidURLError(f"Invalid URL: {e}") from e
+    except UnicodeError as e:
+        raise InvalidURLError(
+            "Invalid URL: it contains characters that can't be encoded as UTF-8."
+        ) from e
+    raw_host = parsed.raw_host.decode("ascii")
+    try:
+        parsed.host  # noqa: B018 — decodes xn-- labels, which httpx doesn't check on parse
+    except UnicodeError as e:
+        raise InvalidURLError(
+            f"Invalid URL: {raw_host!r} is not a valid internationalized hostname ({e})."
+        ) from e
+    try:
+        split = urlsplit(url)
+        split.port  # noqa: B018 — urllib's own checks, which the TLS probe relies on
+        typed_host = split.hostname
+    except ValueError as e:
+        raise InvalidURLError(f"Invalid URL: {e}") from e
+    # getaddrinfo IDNA-encodes (IDNA 2003) the name before looking it up:
+    # the TLS probe passes it the name as typed, httpx its own encoding.
+    for name in (typed_host, raw_host):
+        if not name:
+            continue
+        try:
+            name.encode("idna")
+        except UnicodeError as e:
+            raise InvalidURLError(
+                f"Invalid URL: hostname {name!r} can't be looked up in DNS ({e})."
+            ) from e
+
+
+def _check_host_and_port(url: str) -> None:
+    """Check brackets and port in the URL's authority as written.
+
+    Done by hand because httpx and urllib disagree here, and urllib's
+    answer depends on the Python version: httpx takes ':+443' as 443 and
+    ':٣' as port 3, older urllib takes '[example.com]' as a hostname.
+    """
+    match = _AUTHORITY.match(url.strip())
+    if match is None:
+        return
+    host_port = match.group(1).rpartition("@")[2]
+    if host_port.startswith("["):
+        host, closed, rest = host_port[1:].partition("]")
+        if not closed or (rest and not rest.startswith(":")) or not _is_ipv6(host):
+            raise InvalidURLError(_brackets_message(host_port))
+        port = rest[1:]
+    elif "[" in host_port or "]" in host_port:
+        raise InvalidURLError(_brackets_message(host_port))
+    else:
+        port = host_port.partition(":")[2]
+    if port and not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+        raise InvalidURLError(
+            f"Invalid URL: port must be a whole number from 1 to 65535 (got {port!r})."
+        )
+
+
+def _brackets_message(host_port: str) -> str:
+    return (
+        f"Invalid URL: square brackets are only allowed around an IPv6 address (got {host_port!r})."
+    )
+
+
+def _is_ipv6(text: str) -> bool:
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
 def check_url_safe(url: str) -> list[str]:
     """Validate `url` is safe for the public Lambda to fetch.
 
     Returns the resolved IPs (for diagnostic logging). Raises
-    UnsafeURLError on any safety check failure.
+    InvalidURLError for a URL validate_url rejects, UnsafeURLError on any
+    safety check failure.
 
     Rules:
+    - The URL must pass validate_url.
     - Scheme must be https.
     - Hostname must parse.
     - Hostname-as-IP-literal must not be in any blocked range.
     - DNS resolution must succeed and yield only public addresses.
     """
+    validate_url(url)
     parsed = urlparse(url)
     if parsed.scheme.lower() != "https":
         raise UnsafeURLError(

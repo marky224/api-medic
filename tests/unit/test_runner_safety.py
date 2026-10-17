@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import socket
 import ssl
 from typing import Any
@@ -9,10 +10,12 @@ import httpx
 import pytest
 
 from api_medic.core.runner_safety import (
+    InvalidURLError,
     PinnedTransport,
     UnsafeURLError,
     check_url_safe,
     connect_pinned,
+    validate_url,
 )
 
 # ---- Scheme / parse ---------------------------------------------------
@@ -57,8 +60,11 @@ def test_rejects_no_hostname():
     ],
 )
 def test_rejects_unsafe_ip_literal(ip_literal: str):
+    # IPv6 literals need brackets in a URL; without them the host is
+    # malformed and the IP rule is never reached.
+    host = f"[{ip_literal}]" if ":" in ip_literal else ip_literal
     with pytest.raises(UnsafeURLError):
-        check_url_safe(f"https://{ip_literal}/path")
+        check_url_safe(f"https://{host}/path")
 
 
 def test_rejects_cgnat_as_non_public():
@@ -156,7 +162,9 @@ def test_dns_failure_surfaces_as_unsafe_url_error(monkeypatch):
 
 def test_unencodable_hostname_surfaces_as_unsafe_url_error(monkeypatch):
     """getaddrinfo IDNA-encodes the name first and raises UnicodeError (not
-    gaierror) for labels it can't encode, e.g. one over 63 characters."""
+    gaierror) for labels it can't encode. validate_url now rejects those
+    names before any lookup (see test_validate_url_*), but a UnicodeError
+    from getaddrinfo must still surface as UnsafeURLError."""
     import socket
 
     def fail(*a, **kw):
@@ -164,7 +172,7 @@ def test_unencodable_hostname_surfaces_as_unsafe_url_error(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fail)
     with pytest.raises(UnsafeURLError, match="DNS resolution failed"):
-        check_url_safe("https://" + "a" * 64 + ".example/")
+        check_url_safe("https://example.com/")
 
 
 # ---- Connection pinning -----------------------------------------------
@@ -339,3 +347,62 @@ def test_httpx_transport_still_keeps_its_pool_in_the_pool_attribute() -> None:
         "update PinnedTransport in core/runner_safety.py"
     )
     assert isinstance(PinnedTransport()._pool, httpcore.ConnectionPool)
+
+
+# ---- validate_url -------------------------------------------------------
+
+_PORT = "port must be a whole number from 1 to 65535"
+_BRACKETS = "square brackets are only allowed around an IPv6 address"
+_IDNA = "is not a valid internationalized hostname"
+_DNS = "can't be looked up in DNS"
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://example.com:99999/", _PORT),
+        ("https://example.com:65536/", _PORT),
+        ("https://example.com:0/", _PORT),
+        ("https://example.com:-1/", _PORT),
+        ("https://example.com:+443/", _PORT),  # httpx reads this as 443
+        ("https://example.com:٣/", _PORT),  # Arabic-Indic 3; httpx reads it as port 3
+        ("https://[2001:db8::1]:99999/", _PORT),
+        ("https://[example.com]/", _BRACKETS),
+        ("https://[1.2.3.4]/", _BRACKETS),
+        ("https://[::1/", _BRACKETS),
+        ("https://ex[ample].com/", _BRACKETS),
+        ("https://xn--zz.example/", _IDNA),
+        ("https://xn--ls8h.la/", _IDNA),
+        ("https://" + "a" * 64 + ".example/", _DNS),
+        ("https://a..b.example/", _DNS),
+        ("https://exa\tmple.com/", "Invalid URL"),
+        ("https://example.com/\ud800", "can't be encoded as UTF-8"),
+    ],
+)
+def test_validate_url_rejects(url: str, message: str) -> None:
+    with pytest.raises(InvalidURLError, match=re.escape(message)):
+        validate_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/",
+        "https://example.com:443/",
+        "https://example.com:/",
+        "https://user:pw@example.com:8443/path?q=1#frag",
+        "https://[2001:db8::1]:8443/",
+        "http://localhost:8765/api",
+        "https://xn--x-qfa.example/",
+        "https://xß.example/",
+    ],
+)
+def test_validate_url_accepts(url: str) -> None:
+    validate_url(url)
+
+
+def test_check_url_safe_validates_before_any_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    lookups = _scripted_resolver(monkeypatch, ["93.184.216.34"])
+    with pytest.raises(InvalidURLError, match=_BRACKETS):
+        check_url_safe("https://[example.com]/")
+    assert lookups == []

@@ -18,7 +18,7 @@ from __future__ import annotations
 import socket
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from urllib.parse import urlparse
 
 import dns.exception
@@ -29,7 +29,7 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 
 from .captured import CapturedDns, CapturedRequest, CapturedResponse, CapturedTls
 from .models import TimingBreakdown
-from .runner_safety import PinnedTransport, connect_pinned
+from .runner_safety import InvalidRequestError, PinnedTransport, connect_pinned, validate_url
 
 DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -80,9 +80,12 @@ def run(
     `transport` is given.
 
     Network failures (DNS, connection refused, timeout) produce a
-    CapturedRequest with `response=None`. Diagnostic checks that need a
-    response no-op for it.
+    CapturedRequest with `response=None`, and so does a redirect whose
+    Location httpx can't turn into a request. Diagnostic checks that need
+    a response no-op for it. A request that can't be sent as given raises
+    InvalidRequestError (see validate_request) before anything is sent.
     """
+    validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
     request_headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
 
@@ -129,7 +132,13 @@ def run(
             )
             if follow_redirects and url_guard is not None:
                 response = _follow_guarded_redirects(client, response, url_guard)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError):
+        # Beyond network and protocol errors: httpx builds the next request
+        # as soon as a redirect arrives, and raises InvalidURL or
+        # UnicodeError for a Location it can't use (e.g. "https:host", or an
+        # invalid xn-- label). Treat that as httpx treats a Location it
+        # can't parse: the exchange failed. The submitted request was
+        # validated up front, so these can only come from the response.
         response = None
     total_ms = (time.monotonic() - start) * 1000.0
 
@@ -168,6 +177,35 @@ def run(
         tls=captured_tls,
         source="live",
     )
+
+
+def validate_request(
+    method: str,
+    url: str,
+    headers: Mapping[str, str] | None = None,
+    body: bytes | str | None = None,
+) -> None:
+    """Raise InvalidRequestError if httpx can't send this request as given.
+
+    The URL goes through validate_url (InvalidURLError); the method and
+    header names and values must be ASCII, and a str body must encode as
+    UTF-8. run() calls this first. A caller with work to do before run()
+    (the Lambda's SSRF guard) can call it earlier, so bad input gets a
+    400 before any DNS lookup.
+    """
+    validate_url(url)
+    if not method.isascii():
+        raise InvalidRequestError(f"Method must be ASCII (got {method!r}).")
+    for name, value in (headers or {}).items():
+        if not (name.isascii() and value.isascii()):
+            raise InvalidRequestError(f"Header names and values must be ASCII (header {name!r}).")
+    if isinstance(body, str):
+        try:
+            body.encode("utf-8")
+        except UnicodeEncodeError as e:
+            raise InvalidRequestError(
+                "Body can't be encoded as UTF-8 (it contains an unpaired surrogate)."
+            ) from e
 
 
 def _follow_guarded_redirects(
