@@ -6,7 +6,7 @@ export function Privacy() {
           <h1 className="text-xl font-medium tracking-tight">
             api-medic browser extension — privacy
           </h1>
-          <p className="mt-1 text-sm text-muted">Last updated: 2026-10-17</p>
+          <p className="mt-1 text-sm text-muted">Last updated: 2026-10-18</p>
         </header>
 
         <article className="text-sm leading-relaxed space-y-5">
@@ -113,7 +113,7 @@ export function Privacy() {
                 X-Api-Key, X-Auth-Token, X-CSRF-Token, Private-Token and
                 Ocp-Apim-Subscription-Key, and any header whose name ends in
                 key or contains token, secret, password, session, signature or
-                credential.
+                credential (except CORS and WebSocket handshake headers).
               </li>
               <li>
                 <strong>URL parameters with credential-like names</strong>,

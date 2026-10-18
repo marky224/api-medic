@@ -143,6 +143,14 @@ describe("redactEntry: Authorization", () => {
     expect(decodeB64url(out.split(".")[1]!)).toEqual({ exp: 1 });
   });
 
+  it("masks a first part that isn't pure base64url, even if it decodes", () => {
+    // The lenient decoder drops "!@#$" and would accept what is left.
+    const claims = b64url(JSON.stringify(CLAIMS));
+    const out = maskedAuthorization(`Bearer ${JWT_HEADER}!@#$.${claims}.x`);
+    const firstPart = out.slice("Bearer ".length).split(".")[0]!;
+    expect(firstPart).toBe("*".repeat(JWT_HEADER.length + 4));
+  });
+
   it("treats BEARER like any other scheme, because the auth checks don't read it", () => {
     const out = maskedAuthorization(`BEARER ${JWT}`);
     expect(out).toBe(`BEARER ${"*".repeat(JWT.length)}`);
@@ -245,6 +253,23 @@ describe("redactEntry: other headers", () => {
     for (const side of ["request", "response"] as const) {
       for (const h of out[side].headers) expect(h.value, h.name).toBe("****** *****");
     }
+  });
+
+  it("masks a header named exactly Code, but not other header names ending in code", () => {
+    const out = redact(
+      entry({
+        headers: [
+          { name: "Code", value: "s3cret" },
+          { name: "X-Error-Code", value: "E42" },
+        ],
+        responseHeaders: [{ name: "code", value: "s3cret" }],
+      }),
+    );
+    expect(out.request.headers).toEqual([
+      { name: "Code", value: "******" },
+      { name: "X-Error-Code", value: "E42" },
+    ]);
+    expect(header(out, "code", "response")).toBe("******");
   });
 
   it("masks non-string values of secret headers and cookies, and keeps other non-strings", () => {
@@ -417,6 +442,52 @@ describe("redactEntry: credential names", () => {
     );
     expect(out.request.postData!.params).toEqual(
       PARAM_NAMES.map((name) => ({ name, value: "**" })),
+    );
+  });
+
+  // Bracketed and array-style names, as qs, Rails and PHP forms produce.
+  const BRACKETED = [
+    { name: "user[otp_code]", value: "123456", masked: "******" },
+    { name: "auth[access_key]", value: "AKIAEXAMPLE", masked: "***********" },
+    { name: "two_factor[code]", value: "654321", masked: "******" },
+    { name: "user[password]", value: "pw", masked: "**" },
+    { name: "access_key[]", value: "AK2", masked: "***" },
+    { name: "user[email]", value: "a@b.test", masked: "a@b.test" },
+    { name: "page[]", value: "2", masked: "2" },
+  ];
+
+  it("checks the last bracket segment of form field names", () => {
+    const out = redact(
+      entry({
+        request: {
+          postData: {
+            mimeType: "application/x-www-form-urlencoded",
+            text: BRACKETED.map((p) => `${p.name}=${p.value}`).join("&"),
+            params: BRACKETED.map(({ name, value }) => ({ name, value })),
+          },
+        },
+      }),
+    );
+    expect(out.request.postData!.text).toBe(
+      BRACKETED.map((p) => `${p.name}=${p.masked}`).join("&"),
+    );
+    expect(out.request.postData!.params).toEqual(
+      BRACKETED.map((p) => ({ name: p.name, value: p.masked })),
+    );
+  });
+
+  it("checks the last bracket segment of query names, encoded or not", () => {
+    const out = redact(
+      entry({
+        url: `https://api.example.com/x?${BRACKETED.map((p) => `${p.name}=${p.value}`).join("&")}&user%5Botp_code%5D=1`,
+        request: { queryString: BRACKETED.map(({ name, value }) => ({ name, value })) },
+      }),
+    );
+    expect(out.request.url).toBe(
+      `https://api.example.com/x?${BRACKETED.map((p) => `${p.name}=${p.masked}`).join("&")}&user%5Botp_code%5D=*`,
+    );
+    expect(out.request.queryString).toEqual(
+      BRACKETED.map((p) => ({ name: p.name, value: p.masked })),
     );
   });
 

@@ -87,7 +87,9 @@ const SECRET_NAME_PARTS = [
   "token",
   "verifier",
 ];
-const SECRET_HEADERS = new Set(["dpop"]);
+// Header names secret by exact name only (headers don't get the ends-in-code
+// rule).
+const SECRET_HEADERS = new Set(["code", "dpop"]);
 // Never masked by name: CORS headers (Access-Control-Allow-Credentials would
 // match "credential"), WebSocket handshake nonces and auth challenges.
 const NEVER_SECRET_HEADER =
@@ -177,8 +179,16 @@ function isSecretName(name: string): boolean {
 
 // URL parameters and form fields: also any name ending in "code" (an OAuth
 // code, auth_code, device_code). JSON bodies use "code" for error codes, so
-// JSON keys don't get this rule.
+// JSON keys don't get this rule. A bracketed name, as qs, Rails and PHP forms
+// produce (user[otp_code], access_key[]), is also judged by the text in its
+// last brackets, after dropping trailing "[]".
 function isSecretParam(name: string): boolean {
+  const base = name.replace(/(\[\])+$/, "");
+  const last = /\[([^[\]]*)\]$/.exec(base)?.[1];
+  return isSecretParamName(base) || (last !== undefined && isSecretParamName(last));
+}
+
+function isSecretParamName(name: string): boolean {
   return isSecretName(name) || normalizeName(name).endsWith("code");
 }
 
