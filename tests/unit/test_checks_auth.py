@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import base64
+import itertools
 import json
+import re
 import time
 from typing import Any
 
 import pytest
 
 from api_medic.core.captured import CapturedRequest, CapturedResponse
+from api_medic.core.checks import auth
 from api_medic.core.checks.auth import (
     auth_missing,
     header_whitespace,
@@ -196,6 +199,65 @@ class TestJwtNotYetValid:
         assert finding.evidence["sub"] == "user_42"
         assert finding.evidence["valid_in_seconds"] == pytest.approx(1800, abs=5)
         assert finding.evidence["nbf"].endswith("Z")
+
+
+# The lazy pattern auth.py used before the fix, kept to prove the new one
+# finds the same token.
+_OLD_BEARER_RE = re.compile(r"^\s*[Bb]earer\s+(.+?)\s*$", re.DOTALL)
+
+
+def _old_token(value: str) -> str | None:
+    m = _OLD_BEARER_RE.match(value)
+    return m.group(1) if m else None
+
+
+BEARER_TOKENS = [
+    ("Bearer abc", "abc"),
+    ("bearer abc", "abc"),
+    ("BEARER abc", None),
+    ("Bearer", None),
+    ("Bearer ", None),
+    ("Bearer  ", " "),
+    ("Bearer \t\n", "\n"),
+    ("\t\n Bearer\t\nabc\t\n ", "abc"),
+    ("Bearer abc\r\n", "abc"),
+    ("Bearer a\r\nb\r\n", "a\r\nb"),
+    ("Bearer a b\tc ", "a b\tc"),
+    ("Bearer a" + " " * 50 + "b", "a" + " " * 50 + "b"),
+    # Python's \s includes \x1c-\x1f, \x85 and Unicode spaces, not \ufeff.
+    ("\x1cBearer\x85abc\x1f\x85", "abc"),
+    ("Bearer\u3000abc\u2028\u00a0", "abc"),
+    ("Bearer abc\ufeff", "abc\ufeff"),
+    ("\ufeffBearer abc", None),
+    ("Bearerabc", None),
+    ("x Bearer abc", None),
+    ("Bearer \x00", "\x00"),
+    ("", None),
+]
+
+
+class TestBearerToken:
+    @pytest.mark.parametrize(("value", "token"), BEARER_TOKENS)
+    def test_same_token_as_the_lazy_pattern(self, value: str, token: str | None):
+        assert _old_token(value) == token
+        assert auth._bearer_token(value) == token
+
+    def test_same_token_as_the_lazy_pattern_on_every_short_combination(self):
+        words = ["Bearer", "bearer", "a", "."]
+        whitespace = [" ", "\t", "\r\n", "\x1c", "\x85", "\u3000", "\ufeff"]
+        for n in range(5):
+            for combo in itertools.product(words + whitespace, repeat=n):
+                value = "".join(combo)
+                assert auth._bearer_token(value) == _old_token(value), repr(value)
+
+    @pytest.mark.parametrize("check", [jwt_expired, jwt_not_yet_valid])
+    def test_long_whitespace_run_inside_the_token_takes_under_a_second(self, check):
+        # The lazy pattern retried its trailing \s*$ from every space, which
+        # takes minutes here; /api/analyze runs these checks on any HAR.
+        cap = _cap(headers={"Authorization": "Bearer a" + " " * 200_000 + "b"})
+        started = time.perf_counter()
+        assert check(cap) is None
+        assert time.perf_counter() - started < 1
 
 
 class TestAuthMissing:
