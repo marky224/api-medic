@@ -445,15 +445,22 @@ describe("redactEntry: credential names", () => {
     );
   });
 
-  // Bracketed and array-style names, as qs, Rails and PHP forms produce.
+  // Bracketed and array-style names, as qs, Rails and PHP forms produce,
+  // with "[]" or numeric indexes ("[0]", qs's default and http_build_query).
   const BRACKETED = [
     { name: "user[otp_code]", value: "123456", masked: "******" },
     { name: "auth[access_key]", value: "AKIAEXAMPLE", masked: "***********" },
     { name: "two_factor[code]", value: "654321", masked: "******" },
     { name: "user[password]", value: "pw", masked: "**" },
     { name: "access_key[]", value: "AK2", masked: "***" },
+    { name: "access_key[0]", value: "AK0", masked: "***" },
+    { name: "code[1]", value: "7", masked: "*" },
+    { name: "user[otp_code][0]", value: "123456", masked: "******" },
+    { name: "user[access_key][0][]", value: "AK9", masked: "***" },
     { name: "user[email]", value: "a@b.test", masked: "a@b.test" },
+    { name: "user[email][0]", value: "c@d.test", masked: "c@d.test" },
     { name: "page[]", value: "2", masked: "2" },
+    { name: "page[0]", value: "3", masked: "3" },
   ];
 
   it("checks the last bracket segment of form field names", () => {
@@ -489,6 +496,17 @@ describe("redactEntry: credential names", () => {
     expect(out.request.queryString).toEqual(
       BRACKETED.map((p) => ({ name: p.name, value: p.masked })),
     );
+  });
+
+  it("handles a 200,000-character bracketed name in under a second", () => {
+    // A trailing-"[]" regex retries from every position and takes seconds
+    // here; the redactor runs synchronously in the Analyze click.
+    const kept = `${"[]".repeat(99_999)}x`;
+    const masked = `access_key${"[]".repeat(99_999)}`;
+    const started = performance.now();
+    const out = redact(entry({ url: `https://api.example.com/x?${kept}=v1&${masked}=v2` }));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(out.request.url).toBe(`https://api.example.com/x?${kept}=v1&${masked}=**`);
   });
 
   it("masks X-Access-Key, X-Auth-Key and X-Master-Key headers", () => {

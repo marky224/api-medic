@@ -180,16 +180,30 @@ function isSecretName(name: string): boolean {
 // URL parameters and form fields: also any name ending in "code" (an OAuth
 // code, auth_code, device_code). JSON bodies use "code" for error codes, so
 // JSON keys don't get this rule. A bracketed name, as qs, Rails and PHP forms
-// produce (user[otp_code], access_key[]), is also judged by the text in its
-// last brackets, after dropping trailing "[]".
+// produce (user[otp_code], access_key[], code[0]), is also judged by the text
+// in its last brackets, after dropping trailing "[]" and numeric indexes.
 function isSecretParam(name: string): boolean {
-  const base = name.replace(/(\[\])+$/, "");
+  const base = name.slice(0, arrayPartsStart(name));
   const last = /\[([^[\]]*)\]$/.exec(base)?.[1];
   return isSecretParamName(base) || (last !== undefined && isSecretParamName(last));
 }
 
 function isSecretParamName(name: string): boolean {
   return isSecretName(name) || normalizeName(name).endsWith("code");
+}
+
+// Where a name's trailing run of "[]" and "[0]"-style indexes starts. A
+// backward scan, so it stays linear: the panel runs this in the Analyze click
+// on names of any length.
+function arrayPartsStart(name: string): number {
+  let end = name.length;
+  while (end >= 2 && name[end - 1] === "]") {
+    let i = end - 2;
+    while (i >= 0 && name[i]! >= "0" && name[i]! <= "9") i--;
+    if (i < 0 || name[i] !== "[") break;
+    end = i;
+  }
+  return end;
 }
 
 function isSecretJsonKey(name: string): boolean {
