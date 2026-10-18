@@ -13,7 +13,7 @@ Only when you click **Analyze** on a captured request, the extension sends that 
 - Request headers (credential headers masked)
 - Request body, if any (secret fields in JSON and form bodies masked)
 - Response status code
-- Response headers (`Set-Cookie` values masked)
+- Response headers (cookie values, credential headers and credential-like URL parameters masked)
 - Response body, if the browser includes it in the capture (secret fields in JSON and form bodies masked)
 - Timing information from the browser
 
@@ -26,8 +26,8 @@ From extension version 0.2.0, masking happens in the extension before anything l
 - **`Authorization`**: the scheme (`Bearer`, `Basic`, …) and any whitespace are kept, and the credential is masked. If the credential is a JWT, the extension keeps its header and only its expiry (`exp`, `nbf`) and subject (`sub`) claims, so the analyzer can still tell whether the token has expired or is not valid yet. Every other claim is removed and the signature is replaced with `REDACTED`. The subject is often a user ID and can be an email address.
 - **`Proxy-Authorization`**: the scheme is kept and the credential is masked.
 - **Cookies**: in `Cookie` and `Set-Cookie` headers and in the browser's cookie lists, names and attributes (`Path`, `Expires`, `SameSite`, …) are kept and values are masked.
-- **Headers whose names mark a secret**, such as `X-Api-Key`, `X-Auth-Token`, `X-CSRF-Token`, `Private-Token` and `Ocp-Apim-Subscription-Key`, and any header whose name contains `token`, `secret`, `password`, `api-key`, `session`, `signature` or `credential`.
-- **URL parameters with credential-like names**, such as `token`, `access_token`, `key`, `api_key`, `code`, `sig`, `signature`, `password` and `client_secret`, in the query string or fragment of the request URL, of the `Referer`, `Location` and `Content-Location` headers, and of HTTP/2's `:path`; and a password in the URL itself (`https://user:password@host`).
+- **Headers whose names mark a secret**, such as `X-Api-Key`, `X-Auth-Token`, `X-CSRF-Token`, `Private-Token` and `Ocp-Apim-Subscription-Key`, and any header whose name ends in `key` or contains `token`, `secret`, `password`, `session`, `signature` or `credential`.
+- **URL parameters with credential-like names**, such as `token`, `access_token`, `api_key`, `sig`, `signature`, `password`, `client_secret`, `client_assertion` and `code_verifier`, and any name that ends in `key` or `code`, in the query string or fragment of the request URL, of the `Referer`, `Location` and `Content-Location` headers, and of HTTP/2's `:path`; and a password in the URL itself (`https://user:password@host`).
 - **Bodies**: string values under secret-named keys in JSON bodies, and secret-named fields in URL-encoded form bodies.
 - **Browser-specific capture fields** whose names start with `_`, such as the stack trace of the code that made the request and WebSocket messages, are removed.
 

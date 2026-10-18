@@ -34,6 +34,7 @@ const BEARER = new RegExp(
   "u",
 );
 const FIRST_WORD = new RegExp(`^([${WS}]*)([^${WS}]+)([\\s\\S]*)$`, "u");
+const JWT_HEADER_PART = /^[A-Za-z0-9_-]+={0,2}$/;
 
 // Kept in plain text before a masked Authorization or Proxy-Authorization
 // credential. An unknown first word may be the secret itself, so it is
@@ -67,21 +68,14 @@ const AUTH_SCHEMES = new Set([
 // their evidence shows.
 const KEPT_CLAIMS = new Set(["exp", "nbf", "sub"]);
 
-// Names matched after lowercasing and dropping "-", "_", "." and spaces.
-const SECRET_NAMES = new Set([
-  "assertion",
-  "auth",
-  "code",
-  "jwt",
-  "key",
-  "otp",
-  "pass",
-  "pwd",
-  "sid",
-  "sig",
-]);
+// Names matched after lowercasing and dropping "-", "_", "." and spaces. A
+// name that ends in "key" is secret too (accessKey, subscription-key,
+// X-Master-Key), and so, in URLs and form fields, is one that ends in
+// "code" (see isSecretParam).
+const SECRET_NAMES = new Set(["auth", "jwt", "otp", "pass", "pwd", "sid", "sig"]);
 const SECRET_NAME_PARTS = [
   "apikey",
+  "assertion",
   "credential",
   "passphrase",
   "passwd",
@@ -91,12 +85,9 @@ const SECRET_NAME_PARTS = [
   "session",
   "signature",
   "token",
+  "verifier",
 ];
-const SECRET_HEADERS = new Set([
-  "dpop",
-  "ocp-apim-subscription-key",
-  "x-functions-key",
-]);
+const SECRET_HEADERS = new Set(["dpop"]);
 // Never masked by name: CORS headers (Access-Control-Allow-Credentials would
 // match "credential"), WebSocket handshake nonces and auth challenges.
 const NEVER_SECRET_HEADER =
@@ -179,14 +170,20 @@ function normalizeName(name: string): string {
 
 function isSecretName(name: string): boolean {
   const n = normalizeName(name);
-  return SECRET_NAMES.has(n) || SECRET_NAME_PARTS.some((p) => n.includes(p));
+  return (
+    SECRET_NAMES.has(n) || n.endsWith("key") || SECRET_NAME_PARTS.some((p) => n.includes(p))
+  );
 }
 
-// JSON bodies use "code" for error codes; an OAuth code travels in URLs and
-// form bodies, which use isSecretName.
+// URL parameters and form fields: also any name ending in "code" (an OAuth
+// code, auth_code, device_code). JSON bodies use "code" for error codes, so
+// JSON keys don't get this rule.
+function isSecretParam(name: string): boolean {
+  return isSecretName(name) || normalizeName(name).endsWith("code");
+}
+
 function isSecretJsonKey(name: string): boolean {
   const n = normalizeName(name);
-  if (n === "code") return false;
   return isSecretName(name) || n.includes("authorization") || n.includes("cookie");
 }
 
@@ -240,9 +237,13 @@ function redactBearerJwt(value: string): string | null {
   const [, lead = "", scheme = "", gap = "", token = "", trail = ""] = m;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
-  const [header = "", claimsPart = "", signature = ""] = parts;
-  const claims = decodeClaims(claimsPart);
+  const [first = "", claimsPart = "", signature = ""] = parts;
+  const claims = decodeJwtPart(claimsPart);
   if (!claims) return null;
+  // The first part is kept only if it is a JWT header. Anything else, such
+  // as another credential in front of the JWT when the header was set twice
+  // and the values were joined with ", ", is masked. Python never reads it.
+  const header = JWT_HEADER_PART.test(first) && decodeJwtPart(first) ? first : mask(first);
   const claimsWhitespace = (claimsPart.match(WS_CHARS) ?? []).join("");
   return (
     lead +
@@ -258,10 +259,15 @@ function redactBearerJwt(value: string): string | null {
   );
 }
 
-// Lenient on purpose: it accepts every claims part auth.py's
-// _decode_jwt_payload accepts (and a few that Python rejects over padding),
-// so a token the auth checks can read is never masked whole.
-function decodeClaims(part: string): Json | null {
+// Decodes a JWT part to a JSON object: drops characters outside base64url,
+// re-pads and parses. On ordinary tokens this agrees with auth.py's
+// _decode_jwt_payload. It doesn't copy Python's padding quirks, so on rare
+// malformed tokens the two disagree either way: a claims part Python
+// rejects (one with an inner space, say) can decode here, and the masked
+// copy may then fire a JWT finding the original didn't; one Python accepts
+// (a stray "=" after 4k+3 characters) can fail here, and the whole token is
+// masked. Neither case leaks the credential.
+function decodeJwtPart(part: string): Json | null {
   const b64 = part
     .replace(/[^A-Za-z0-9\-_+/]/g, "")
     .replace(/-/g, "+")
@@ -331,7 +337,8 @@ function redactCookies(cookies: unknown): void {
   }
 }
 
-// HAR queryString and postData.params: [{name, value}, ...].
+// HAR queryString and postData.params: [{name, value}, ...]. Names are
+// decoded first, as in maskParams.
 function redactNamedValues(list: unknown): void {
   if (!Array.isArray(list)) return;
   for (const item of list) {
@@ -340,7 +347,7 @@ function redactNamedValues(list: unknown): void {
       typeof item.name === "string" &&
       item.value !== undefined &&
       item.value !== null &&
-      isSecretName(item.name)
+      isSecretParam(decodeParamName(item.name))
     ) {
       item.value = mask(String(item.value));
     }
@@ -386,7 +393,7 @@ function maskParams(text: string, maskValue: (value: string) => string): string 
       const eq = pair.indexOf("=");
       if (eq < 0) return pair;
       const name = pair.slice(0, eq);
-      return isSecretName(decodeParamName(name))
+      return isSecretParam(decodeParamName(name))
         ? name + "=" + maskValue(pair.slice(eq + 1))
         : pair;
     })

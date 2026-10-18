@@ -125,6 +125,24 @@ describe("redactEntry: Authorization", () => {
     );
   });
 
+  it("masks an opaque credential joined in front of a JWT (a header set twice)", () => {
+    // fetch's Headers.append and XHR's setRequestHeader join values with ", ".
+    const out = maskedAuthorization(`Bearer opaque-Secret_123, Bearer ${JWT}`);
+    expect(out).not.toContain("opaque-Secret_123");
+    expect(out.startsWith("Bearer ")).toBe(true);
+    const [firstPart, claimsPart, signature] = out.slice("Bearer ".length).split(".");
+    expect(firstPart).toMatch(/^[* ]+$/);
+    expect(decodeB64url(claimsPart!)).toEqual({ sub: "user-42", exp: 1600000000, nbf: 1599990000.5 });
+    expect(signature).toBe(JWT_SIGNATURE_MARKER);
+  });
+
+  it("masks a first part that isn't a JWT header", () => {
+    const out = maskedAuthorization(`Bearer PREFIXSECRET.${b64url('{"exp":1}')}.x`);
+    expect(out.startsWith("Bearer ************.")).toBe(true);
+    expect(out).not.toContain("PREFIXSECRET");
+    expect(decodeB64url(out.split(".")[1]!)).toEqual({ exp: 1 });
+  });
+
   it("treats BEARER like any other scheme, because the auth checks don't read it", () => {
     const out = maskedAuthorization(`BEARER ${JWT}`);
     expect(out).toBe(`BEARER ${"*".repeat(JWT.length)}`);
@@ -229,6 +247,27 @@ describe("redactEntry: other headers", () => {
     }
   });
 
+  it("masks non-string values of secret headers and cookies, and keeps other non-strings", () => {
+    const out = redactEntry({
+      request: {
+        url: "https://api.example.com/",
+        headers: [
+          { name: "X-Api-Key", value: 12345 },
+          { name: "Authorization", value: 67890 },
+          { name: "Content-Length", value: 12 },
+        ],
+        cookies: [{ name: "n", value: 42 }],
+      },
+      response: { status: 200, headers: [] },
+    }) as { request: { headers: unknown[]; cookies: unknown[] } };
+    expect(out.request.headers).toEqual([
+      { name: "X-Api-Key", value: "*****" },
+      { name: "Authorization", value: "*****" },
+      { name: "Content-Length", value: 12 },
+    ]);
+    expect(out.request.cookies).toEqual([{ name: "n", value: "**" }]);
+  });
+
   it("leaves every header a check reads, and other non-secret headers, byte for byte", () => {
     const checkRead = JSON.parse(
       fs.readFileSync(path.join(REDACTION_FIXTURES_DIR, "check-read-headers.json"), "utf8"),
@@ -299,6 +338,29 @@ describe("redactEntry: URLs", () => {
     expect(out.response.redirectURL).toBe("https://app.test/home?sig=**");
   });
 
+  it("decodes names in the queryString and postData.params lists before matching", () => {
+    const out = redact(
+      entry({
+        request: {
+          queryString: [
+            { name: "to%6Ben", value: "t1" },
+            { name: "api%5Fkey", value: "k1" },
+          ],
+          postData: {
+            mimeType: "application/x-www-form-urlencoded",
+            text: "pass%77ord=pw",
+            params: [{ name: "pass%77ord", value: "pw" }],
+          },
+        },
+      }),
+    );
+    expect(out.request.queryString).toEqual([
+      { name: "to%6Ben", value: "**" },
+      { name: "api%5Fkey", value: "**" },
+    ]);
+    expect(out.request.postData!.params).toEqual([{ name: "pass%77ord", value: "**" }]);
+  });
+
   it("masks secret values in the HAR queryString list", () => {
     const out = redact(
       entry({
@@ -314,6 +376,66 @@ describe("redactEntry: URLs", () => {
       { name: "api_key", value: "**" },
       { name: "page", value: "2" },
     ]);
+  });
+});
+
+describe("redactEntry: credential names", () => {
+  // Names that end in "key" or "code", or name an assertion or verifier.
+  const PARAM_NAMES = [
+    "subscription-key",
+    "access_key",
+    "accessKey",
+    "appKey",
+    "client_assertion",
+    "code_verifier",
+    "auth_code",
+    "device_code",
+  ];
+
+  it("masks them as URL parameters", () => {
+    const query = PARAM_NAMES.map((n) => `${n}=v1`).join("&");
+    const out = redact(entry({ url: `https://api.example.com/x?${query}&page=2` }));
+    expect(out.request.url).toBe(
+      `https://api.example.com/x?${PARAM_NAMES.map((n) => `${n}=**`).join("&")}&page=2`,
+    );
+  });
+
+  it("masks them as form fields, in the body and the params list", () => {
+    const out = redact(
+      entry({
+        request: {
+          postData: {
+            mimeType: "application/x-www-form-urlencoded",
+            text: `${PARAM_NAMES.map((n) => `${n}=v1`).join("&")}&grant_type=x`,
+            params: PARAM_NAMES.map((name) => ({ name, value: "v1" })),
+          },
+        },
+      }),
+    );
+    expect(out.request.postData!.text).toBe(
+      `${PARAM_NAMES.map((n) => `${n}=**`).join("&")}&grant_type=x`,
+    );
+    expect(out.request.postData!.params).toEqual(
+      PARAM_NAMES.map((name) => ({ name, value: "**" })),
+    );
+  });
+
+  it("masks X-Access-Key, X-Auth-Key and X-Master-Key headers", () => {
+    const headers = ["X-Access-Key", "X-Auth-Key", "X-Master-Key"].map((name) => ({
+      name,
+      value: "k1",
+    }));
+    const out = redact(entry({ headers }));
+    expect(out.request.headers.map((h) => h.value)).toEqual(["**", "**", "**"]);
+  });
+
+  it("masks JSON keys ending in key, assertion or verifier, but keeps ones ending in code", () => {
+    const text =
+      '{"accessKey":"a1","appKey":"a2","client_assertion":"a3","code_verifier":"a4","error_code":"E1"}';
+    const out = redact(entry({ response: { content: { mimeType: "application/json", text } } }));
+    expect(out.response.content!.text).toBe(
+      '{"accessKey":"**","appKey":"**","client_assertion":"**","code_verifier":"**","error_code":"E1"}',
+    );
   });
 });
 

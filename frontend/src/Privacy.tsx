@@ -39,11 +39,8 @@ export function Privacy() {
               </li>
               <li>Response status code</li>
               <li>
-                Response headers (
-                <code className="font-mono text-xs bg-panel px-1 py-0.5 rounded">
-                  Set-Cookie
-                </code>{" "}
-                values masked)
+                Response headers (cookie values, credential headers and
+                credential-like URL parameters masked)
               </li>
               <li>
                 Response body, if the browser includes it in the capture
@@ -114,14 +111,15 @@ export function Privacy() {
               <li>
                 <strong>Headers whose names mark a secret</strong>, such as
                 X-Api-Key, X-Auth-Token, X-CSRF-Token, Private-Token and
-                Ocp-Apim-Subscription-Key, and any header whose name contains
-                token, secret, password, api-key, session, signature or
+                Ocp-Apim-Subscription-Key, and any header whose name ends in
+                key or contains token, secret, password, session, signature or
                 credential.
               </li>
               <li>
                 <strong>URL parameters with credential-like names</strong>,
-                such as token, access_token, key, api_key, code, sig,
-                signature, password and client_secret, in the query string or
+                such as token, access_token, api_key, sig, signature,
+                password, client_secret, client_assertion and code_verifier,
+                and any name that ends in key or code, in the query string or
                 fragment of the request URL, of the Referer, Location and
                 Content-Location headers, and of HTTP/2's :path; and a
                 password in the URL itself (

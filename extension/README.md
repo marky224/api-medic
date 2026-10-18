@@ -82,9 +82,9 @@ existing Lambda. The panel only:
    delivers entries that already match the HAR `entries[i]` shape.
 2. Masks credentials in a copy of the user's selected entry
    (`lib/redact.ts`; what is masked is listed in `PRIVACY.md`) and wraps it
-   in a single-entry HAR log via `lib/serialize.ts`. The masking keeps what
-   the checks read, and `tests/unit/test_redaction_parity.py` proves the
-   findings match on masked and unmasked fixtures.
+   in a single-entry HAR log via `lib/serialize.ts`. The masking is built to
+   keep what the checks read; `tests/unit/test_redaction_parity.py` proves
+   the findings match on its masked and unmasked fixtures.
 3. POSTs to `/api/analyze`. The manifest's `host_permissions` declaration
    for the analyzer host lets the DevTools panel's `fetch()` skip the
    CORS preflight, so no API Gateway change is needed for the extension.
