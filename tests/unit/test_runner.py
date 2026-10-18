@@ -479,6 +479,17 @@ class TestUnsendableRedirectHop:
                 )
             return httpcore.MockStream([b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"])
 
+        # With no transport, httpx would send the first request to a proxy
+        # named in the environment.
+        for var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
         cap = run("GET", "https://api.example.com/start", probe_network=False)
 
