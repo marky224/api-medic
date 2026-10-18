@@ -45,7 +45,9 @@
     @apply font-sans bg-paper text-ink;
     line-height: 1.5;
   }
-  /* Tailwind 3 Preflight defaults that v4 changed. */
+  /* Two of the Tailwind 3 Preflight defaults that v4 changed. v4's default
+     border colour (currentColor) is not restored, so a border needs a
+     colour class. */
   input::placeholder,
   textarea::placeholder {
     color: #9ca3af;
