@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import socket
+import ssl
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -512,6 +513,26 @@ def _redirect(location: str) -> bytes:
     return f"HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n".encode()
 
 
+class _RecordingStream(httpcore.MockStream):
+    """MockStream that records the SNI it's given and the bytes sent."""
+
+    def __init__(self, buffer: list[bytes], state: dict[str, Any]) -> None:
+        super().__init__(buffer)
+        self._state = state
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.NetworkStream:
+        self._state["sni"].append(server_hostname)
+        return self
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._state["sent"].append(buffer)
+
+
 class TestRunConnectionPinning:
     """Every connection /api/run opens (the TLS probe, the request, each
     redirect hop) must go to an address checked in the same step, never to a
@@ -524,7 +545,14 @@ class TestRunConnectionPinning:
 
     @pytest.fixture
     def net(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-        state: dict[str, Any] = {"answers": {}, "probe": [], "tcp": [], "responses": []}
+        state: dict[str, Any] = {
+            "answers": {},
+            "probe": [],
+            "tcp": [],
+            "responses": [],
+            "sni": [],
+            "sent": [],
+        }
 
         def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
             script = state["answers"][host]
@@ -540,7 +568,7 @@ class TestRunConnectionPinning:
             self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
         ) -> httpcore.NetworkStream:
             state["tcp"].append((host, port))
-            return httpcore.MockStream([state["responses"].pop(0)])
+            return _RecordingStream([state["responses"].pop(0)], state)
 
         monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
         monkeypatch.setattr(socket, "create_connection", create_connection)
@@ -569,15 +597,40 @@ class TestRunConnectionPinning:
         assert result["statusCode"] == 400
         assert "10.0.0.5" in json.loads(result["body"])["detail"]
 
-    def test_probe_and_request_connect_to_the_checked_address(self, net: dict[str, Any]) -> None:
+    def test_probe_and_request_connect_to_the_checked_address(
+        self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         net["answers"] = {"api.example.com": ["93.184.216.34"]}
         net["responses"] = [_OK]
+        probe_sni: list[str | None] = []
+
+        # Let the probe get as far as its TLS handshake, and record the SNI.
+        def create_connection(address: tuple[str, int], *a: Any, **kw: Any) -> socket.socket:
+            net["probe"].append(address)
+            return socket.socket()
+
+        def wrap_socket(
+            self: ssl.SSLContext,
+            sock: socket.socket,
+            *a: Any,
+            server_hostname: str | None = None,
+            **kw: Any,
+        ) -> ssl.SSLSocket:
+            probe_sni.append(server_hostname)
+            raise ssl.SSLError("offline test")
+
+        monkeypatch.setattr(socket, "create_connection", create_connection)
+        monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap_socket)
 
         result = self._post("https://api.example.com/")
 
         assert result["statusCode"] == 200
         assert net["probe"] == [("93.184.216.34", 443)]
         assert net["tcp"] == [("93.184.216.34", 443)]
+        # Connecting to the checked IP leaves SNI and Host on the name.
+        assert probe_sni == ["api.example.com"]
+        assert net["sni"] == ["api.example.com"]
+        assert b"Host: api.example.com\r\n" in b"".join(net["sent"])
 
     def test_hop_that_rebinds_after_its_check_is_never_connected(self, net: dict[str, Any]) -> None:
         net["answers"] = {
