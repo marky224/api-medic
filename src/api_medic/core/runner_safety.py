@@ -67,7 +67,12 @@ def validate_url(url: str) -> None:
         raise InvalidURLError(
             "Invalid URL: it contains characters that can't be encoded as UTF-8."
         ) from e
-    raw_host = parsed.raw_host.decode("ascii")
+    try:
+        raw_host = parsed.raw_host.decode("ascii")
+    except UnicodeError as e:
+        # httpx accepts a non-ASCII IPv6 zone ID ("[fe80::1%25é]") on parse
+        # but can't encode it for the request.
+        raise InvalidURLError(f"Invalid URL: the host contains non-ASCII characters ({e}).") from e
     try:
         parsed.host  # noqa: B018 — decodes xn-- labels, which httpx doesn't check on parse
     except UnicodeError as e:
@@ -113,10 +118,19 @@ def _check_host_and_port(url: str) -> None:
         raise InvalidURLError(_brackets_message(host_port))
     else:
         port = host_port.partition(":")[2]
-    if port and not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+    if port and not _is_valid_port(port):
         raise InvalidURLError(
             f"Invalid URL: port must be a whole number from 1 to 65535 (got {port!r})."
         )
+
+
+def _is_valid_port(port: str) -> bool:
+    if not (port.isascii() and port.isdigit()):
+        return False
+    # Cap the length before int(), which refuses strings over 4,300 digits.
+    # Leading zeros don't count, so ':0443' stays valid.
+    digits = port.lstrip("0")
+    return len(digits) <= 5 and 1 <= int(digits or "0") <= 65535
 
 
 def _brackets_message(host_port: str) -> str:

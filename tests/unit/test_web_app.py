@@ -130,6 +130,10 @@ class TestRunRejectsMalformedInput:
         [
             ({"url": "https://api.example.com:99999/"}, "port must be a whole number"),
             ({"url": "https://api.example.com:+443/"}, "port must be a whole number"),
+            ({"url": "https://api.example.com:" + "9" * 4301 + "/"}, "port must be a whole number"),
+            ({"url": "https://api.example.com:" + "0" * 4301 + "/"}, "port must be a whole number"),
+            ({"url": "https://api.example.com:" + "0" * 4300 + "443/"}, "Invalid port"),
+            ({"url": "https://[fe80::1%25\u00e9]/"}, "the host contains non-ASCII characters"),
             ({"url": "https://[example.com]/"}, "square brackets are only allowed"),
             ({"url": "https://[::1/"}, "square brackets are only allowed"),
             ({"url": "https://xn--zz.example/"}, "is not a valid internationalized hostname"),

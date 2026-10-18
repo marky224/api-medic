@@ -672,6 +672,11 @@ class TestRunRejectsMalformedInput:
             ("https://api.example.com:443:443/", _PORT),
             ("https://api.example.com:abc/", _PORT),
             ("https://[2001:db8::1]:99999/", _PORT),
+            # Over int()'s 4,300-digit limit, leading zeros included.
+            ("https://api.example.com:" + "9" * 4301 + "/", _PORT),
+            ("https://api.example.com:" + "0" * 4301 + "/", _PORT),
+            ("https://api.example.com:" + "0" * 4300 + "443/", "Invalid port"),
+            ("https://[fe80::1%25\u00e9]/", "the host contains non-ASCII characters"),
             ("https://[example.com]/", _BRACKETS),
             ("https://[1.2.3.4]/", _BRACKETS),
             ("https://[]/", _BRACKETS),

@@ -367,6 +367,11 @@ _DNS = "can't be looked up in DNS"
         ("https://example.com:+443/", _PORT),  # httpx reads this as 443
         ("https://example.com:٣/", _PORT),  # Arabic-Indic 3; httpx reads it as port 3
         ("https://[2001:db8::1]:99999/", _PORT),
+        # Over int()'s 4,300-digit limit, leading zeros included.
+        ("https://example.com:" + "9" * 4301 + "/", _PORT),
+        ("https://example.com:" + "0" * 4301 + "/", _PORT),
+        ("https://example.com:" + "0" * 4300 + "443/", "Invalid port"),
+        ("https://[fe80::1%25\u00e9]/", "the host contains non-ASCII characters"),
         ("https://[example.com]/", _BRACKETS),
         ("https://[1.2.3.4]/", _BRACKETS),
         ("https://[::1/", _BRACKETS),
@@ -389,7 +394,9 @@ def test_validate_url_rejects(url: str, message: str) -> None:
     [
         "https://example.com/",
         "https://example.com:443/",
+        "https://example.com:0443/",
         "https://example.com:/",
+        "https://[fe80::1%25eth0]/",
         "https://user:pw@example.com:8443/path?q=1#frag",
         "https://[2001:db8::1]:8443/",
         "http://localhost:8765/api",
