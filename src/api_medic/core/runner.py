@@ -29,7 +29,13 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 
 from .captured import CapturedDns, CapturedRequest, CapturedResponse, CapturedTls
 from .models import TimingBreakdown
-from .runner_safety import InvalidRequestError, PinnedTransport, connect_pinned, validate_url
+from .runner_safety import (
+    InvalidRequestError,
+    InvalidURLError,
+    PinnedTransport,
+    connect_pinned,
+    validate_url,
+)
 
 DEFAULT_USER_AGENT = "api-medic/0.1 (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -81,8 +87,9 @@ def run(
 
     Network failures (DNS, connection refused, timeout) produce a
     CapturedRequest with `response=None`, and so does a redirect whose
-    Location httpx can't turn into a request. Diagnostic checks that need
-    a response no-op for it. A request that can't be sent as given raises
+    Location httpx can't turn into a request or whose URL validate_url
+    rejects (with `url_guard` set, the guard refuses such a hop first).
+    Diagnostic checks that need a response no-op for it. A request that can't be sent as given raises
     InvalidRequestError (see validate_request) before anything is sent.
     """
     validate_request(method, url, headers, body)
@@ -123,6 +130,7 @@ def run(
             timeout=timeout,
             follow_redirects=follow_redirects and url_guard is None,
             transport=transport,
+            event_hooks={"request": [_refuse_unsendable_hop]},
         ) as client:
             response = client.request(
                 method=method,
@@ -132,13 +140,14 @@ def run(
             )
             if follow_redirects and url_guard is not None:
                 response = _follow_guarded_redirects(client, response, url_guard)
-    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError):
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError, _UnsendableHopError):
         # Beyond network and protocol errors: httpx builds the next request
         # as soon as a redirect arrives, and raises InvalidURL or
         # UnicodeError for a Location it can't use (e.g. "https:host", or an
-        # invalid xn-- label). Treat that as httpx treats a Location it
-        # can't parse: the exchange failed. The submitted request was
-        # validated up front, so these can only come from the response.
+        # invalid xn-- label); _refuse_unsendable_hop stops one validate_url
+        # rejects. Treat both as httpx treats a Location it can't parse:
+        # the exchange failed. The submitted request was validated up
+        # front, so these can only come from the response.
         response = None
     total_ms = (time.monotonic() - start) * 1000.0
 
@@ -206,6 +215,24 @@ def validate_request(
             raise InvalidRequestError(
                 "Body can't be encoded as UTF-8 (it contains an unpaired surrogate)."
             ) from e
+
+
+class _UnsendableHopError(Exception):
+    """A redirect hop whose URL validate_url rejects; it isn't sent."""
+
+
+def _refuse_unsendable_hop(request: httpx.Request) -> None:
+    """httpx request hook: don't send a redirect hop validate_url rejects.
+
+    httpx doesn't range-check a Location's port, and getaddrinfo wraps one
+    that's too big (99999 becomes 34463), so without this a hop to
+    https://example.com:99999/ would go to another port. The submitted URL
+    has already passed validate_request, so only a hop can fail here.
+    """
+    try:
+        validate_url(str(request.url))
+    except InvalidURLError as e:
+        raise _UnsendableHopError(str(e)) from e
 
 
 def _follow_guarded_redirects(

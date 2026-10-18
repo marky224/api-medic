@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 
+import httpcore
 import httpx
 import pytest
 
@@ -450,3 +452,33 @@ def test_real_request_against_httpbin():
     cap = run("GET", "https://httpbin.org/status/200")
     assert cap.response is not None
     assert cap.response.status_code == 200
+
+
+class TestUnsendableRedirectHop:
+    def test_hop_that_fails_validate_url_is_not_connected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CLI and api-medic serve follow redirects through httpx, which
+        doesn't range-check a Location's port; getaddrinfo would wrap 99999
+        to 34463. The hop must not be connected, and the run reports no
+        response. httpcore's TCP connect is stubbed: nothing is opened."""
+        connects: list[tuple[str, int]] = []
+
+        def connect_tcp(
+            self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
+        ) -> httpcore.NetworkStream:
+            connects.append((host, port))
+            if len(connects) == 1:
+                return httpcore.MockStream(
+                    [
+                        b"HTTP/1.1 302 Found\r\nLocation: https://example.com:99999/\r\n"
+                        b"Content-Length: 0\r\n\r\n"
+                    ]
+                )
+            return httpcore.MockStream([b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"])
+
+        monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+        cap = run("GET", "https://api.example.com/start", probe_network=False)
+
+        assert cap.response is None
+        assert connects == [("api.example.com", 443)]

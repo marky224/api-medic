@@ -160,6 +160,27 @@ class TestRunRejectsMalformedInput:
         assert message in r.json()["detail"]
         assert seen == {"lookups": [], "probes": [], "fetched": []}
 
+    def test_hop_that_fails_validate_url_is_not_sent(
+        self, client: TestClient, seen: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """httpx doesn't range-check a Location's port, and getaddrinfo would
+        wrap 99999 to 34463, so the hop is refused and nothing is fetched."""
+
+        def routes(request: httpx.Request) -> httpx.Response:
+            seen["fetched"].append(str(request.url))
+            if request.url.path == "/start":
+                return httpx.Response(302, headers={"Location": "https://example.com:99999/"})
+            return httpx.Response(200)
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            return runner.run(**kwargs, transport=httpx.MockTransport(routes))
+
+        monkeypatch.setattr("api_medic.web.app.run_request", run_offline)
+        r = self._post(client, {"url": "https://api.example.com/start"})
+        assert r.status_code == 200
+        assert r.json()["response"] is None
+        assert seen["fetched"] == ["https://api.example.com/start"]
+
     def test_unusable_location_gives_a_report_without_response(
         self, client: TestClient, seen: dict[str, list[str]]
     ) -> None:
