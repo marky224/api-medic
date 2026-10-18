@@ -82,7 +82,8 @@ No manual `twine upload` ever again.
   name, or environment in the Pending Publisher form doesn't match exactly.
   Re-check; PyPI is case-sensitive on workflow filenames.
 - **`File already exists`**: PyPI doesn't allow re-uploading the same
-  version. Bump `pyproject.toml` `version` and re-tag.
+  version. Bump `__version__` in `src/api_medic/__init__.py` (pyproject.toml
+  reads it from there) and re-tag.
 - **Wheel missing the React bundle**: confirm the workflow's `Stage frontend
   into wheel source tree` step ran. The wheel relies on `force-include` of
   `src/api_medic/web/frontend/`, which is gitignored and populated at build

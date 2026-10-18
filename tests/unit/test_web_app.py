@@ -10,6 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from api_medic import __version__
 from api_medic.core import runner
 from api_medic.core.captured import CapturedDns, CapturedRequest, CapturedResponse
 from api_medic.core.models import TimingBreakdown
@@ -46,7 +47,7 @@ class TestHealth:
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
-        assert "version" in body
+        assert body["version"] == __version__
 
 
 class TestRunEndpoint:

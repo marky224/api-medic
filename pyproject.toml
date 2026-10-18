@@ -1,6 +1,6 @@
 [project]
 name = "api-medic"
-version = "1.1.1"
+dynamic = ["version"]
 description = "Diagnostic tool for HTTP API issues. Captures or runs a request, runs a battery of checks, produces a structured report with plain-language findings."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -53,6 +53,9 @@ Issues = "https://github.com/marky224/api-medic/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/api_medic/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/api_medic"]

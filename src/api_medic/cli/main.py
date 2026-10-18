@@ -18,24 +18,17 @@ from __future__ import annotations
 import contextlib
 import sys
 from enum import Enum
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from .. import __version__
 from ..core.engine import analyze
 from ..core.models import Report
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
-
-try:
-    __version__ = _pkg_version("api-medic")
-except PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.0.0+unknown"
-
 
 app = typer.Typer(
     name="api-medic",

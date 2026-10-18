@@ -41,10 +41,12 @@ jobs:
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_sha == github.sha)
     # One deploy at a time; a newer pending deploy replaces an older one.
-    # Job-level, not workflow-level: every CI completion (PR runs included)
-    # starts a run of this workflow, and at workflow level those runs would
-    # join the group before their job is skipped and cancel a pending
-    # deploy. A job skipped by its `if` never joins a job-level group.
+    # Job-level, not workflow-level: some runs of this workflow are skipped
+    # by the `if` above (failed, cancelled or superseded CI runs on main,
+    # and fork PRs from a branch named main, which `branches: [main]` lets
+    # through). At workflow level those runs would join the group before
+    # their job is skipped and cancel a pending deploy. A job skipped by its
+    # `if` never joins a job-level group.
     concurrency:
       group: deploy-demo
       cancel-in-progress: false

@@ -44,6 +44,7 @@ from typing import Any
 
 import httpx
 
+from api_medic import __version__
 from api_medic.core.engine import analyze
 from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run as run_request
@@ -85,7 +86,7 @@ def _route(event: dict[str, Any]) -> dict[str, Any]:
     method, path = _extract_route(event)
 
     if method == "GET" and path == "/api/health":
-        return _ok({"ok": True, "version": "0.1"})
+        return _ok({"ok": True, "version": __version__})
 
     if method == "POST" and path == "/api/analyze":
         return _handle_analyze(event)

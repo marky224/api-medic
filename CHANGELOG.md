@@ -4,6 +4,10 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- `README.md` and `extension/README.md` link the extension's Chrome Web Store and Firefox Add-ons listings.
+
 ### Changed
 
 - The hosted demo deploy now waits for CI. `deploy-demo.yml` runs on `workflow_run` after the CI workflow completes and deploys only when that run succeeded for a push to `main`, checking out the exact commit CI tested. It skips the deploy if that commit is no longer `main`'s tip, so re-running an older commit's CI, or two pushes whose CI finishes out of order, can't deploy an older commit over a newer one. Deploys run one at a time. It never deploys for pull_request CI runs. Previously it ran on every push to `main` in parallel with CI, so a commit with red CI still deployed. Manual dispatch and the `DEMO_DEPLOY_ENABLED` gate are unchanged.
@@ -11,6 +15,9 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ### Fixed
 
+- Every surface reports the real package version. `/api/health` (local web UI and hosted demo) said `0.1`, the live-run User-Agent said `api-medic/0.1`, and `api_medic.__version__` was `0.1.0`, while the package was 1.1.1. The version now lives only in `src/api_medic/__init__.py`; `pyproject.toml` reads it at build time, and the CLI, web app, Lambda handler and runner import it. Release bumps now edit `__init__.py`. The hosted-demo Lambda copies the source without installing the package, which is why the version can't come from package metadata.
+- The `auth.jwt.expired` finding says the expired token is "the most likely cause of the 401" only when the response is a 401. Before, it said so for any status, and for a captured request with no response.
+- `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It and the comment in `deploy-demo.yml` also give the right reason the deploy's concurrency group is job-level.
 - The frontend `HarUpload` and `RequestComposer` Re-run tests now wait for the second request instead of asserting the call count as soon as the already-rendered Report matched. The `HarUpload` one failed CI intermittently.
 
 ### Security
@@ -20,7 +27,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - `/api/run` also vets the submitted URL as `httpx` will send it. Python's socket module and `httpx` IDNA-encode some hostnames differently (`xß` becomes `xss` for one and `xn--x-qfa` for the other), so the guard could check a different name than the one fetched.
 - `/api/run` returns 400 instead of 500 for a hostname `getaddrinfo` can't encode (e.g. a label over 63 characters) and for a URL `httpx` can't parse (e.g. a non-numeric port).
 - The deploy role policy in `deploy/iam/inline-policy.json` is narrower. Its role statements now cover only SAM's generated function role (`role/api-medic-demo-ApiAnalyzeFunctionRole-*`) instead of every `api-medic-demo-*` role, so they can't touch the deploy role itself. On that role it allows `iam:AttachRolePolicy`/`DetachRolePolicy` only for `AWSLambdaBasicExecutionRole`, allows `iam:PassRole` only to Lambda, and drops `iam:PutRolePolicy`. Before, a workflow on `main` could create a role with `AdministratorAccess` and a Lambda function that used it. SAM's generated function role needs nothing more. The policy is applied to AWS by hand.
-- The demo deploy workflow assumes the AWS deploy role only after the frontend and Lambda builds, so `npm ci` install scripts and `sam build` no longer run with the role's keys in their environment. The job still has `id-token: write`, so build steps could request an OIDC token themselves; see `deploy/README.md`.
+- The demo deploy workflow assumes the AWS deploy role only after the frontend and Lambda builds, so `npm ci` install scripts and `sam build` no longer run with the role's keys in their environment. Build code can still reach the role: the job still has `id-token: write`, so build steps could request an OIDC token themselves, and an install script could put an `aws` or `sam` wrapper on `$GITHUB_PATH` for the deploy steps to run; see `deploy/README.md`.
 - Hosted demo `/api/run` now pins every connection (the TLS probe, the request and each redirect hop) to an address the SSRF guard checked in the same step, so a DNS-rebinding answer that changes after the check can't send it to an internal address. Host, SNI and certificate checks still use the hostname, and the live-run path ignores proxy environment variables. The guard also rejects IPv6 site-local `fec0::/10` and checks the IPv4 address inside IPv4-compatible and NAT64 addresses. `/api/run`, on the hosted demo and in `api-medic serve`, returns 400 with a message, before any DNS lookup, for input it used to answer with 500: a port outside 1-65535 (port 0 included) or not plain digits, square brackets around anything but an IPv6 address, an invalid `xn--` label, a hostname DNS can't encode, a non-string body, a non-ASCII method or header, or a lone surrogate. A redirect `Location` that can't be followed gives a Report with no response. The hosted demo's logs no longer carry request data: an unexpected error is logged by type and location only and answered with a plain 500, a rejected curl command's arguments aren't echoed to the log, and request URLs aren't logged.
 
 ## [1.1.1] - 2026-05-02

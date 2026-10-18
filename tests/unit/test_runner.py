@@ -15,6 +15,7 @@ import httpcore
 import httpx
 import pytest
 
+from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedTls
 from api_medic.core.runner import DEFAULT_USER_AGENT, run
 
@@ -64,6 +65,7 @@ class TestRun:
             probe_network=False,
         )
         assert seen["ua"] == DEFAULT_USER_AGENT
+        assert seen["ua"].startswith(f"api-medic/{__version__} ")
 
     def test_user_agent_can_be_overridden(self):
         seen: dict[str, str] = {}

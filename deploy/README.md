@@ -91,12 +91,19 @@ if that commit is still `main`'s tip; once a newer commit has landed, its
 own CI run is the one that deploys. The same check stops an older commit
 from deploying over a newer one when two pushes finish CI out of order.
 
+To redeploy, use **Run workflow** on `main` (manual dispatch, below).
+Don't re-run an old "Deploy hosted demo" run: a re-run keeps that run's
+original `GITHUB_SHA` and event payload, so the tip check passes again
+and the older commit deploys over the newer one.
+
 Deploys run one at a time (job-level `concurrency: deploy-demo`, with
 `cancel-in-progress: false`). A running deploy is never cancelled; a
 newer pending deploy replaces an older pending one. The group is on the
-job, not the workflow, because every CI completion starts a run of this
-workflow; at workflow level, the runs that get skipped (PR CI, for
-example) would still join the group and cancel a pending deploy.
+job, not the workflow, because some runs of this workflow are skipped by
+the job's `if`: failed, cancelled or superseded CI runs on `main`, and
+fork PRs from a branch named `main` (the `branches: [main]` filter lets
+those through, see below). At workflow level, those runs would still join
+the group and replace a pending deploy before being skipped.
 
 `workflow_run` also fires for pull_request CI runs, including fork PRs,
 and always runs the workflow file from `main` with secrets and
@@ -118,12 +125,20 @@ Once triggered, the workflow:
 The role is assumed only after the build because `npm ci` runs
 third-party install scripts, `sam build` pip-installs packages, and
 `configure-aws-credentials` exports the role's keys to every later step.
-That keeps ready-made keys away from package code. It isn't full
-isolation: with `id-token: write` on the job, any step can ask the
-runner for an OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`) and exchange it for the role if it
-knows the role ARN. Building in a separate job without `id-token: write`
-would close that.
+That keeps ready-made keys out of the environment package code runs in.
+It isn't full isolation; build code can still reach the role two ways:
+
+- **OIDC token.** With `id-token: write` on the job, any step can ask
+  the runner for an OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` and
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN`) and exchange it for the role if it
+  knows the role ARN.
+- **Something left to run later.** An install script can add a
+  directory holding an `aws` or `sam` wrapper to `$GITHUB_PATH`, or set
+  variables in `$GITHUB_ENV`. The "SAM deploy" or "Sync frontend to S3"
+  step then runs that wrapper with the role's keys. No role ARN needed.
+
+Building in a separate job without `id-token: write`, and passing only
+the build output to the deploy job, would close both.
 
 The workflow is also dispatchable manually from the Actions tab. Manual
 dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the
