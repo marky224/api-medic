@@ -37,7 +37,7 @@ format:  ## Format code with ruff
 	ruff format .
 
 typecheck:  ## Run mypy
-	mypy src
+	mypy
 
 test:  ## Run tests
 	pytest

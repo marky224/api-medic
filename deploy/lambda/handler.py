@@ -9,7 +9,13 @@ The /api/run path goes through `core.runner_safety` first to block
 SSRF (non-https, RFC1918, link-local incl. EC2 metadata, multicast,
 loopback, any other non-global address), on the URL both as given and
 as httpx will send it. Redirects are followed by hand and every hop's
-target goes through the same guard before it is fetched.
+target goes through the same guard before it is fetched. Every
+connection (the TLS probe, the request and each hop) is pinned: it
+resolves the name once and connects only to an address that passed the
+same check, so a DNS answer that changes after the guard ran can't
+point it somewhere else. A request that can't be sent at all (a
+malformed URL, a non-ASCII header, a non-string body) gets a 400 before
+any DNS lookup.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -30,7 +36,10 @@ Access-Control-* headers.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import logging
+import traceback
 from typing import Any
 
 import httpx
@@ -39,15 +48,41 @@ from api_medic import __version__
 from api_medic.core.engine import analyze
 from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run as run_request
-from api_medic.core.runner_safety import UnsafeURLError, check_url_safe
+from api_medic.core.runner import validate_request
+from api_medic.core.runner_safety import (
+    InvalidRequestError,
+    InvalidURLError,
+    UnsafeURLError,
+    check_url_safe,
+)
 
 # Hard cap per the architecture invariants: a single live request can't
 # exceed this regardless of httpx defaults. Bounded so the Lambda doesn't
 # burn its 30s ceiling on a slow target.
 LIVE_RUN_TIMEOUT_SECONDS = 10.0
 
+logger = logging.getLogger(__name__)
+
+# httpx logs every request's URL at INFO. The function's plain-text logs
+# drop INFO today, but a JSON log config at INFO would not; keep request
+# URLs out of CloudWatch either way.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    try:
+        return _route(event)
+    except Exception as e:
+        # Log only the exception type and where it was raised. Its message
+        # can quote the request URL, a header or the body (pydantic errors
+        # quote their input), and PRIVACY.md keeps request data out of the
+        # logs. Re-raising would have the Lambda runtime log the message.
+        frame = traceback.extract_tb(e.__traceback__)[-1]
+        logger.error("Unhandled %s at %s:%s", type(e).__name__, frame.filename, frame.lineno)
+        return _err(500, "Internal error.")
+
+
+def _route(event: dict[str, Any]) -> dict[str, Any]:
     method, path = _extract_route(event)
 
     if method == "GET" and path == "/api/health":
@@ -131,18 +166,20 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
         isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
     ):
         return _err(400, "'headers' must be a dict[str, str].")
+    if req_body is not None and not isinstance(req_body, str):
+        return _err(400, "'body' must be a string or null.")
 
-    # Vet the URL in both forms that get connected to: as given (the TLS
-    # probe connects by this hostname through the socket module, IDNA 2003)
-    # and as httpx will send it (IDNA 2008). Some names differ between the
+    # Reject what can't be sent at all before any DNS lookup. Then vet the
+    # URL in both forms that get connected to: as given (the TLS probe
+    # connects by this hostname through the socket module, IDNA 2003) and
+    # as httpx will send it (IDNA 2008). Some names differ between the
     # two, e.g. "xß" is "xss" to one and "xn--x-qfa" to the other.
     try:
+        validate_request(method, url, headers, req_body)
         check_url_safe(url)
         check_url_safe(str(httpx.URL(url)))
-    except UnsafeURLError as e:
+    except (InvalidRequestError, UnsafeURLError) as e:
         return _err(400, str(e))
-    except httpx.InvalidURL as e:
-        return _err(400, f"Invalid URL: {e}")
 
     try:
         captured = run_request(
@@ -153,6 +190,7 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
             timeout=LIVE_RUN_TIMEOUT_SECONDS,
             probe_network=True,
             url_guard=_check_redirect_safe,
+            pin_connections=True,
         )
     except UnsafeURLError as e:
         return _err(400, str(e))
@@ -168,7 +206,7 @@ def _check_redirect_safe(url: str) -> None:
     """SSRF guard for redirect hops; names the blocked target in the error."""
     try:
         check_url_safe(url)
-    except UnsafeURLError as e:
+    except (InvalidURLError, UnsafeURLError) as e:
         raise UnsafeURLError(f"Blocked redirect to {url}: {e}") from e
 
 
@@ -185,7 +223,7 @@ def _decode_body(event: dict[str, Any]) -> str:
     if event.get("isBase64Encoded"):
         try:
             raw = base64.b64decode(raw).decode("utf-8", errors="replace")
-        except (ValueError, base64.binascii.Error):
+        except (ValueError, binascii.Error):
             return ""
     return raw
 

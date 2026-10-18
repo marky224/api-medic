@@ -16,13 +16,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from .. import __version__
 from ..core.engine import analyze
 from ..core.models import Report
 from ..core.parser import parse_curl, parse_har
 from ..core.runner import run as run_request
+from ..core.runner_safety import InvalidRequestError
 
 app = FastAPI(title="api-medic", version=__version__)
 
@@ -37,9 +38,21 @@ app.add_middleware(
 )
 
 
+def _non_empty(value: str) -> str:
+    # Not Field(min_length=1): pydantic can't measure a str holding a lone
+    # surrogate, and FastAPI's 422 for that echoes it back and fails to
+    # encode (a 500). Let it through; the runner answers 400.
+    if not value:
+        raise ValueError("must not be empty")
+    return value
+
+
+NonEmptyStr = Annotated[str, AfterValidator(_non_empty)]
+
+
 class RunRequest(BaseModel):
-    method: str = Field(..., min_length=1)
-    url: str = Field(..., min_length=1)
+    method: NonEmptyStr
+    url: NonEmptyStr
     headers: dict[str, str] = Field(default_factory=dict)
     body: str | None = None
 
@@ -67,12 +80,15 @@ async def health() -> dict[str, Any]:
 
 @app.post("/api/run")
 async def run_endpoint(body: RunRequest) -> Report:
-    captured = run_request(
-        method=body.method,
-        url=body.url,
-        headers=body.headers,
-        body=body.body,
-    )
+    try:
+        captured = run_request(
+            method=body.method,
+            url=body.url,
+            headers=body.headers,
+            body=body.body,
+        )
+    except InvalidRequestError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return analyze(captured)
 
 

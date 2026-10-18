@@ -11,6 +11,8 @@ execution see `core.runner`.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from typing import Any
 
@@ -145,7 +147,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     if not curl_str.strip():
         raise ValueError("Empty curl command.")
     try:
-        ctx = uncurl.parse_context(curl_str)
+        # argparse prints why it rejected the command to stderr, quoting
+        # arguments it didn't recognize (cookie values, bodies). Lambda
+        # sends stderr to CloudWatch, where request data must not go.
+        with contextlib.redirect_stderr(io.StringIO()):
+            ctx = uncurl.parse_context(curl_str)
     except SystemExit as e:
         # uncurl uses argparse, which calls sys.exit() on parse failure.
         raise ValueError("Could not parse curl command (argparse rejected it).") from e

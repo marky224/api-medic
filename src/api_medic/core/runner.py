@@ -18,7 +18,7 @@ from __future__ import annotations
 import socket
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from urllib.parse import urlparse
 
 import dns.exception
@@ -30,6 +30,13 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 from .. import __version__
 from .captured import CapturedDns, CapturedRequest, CapturedResponse, CapturedTls
 from .models import TimingBreakdown
+from .runner_safety import (
+    InvalidRequestError,
+    InvalidURLError,
+    PinnedTransport,
+    connect_pinned,
+    validate_url,
+)
 
 DEFAULT_USER_AGENT = f"api-medic/{__version__} (+https://api-medic.markandrewmarquez.com)"
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -57,6 +64,7 @@ def run(
     transport: httpx.BaseTransport | None = None,
     probe_network: bool = True,
     url_guard: Callable[[str], object] | None = None,
+    pin_connections: bool = False,
 ) -> CapturedRequest:
     """Execute an HTTP request and capture the result.
 
@@ -71,10 +79,21 @@ def run(
     last redirect response is returned unfollowed. The caller is still
     responsible for vetting the initial URL.
 
+    `pin_connections` is for the public Lambda too. Every connection (the
+    TLS probe, the request and each redirect hop) then resolves the name
+    once, refuses any non-public address with UnsafeURLError, and
+    connects to the checked IP, so a DNS answer that changes after the
+    caller's check can't redirect it. Ignored for the request when
+    `transport` is given.
+
     Network failures (DNS, connection refused, timeout) produce a
-    CapturedRequest with `response=None`. Diagnostic checks that need a
-    response no-op for it.
+    CapturedRequest with `response=None`, and so does a redirect whose
+    Location httpx can't turn into a request or whose URL validate_url
+    rejects (with `url_guard` set, the guard refuses such a hop first).
+    Diagnostic checks that need a response no-op for it. A request that can't be sent as given raises
+    InvalidRequestError (see validate_request) before anything is sent.
     """
+    validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
     request_headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
 
@@ -97,7 +116,13 @@ def run(
         captured_dns, dns_ms = _resolve_dns(parsed.hostname)
         if is_https:
             port = parsed.port or 443
-            captured_tls, tls_ms = _probe_tls(parsed.hostname, port)
+            if pin_connections:
+                captured_tls, tls_ms = _probe_tls(parsed.hostname, port, connect=connect_pinned)
+            else:
+                captured_tls, tls_ms = _probe_tls(parsed.hostname, port)
+
+    if transport is None and pin_connections:
+        transport = PinnedTransport()
 
     start = time.monotonic()
     response: httpx.Response | None = None
@@ -106,6 +131,7 @@ def run(
             timeout=timeout,
             follow_redirects=follow_redirects and url_guard is None,
             transport=transport,
+            event_hooks={"request": [_refuse_unsendable_hop]},
         ) as client:
             response = client.request(
                 method=method,
@@ -115,7 +141,14 @@ def run(
             )
             if follow_redirects and url_guard is not None:
                 response = _follow_guarded_redirects(client, response, url_guard)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL, UnicodeError, _UnsendableHopError):
+        # Beyond network and protocol errors: httpx builds the next request
+        # as soon as a redirect arrives, and raises InvalidURL or
+        # UnicodeError for a Location it can't use (e.g. "https:host", or an
+        # invalid xn-- label); _refuse_unsendable_hop stops one validate_url
+        # rejects. Treat both as httpx treats a Location it can't parse:
+        # the exchange failed. The submitted request was validated up
+        # front, so these can only come from the response.
         response = None
     total_ms = (time.monotonic() - start) * 1000.0
 
@@ -154,6 +187,53 @@ def run(
         tls=captured_tls,
         source="live",
     )
+
+
+def validate_request(
+    method: str,
+    url: str,
+    headers: Mapping[str, str] | None = None,
+    body: bytes | str | None = None,
+) -> None:
+    """Raise InvalidRequestError if httpx can't send this request as given.
+
+    The URL goes through validate_url (InvalidURLError); the method and
+    header names and values must be ASCII, and a str body must encode as
+    UTF-8. run() calls this first. A caller with work to do before run()
+    (the Lambda's SSRF guard) can call it earlier, so bad input gets a
+    400 before any DNS lookup.
+    """
+    validate_url(url)
+    if not method.isascii():
+        raise InvalidRequestError(f"Method must be ASCII (got {method!r}).")
+    for name, value in (headers or {}).items():
+        if not (name.isascii() and value.isascii()):
+            raise InvalidRequestError(f"Header names and values must be ASCII (header {name!r}).")
+    if isinstance(body, str):
+        try:
+            body.encode("utf-8")
+        except UnicodeEncodeError as e:
+            raise InvalidRequestError(
+                "Body can't be encoded as UTF-8 (it contains an unpaired surrogate)."
+            ) from e
+
+
+class _UnsendableHopError(Exception):
+    """A redirect hop whose URL validate_url rejects; it isn't sent."""
+
+
+def _refuse_unsendable_hop(request: httpx.Request) -> None:
+    """httpx request hook: don't send a redirect hop validate_url rejects.
+
+    httpx doesn't range-check a Location's port, and getaddrinfo wraps one
+    that's too big (99999 becomes 34463), so without this a hop to
+    https://example.com:99999/ would go to another port. The submitted URL
+    has already passed validate_request, so only a hop can fail here.
+    """
+    try:
+        validate_url(str(request.url))
+    except InvalidURLError as e:
+        raise _UnsendableHopError(str(e)) from e
 
 
 def _follow_guarded_redirects(
@@ -214,23 +294,30 @@ def _resolve_dns(
 
 
 def _probe_tls(
-    host: str, port: int, timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS
+    host: str,
+    port: int,
+    timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
+    connect: Callable[[str, int, float], socket.socket] | None = None,
 ) -> tuple[CapturedTls | None, float]:
     """Open a separate TLS connection just to inspect the cert + protocol.
 
     Verification is disabled — we want to *detect* mismatches in checks,
     not error out before reaching them. Returns (None, elapsed) on any
-    socket/TLS failure.
+    socket/TLS failure. `connect`, if given, opens the TCP connection
+    instead of socket.create_connection (the pinned, guarded path); any
+    UnsafeURLError it raises propagates.
     """
     start = time.monotonic()
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with (
-            socket.create_connection((host, port), timeout=timeout) as sock,
-            ctx.wrap_socket(sock, server_hostname=host) as ssock,
-        ):
+        sock = (
+            socket.create_connection((host, port), timeout=timeout)
+            if connect is None
+            else connect(host, port, timeout)
+        )
+        with sock, ctx.wrap_socket(sock, server_hostname=host) as ssock:
             der = ssock.getpeercert(binary_form=True)
             version = ssock.version() or ""
             if not der:

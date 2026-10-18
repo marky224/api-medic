@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
 from api_medic.core.parser import parse_curl, parse_har
 
 
-def _minimal_har(**overrides):
-    entry = {
+def _minimal_har(**overrides: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "request": {
             "method": "GET",
             "url": "https://api.example.com/v1/health",
@@ -401,3 +402,11 @@ class TestParseCurl:
     def test_garbage_input_raises_value_error(self):
         with pytest.raises(ValueError):
             parse_curl("definitely not a curl command")
+
+    def test_rejected_command_writes_nothing_to_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # argparse would print the unrecognized --cookie and its value.
+        with pytest.raises(ValueError, match="argparse rejected it"):
+            parse_curl("curl https://api.example.com/ --cookie 'session=SECRET-7f3a'")
+        assert capsys.readouterr().err == ""

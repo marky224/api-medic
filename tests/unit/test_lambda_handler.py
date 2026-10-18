@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import socket
+import ssl
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpcore
 import httpx
 import pytest
 
 from api_medic import __version__
-from api_medic.core.captured import CapturedRequest
+from api_medic.core.captured import CapturedDns, CapturedRequest
 from api_medic.core.engine import analyze
 from api_medic.core.runner import run
 
@@ -53,7 +56,7 @@ class TestHealth:
 
 
 class TestAnalyzeHar:
-    def _har_event(self, har: dict) -> dict:
+    def _har_event(self, har: dict[str, Any]) -> dict[str, Any]:
         return _event("POST", "/api/analyze", json.dumps({"kind": "har", "har": har}))
 
     def test_valid_har_returns_report(self):
@@ -177,6 +180,17 @@ class TestAnalyzeCurl:
         assert result["statusCode"] == 400
         assert "Missing 'curl'" in json.loads(result["body"])["detail"]
 
+    def test_rejected_curl_writes_nothing_to_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Lambda sends stderr to CloudWatch; argparse would print the
+        unrecognized --cookie and its value there."""
+        curl = "curl https://api.example.com/ --cookie 'session=SECRET-7f3a'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
+        assert capsys.readouterr().err == ""
+
 
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
@@ -204,6 +218,33 @@ class TestAnalyzeRouting:
             _event("POST", "/api/analyze", encoded, is_base64=True), None
         )
         assert result["statusCode"] == 200
+
+
+class TestUnhandledErrors:
+    def test_logged_without_request_data(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unexpected exception becomes a plain 500, and the log names only
+        its type and location: its message can quote request data."""
+        secret = "SECRET-7f3a"
+
+        def boom(captured: CapturedRequest) -> Any:
+            raise RuntimeError(f"cannot analyze https://api.example.com/?token={secret}")
+
+        monkeypatch.setattr(handler, "analyze", boom)
+        curl = f"curl 'https://api.example.com/?token={secret}'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        with caplog.at_level(logging.DEBUG):
+            result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+
+        assert result["statusCode"] == 500
+        assert json.loads(result["body"]) == {"detail": "Internal error."}
+        out, err = capsys.readouterr()
+        assert secret not in caplog.text + out + err
+        assert "Unhandled RuntimeError at " in caplog.text
 
 
 class TestRouting:
@@ -255,7 +296,7 @@ class TestRunUrlGuard:
             fetched.append(str(request.url))
             return routes(request)
 
-        real_run = handler.run_request
+        real_run = run
 
         def run_offline(**kwargs: Any) -> CapturedRequest:
             kwargs.update(transport=httpx.MockTransport(record), probe_network=False)
@@ -328,6 +369,18 @@ class TestRunUrlGuard:
         assert "10.0.0.5" in json.loads(result["body"])["detail"]
         assert fetched == []
 
+    def test_idna_hostname_is_checked_as_typed(self, monkeypatch):
+        """The TLS probe connects by the name as typed, which socket encodes
+        with IDNA 2003 ('xß' -> 'xss'), not as httpx sends it ('xn--x-qfa').
+        The guard must vet that name too."""
+        monkeypatch.setattr(sys.modules[__name__], "_PRIVATE_NAMES", {"xss.example"})
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://xß.example/start", lambda r: httpx.Response(200)
+        )
+        assert result["statusCode"] == 400
+        assert "10.0.0.5" in json.loads(result["body"])["detail"]
+        assert fetched == []
+
     def test_url_httpx_rejects_returns_400(self, monkeypatch):
         result, fetched, _ = self._post_run(
             monkeypatch, "https://api.example.com:abc/", lambda r: httpx.Response(200)
@@ -335,6 +388,45 @@ class TestRunUrlGuard:
         assert result["statusCode"] == 400
         assert "Invalid URL" in json.loads(result["body"])["detail"]
         assert fetched == []
+
+    @pytest.mark.parametrize("location", ["https://xn--zz.example/", "https:example.com"])
+    def test_unusable_location_gives_a_report_without_response(self, monkeypatch, location):
+        """httpx builds the next request as soon as a redirect arrives and
+        raises for a Location it can't use. That's the target server's
+        doing, so it fails the exchange (no response) instead of a 500."""
+        result, fetched, _ = self._post_run(
+            monkeypatch, "https://api.example.com/start", self._redirect_to(location)
+        )
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["response"] is None
+        assert fetched == ["https://api.example.com/start"]
+
+    def test_hop_with_out_of_range_port_is_blocked(self, monkeypatch):
+        result, fetched, _ = self._post_run(
+            monkeypatch,
+            "https://api.example.com/start",
+            self._redirect_to("https://example.com:99999/"),
+        )
+        assert result["statusCode"] == 400
+        detail = json.loads(result["body"])["detail"]
+        assert "Blocked redirect to https://example.com:99999/" in detail
+        assert "port must be a whole number from 1 to 65535" in detail
+        assert fetched == ["https://api.example.com/start"]
+
+    def test_request_url_is_not_logged_by_httpx(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """httpx logs each request's URL at INFO; that must not reach the
+        Lambda's logs even if they're configured to keep INFO."""
+        with caplog.at_level(logging.INFO):
+            result, fetched, _ = self._post_run(
+                monkeypatch,
+                "https://api.example.com/start?token=SECRET-7f3a",
+                lambda r: httpx.Response(200),
+            )
+        assert result["statusCode"] == 200
+        assert fetched == ["https://api.example.com/start?token=SECRET-7f3a"]
+        assert "SECRET-7f3a" not in caplog.text
 
     def test_hop_userinfo_is_not_turned_into_basic_auth(self, monkeypatch):
         """httpx's auto-follow ignores user:pass@ in a Location; a hand-
@@ -413,3 +505,278 @@ class TestRunUrlGuard:
 def _path_cleanup():
     """Each test runs with handler module in sys.modules; that's fine."""
     yield
+
+
+_OK = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+
+
+def _redirect(location: str) -> bytes:
+    return f"HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n".encode()
+
+
+class _RecordingStream(httpcore.MockStream):
+    """MockStream that records the SNI it's given and the bytes sent."""
+
+    def __init__(self, buffer: list[bytes], state: dict[str, Any]) -> None:
+        super().__init__(buffer)
+        self._state = state
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.NetworkStream:
+        self._state["sni"].append(server_hostname)
+        return self
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._state["sent"].append(buffer)
+
+
+class TestRunConnectionPinning:
+    """Every connection /api/run opens (the TLS probe, the request, each
+    redirect hop) must go to an address checked in the same step, never to a
+    fresh lookup of the name. The fake resolver answers each name from a
+    script, one answer per lookup with the last repeating, so a name can look
+    public to the guard and private to the connection, as a DNS-rebinding
+    server would arrange. Nothing is opened: the probe's
+    socket.create_connection and httpcore's connect_tcp are recorded, and
+    connect_tcp answers from canned responses."""
+
+    @pytest.fixture
+    def net(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "answers": {},
+            "probe": [],
+            "tcp": [],
+            "responses": [],
+            "sni": [],
+            "sent": [],
+        }
+
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            script = state["answers"][host]
+            ip = script.pop(0) if len(script) > 1 else script[0]
+            family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            return [(family, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+        def create_connection(address: tuple[str, int], *a: Any, **kw: Any) -> Any:
+            state["probe"].append(address)
+            raise ConnectionRefusedError("offline test")
+
+        def connect_tcp(
+            self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
+        ) -> httpcore.NetworkStream:
+            state["tcp"].append((host, port))
+            return _RecordingStream([state["responses"].pop(0)], state)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(socket, "create_connection", create_connection)
+        monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+        monkeypatch.setattr(
+            "api_medic.core.runner._resolve_dns",
+            lambda host, timeout=5.0: (CapturedDns(records=[]), 0.0),
+        )
+        return state
+
+    @staticmethod
+    def _post(url: str) -> dict[str, Any]:
+        body = json.dumps({"method": "GET", "url": url})
+        return handler.lambda_handler(_event("POST", "/api/run", body), None)
+
+    def test_name_that_rebinds_after_the_guard_is_never_connected(
+        self, net: dict[str, Any]
+    ) -> None:
+        # The guard looks the name up twice (as typed, as httpx sends it).
+        net["answers"] = {"rebind.example": ["93.184.216.34", "93.184.216.34", "10.0.0.5"]}
+        net["responses"] = [_OK]
+
+        result = self._post("https://rebind.example/")
+
+        assert (net["probe"], net["tcp"]) == ([], [])
+        assert result["statusCode"] == 400
+        assert "10.0.0.5" in json.loads(result["body"])["detail"]
+
+    def test_probe_and_request_connect_to_the_checked_address(
+        self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+        probe_sni: list[str | None] = []
+
+        # Let the probe get as far as its TLS handshake, and record the SNI.
+        def create_connection(address: tuple[str, int], *a: Any, **kw: Any) -> socket.socket:
+            net["probe"].append(address)
+            return socket.socket()
+
+        def wrap_socket(
+            self: ssl.SSLContext,
+            sock: socket.socket,
+            *a: Any,
+            server_hostname: str | None = None,
+            **kw: Any,
+        ) -> ssl.SSLSocket:
+            probe_sni.append(server_hostname)
+            raise ssl.SSLError("offline test")
+
+        monkeypatch.setattr(socket, "create_connection", create_connection)
+        monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap_socket)
+
+        result = self._post("https://api.example.com/")
+
+        assert result["statusCode"] == 200
+        assert net["probe"] == [("93.184.216.34", 443)]
+        assert net["tcp"] == [("93.184.216.34", 443)]
+        # Connecting to the checked IP leaves SNI and Host on the name.
+        assert probe_sni == ["api.example.com"]
+        assert net["sni"] == ["api.example.com"]
+        assert b"Host: api.example.com\r\n" in b"".join(net["sent"])
+
+    def test_hop_that_rebinds_after_its_check_is_never_connected(self, net: dict[str, Any]) -> None:
+        net["answers"] = {
+            "api.example.com": ["93.184.216.34"],
+            "hop.example": ["93.184.216.35", "169.254.169.254"],
+        }
+        net["responses"] = [_redirect("https://hop.example/next"), _OK]
+
+        result = self._post("https://api.example.com/start")
+
+        assert result["statusCode"] == 400
+        assert "169.254.169.254" in json.loads(result["body"])["detail"]
+        assert net["tcp"] == [("93.184.216.34", 443)]
+
+    def test_hop_to_an_ipv6_address_and_port_is_pinned(self, net: dict[str, Any]) -> None:
+        v6 = "2606:2800:220:1:248:1893:25c8:1946"
+        net["answers"] = {"api.example.com": ["93.184.216.34"], "hop.example": [v6]}
+        net["responses"] = [_redirect("https://hop.example:8443/next"), _OK]
+
+        result = self._post("https://api.example.com/start")
+
+        assert result["statusCode"] == 200
+        assert net["tcp"] == [("93.184.216.34", 443), (v6, 8443)]
+
+    def test_proxy_environment_is_ignored(
+        self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A proxy resolves the name itself, out of reach of the check, so the
+        guarded path must connect directly even if the environment sets one."""
+        for var in ("https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.9:3128")
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+
+        self._post("https://api.example.com/")
+
+        assert net["tcp"] == [("93.184.216.34", 443)]
+
+
+_PORT = "port must be a whole number from 1 to 65535"
+_BRACKETS = "square brackets are only allowed around an IPv6 address"
+_IDNA = "is not a valid internationalized hostname"
+_DNS = "can't be looked up in DNS"
+_ASCII_HEADERS = "Header names and values must be ASCII"
+
+
+class TestRunRejectsMalformedInput:
+    """Input /api/run can't send gets a 400 naming the problem, before any
+    DNS lookup or fetch. Each of these used to be a 500 on this route, on
+    api-medic serve's, or both."""
+
+    @pytest.fixture
+    def seen(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+        seen: dict[str, list[str]] = {"lookups": [], "fetched": []}
+
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            seen["lookups"].append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def record(request: httpx.Request) -> httpx.Response:
+            seen["fetched"].append(str(request.url))
+            return httpx.Response(200)
+
+        real_run = run
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(transport=httpx.MockTransport(record), probe_network=False)
+            return real_run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        return seen
+
+    @staticmethod
+    def _post(fields: dict[str, Any]) -> tuple[int, str]:
+        body = json.dumps({"method": "GET", "url": "https://api.example.com/", **fields})
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        return result["statusCode"], json.loads(result["body"]).get("detail", "")
+
+    @pytest.mark.parametrize(
+        ("url", "message"),
+        [
+            ("https://api.example.com:99999/", _PORT),
+            ("https://api.example.com:65536/", _PORT),
+            ("https://api.example.com:0/", _PORT),
+            ("https://api.example.com:-1/", _PORT),
+            ("https://api.example.com:+443/", _PORT),
+            ("https://api.example.com: 443/", _PORT),
+            ("https://api.example.com:\u0663/", _PORT),
+            ("https://api.example.com:1_0/", _PORT),
+            ("https://api.example.com:443:443/", _PORT),
+            ("https://api.example.com:abc/", _PORT),
+            ("https://[2001:db8::1]:99999/", _PORT),
+            # Over int()'s 4,300-digit limit, leading zeros included.
+            ("https://api.example.com:" + "9" * 4301 + "/", _PORT),
+            ("https://api.example.com:" + "0" * 4301 + "/", _PORT),
+            ("https://api.example.com:" + "0" * 4300 + "443/", "Invalid port"),
+            ("https://[fe80::1%25\u00e9]/", "the host contains non-ASCII characters"),
+            ("https://[example.com]/", _BRACKETS),
+            ("https://[1.2.3.4]/", _BRACKETS),
+            ("https://[]/", _BRACKETS),
+            ("https://[::1/", _BRACKETS),
+            ("https://::1]/", _BRACKETS),
+            ("https://ex[ample].com/", _BRACKETS),
+            ("https://[2001:db8::1]x/", _BRACKETS),
+            ("https://user@[example.com]/", _BRACKETS),
+            ("https://[v1.fe]/", _BRACKETS),
+            ("https://xn--zz.example/", _IDNA),
+            ("https://xn--/", _IDNA),
+            ("https://xn--a.example/", _IDNA),
+            ("https://xn--abc-.example/", _IDNA),
+            ("https://xn--ls8h.la/", _IDNA),
+            ("https://xn--n3h.net/", _IDNA),
+            ("https://" + "a" * 64 + ".example/", _DNS),
+            ("https://a..b.example/", _DNS),
+            ("https://exa\tmple.com/", "Invalid URL"),
+            ("https://256.1.1.1/", "Invalid URL"),
+            ("https://example.com/\ud800", "can't be encoded as UTF-8"),
+        ],
+    )
+    def test_malformed_url(self, seen: dict[str, list[str]], url: str, message: str) -> None:
+        status, detail = self._post({"url": url})
+        assert status == 400
+        assert message in detail
+        assert seen == {"lookups": [], "fetched": []}
+
+    @pytest.mark.parametrize(
+        ("fields", "message"),
+        [
+            ({"body": 5}, "'body' must be a string or null"),
+            ({"body": {"a": 1}}, "'body' must be a string or null"),
+            ({"body": ["password=secret"]}, "'body' must be a string or null"),
+            ({"body": True}, "'body' must be a string or null"),
+            ({"body": "\ud800"}, "Body can't be encoded as UTF-8"),
+            ({"headers": {"X-T\u00f6ken": "v"}}, _ASCII_HEADERS),
+            ({"headers": {"X-A": "caf\u00e9"}}, _ASCII_HEADERS),
+            ({"headers": {"X-A": "\ud800"}}, _ASCII_HEADERS),
+            ({"method": "G\u00c9T"}, "Method must be ASCII"),
+        ],
+    )
+    def test_request_httpx_cannot_send(
+        self, seen: dict[str, list[str]], fields: dict[str, Any], message: str
+    ) -> None:
+        status, detail = self._post(fields)
+        assert status == 400
+        assert message in detail
+        assert seen == {"lookups": [], "fetched": []}
