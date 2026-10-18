@@ -1,0 +1,73 @@
+{
+  "startedDateTime": "2026-10-17T12:00:00.000Z",
+  "time": 150,
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/profile",
+    "httpVersion": "HTTP/1.1",
+    "headers": [
+      {
+        "name": "Cookie",
+        "value": "session_id=**********************; theme=****"
+      },
+      {
+        "name": "X-Api-Key",
+        "value": "********************"
+      }
+    ],
+    "queryString": [],
+    "cookies": [
+      {
+        "name": "session_id",
+        "value": "**********************"
+      },
+      {
+        "name": "theme",
+        "value": "****"
+      }
+    ],
+    "headersSize": -1,
+    "bodySize": 0
+  },
+  "response": {
+    "status": 401,
+    "statusText": "Unauthorized",
+    "httpVersion": "HTTP/1.1",
+    "headers": [
+      {
+        "name": "Set-Cookie",
+        "value": "session_id=*********************; Path=/; Max-Age=0"
+      },
+      {
+        "name": "WWW-Authenticate",
+        "value": "Basic realm=\"api\""
+      }
+    ],
+    "cookies": [
+      {
+        "name": "session_id",
+        "value": "*********************",
+        "path": "/",
+        "httpOnly": false,
+        "secure": false
+      }
+    ],
+    "content": {
+      "size": 0,
+      "mimeType": "application/json"
+    },
+    "redirectURL": "",
+    "headersSize": -1,
+    "bodySize": 0
+  },
+  "cache": {},
+  "timings": {
+    "blocked": -1,
+    "dns": -1,
+    "connect": -1,
+    "ssl": -1,
+    "send": 1,
+    "wait": 100,
+    "receive": 49
+  }
+}

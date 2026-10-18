@@ -106,20 +106,28 @@ export function App() {
       )}
 
       {selected && (
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-xs text-muted truncate">
-            Selected: {selected.entry.request.method}{" "}
-            {selected.entry.request.url}
-          </span>
-          <button
-            type="button"
-            onClick={onAnalyze}
-            disabled={loading}
-            className="text-xs bg-ink text-paper rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50 shrink-0"
-          >
-            {loading ? "Analyzing…" : "Analyze with api-medic"}
-          </button>
-        </div>
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-muted truncate">
+              Selected: {selected.entry.request.method}{" "}
+              {selected.entry.request.url}
+            </span>
+            <button
+              type="button"
+              onClick={onAnalyze}
+              disabled={loading}
+              className="text-xs bg-ink text-paper rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50 shrink-0"
+            >
+              {loading ? "Analyzing…" : "Analyze with api-medic"}
+            </button>
+          </div>
+          <p className="text-xs text-muted">
+            Before sending, credentials are masked: Authorization (a JWT keeps
+            only its expiry and subject), cookies, API-key and token headers,
+            token-like URL parameters, and secret fields in JSON and form
+            bodies. Everything else is sent as captured.
+          </p>
+        </>
       )}
 
       {error && (

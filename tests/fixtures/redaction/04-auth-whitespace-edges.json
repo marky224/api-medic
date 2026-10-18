@@ -1,0 +1,52 @@
+{
+  "description": "Opaque Bearer token with a leading NEL (U+0085) and a trailing no-break space (U+00A0): whitespace to Python, and they survive fetch's header normalization.",
+  "expect_findings": [
+    "auth.header.whitespace"
+  ],
+  "secrets": [
+    "OPAQUE-tok-Zx81QwPm55"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/me",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "\u0085Bearer OPAQUE-tok-Zx81QwPm55\u00a0"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [],
+      "cookies": [],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

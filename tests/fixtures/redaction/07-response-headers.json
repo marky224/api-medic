@@ -1,0 +1,85 @@
+{
+  "description": "429 with rate-limit headers, a CORS origin mismatch, and a JSON body with secrets (escaped quote, \\u00e9 escape, raw non-ASCII, a secret key inside an array) whose Content-Length is 5 bytes too high.",
+  "expect_findings": [
+    "body.content_length_mismatch",
+    "http.cors.misconfigured",
+    "rate_limit.hit"
+  ],
+  "secrets": [
+    "Zr7Kp2Lm",
+    "RT-9vXc3Mm1Qa"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/items",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Origin",
+          "value": "https://app.example.com"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 429,
+      "statusText": "Too Many Requests",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Retry-After",
+          "value": "30"
+        },
+        {
+          "name": "X-RateLimit-Limit",
+          "value": "100"
+        },
+        {
+          "name": "X-RateLimit-Remaining",
+          "value": "0"
+        },
+        {
+          "name": "X-RateLimit-Reset",
+          "value": "1792280000"
+        },
+        {
+          "name": "Access-Control-Allow-Origin",
+          "value": "https://other.example.com"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "name": "Content-Length",
+          "value": "143"
+        }
+      ],
+      "cookies": [],
+      "content": {
+        "size": 138,
+        "mimeType": "application/json",
+        "text": "{\"error\": \"rate_limited\", \"access_token\": \"AT-\\\"q\\u00e9-\u00e9-Zr7Kp2Lm\", \"items\": [{\"id\": 1, \"refresh_token\": \"RT-9vXc3Mm1Qa\"}], \"retry\": 30}"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 137
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

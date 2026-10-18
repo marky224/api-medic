@@ -1,0 +1,67 @@
+{
+  "description": "Expired Bearer JWT with extra claims (email, name, role). Masking keeps the JWT header and only exp/nbf/sub.",
+  "expect_findings": [
+    "auth.jwt.expired"
+  ],
+  "secrets": [
+    "SIG1exp_Qx7Lm2Np9Rt4Vw8Yz3Bc6Df1Gh5Jk0Mn2Pq4",
+    "alice.quill@zentrovia.test",
+    "Alice Quillfeather"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/me",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImFsaWNlLnF1aWxsQHplbnRyb3ZpYS50ZXN0IiwibmFtZSI6IkFsaWNlIFF1aWxsZmVhdGhlciIsInN1YiI6InVzZXItNDgyMSIsImlhdCI6MTU5OTk5MDAwMCwiZXhwIjoxNjAwMDAwMDAwLCJyb2xlIjoiYWRtaW4ifQ.SIG1exp_Qx7Lm2Np9Rt4Vw8Yz3Bc6Df1Gh5Jk0Mn2Pq4"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "WWW-Authenticate",
+          "value": "Bearer error=\"invalid_token\""
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "cookies": [],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

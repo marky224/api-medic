@@ -1,0 +1,54 @@
+{
+  "description": "The same header set twice: fetch's Headers.append and XHR's setRequestHeader join the values with \", \". The opaque token in front of the JWT must be masked too; Python still reads the JWT's claims.",
+  "expect_findings": [
+    "auth.jwt.expired"
+  ],
+  "secrets": [
+    "OPAQUE-first-Kd73HsQ2",
+    "SIG9dbl_Lp4Mq7Nr2Os5Pt8Qu1Rv6Sw3Tx0Uy9Vz2Wa",
+    "erin.vale@zentrovia.test"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/accounts",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Bearer OPAQUE-first-Kd73HsQ2, Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImVyaW4udmFsZUB6ZW50cm92aWEudGVzdCIsInN1YiI6InVzZXItNTE1MCIsImV4cCI6MTYwMDAwMDAwMH0.SIG9dbl_Lp4Mq7Nr2Os5Pt8Qu1Rv6Sw3Tx0Uy9Vz2Wa"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [],
+      "cookies": [],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

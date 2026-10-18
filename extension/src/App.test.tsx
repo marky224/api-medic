@@ -132,6 +132,16 @@ describe("<App />", () => {
     ).toBeInTheDocument();
   });
 
+  it("says what is masked once a request is selected", () => {
+    render(<App />);
+    const entry = fireRequest();
+    expect(screen.queryByText(/credentials are masked/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(entry.request.url));
+
+    expect(screen.getByText(/credentials are masked/i)).toBeInTheDocument();
+  });
+
   it("analyzes the selected entry and renders the returned Report", async () => {
     mockAnalyze.mockResolvedValue(HEALTHY_REPORT);
     render(<App />);

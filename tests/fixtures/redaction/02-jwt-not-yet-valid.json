@@ -1,0 +1,53 @@
+{
+  "description": "Bearer JWT whose nbf is in 2100.",
+  "expect_findings": [
+    "auth.jwt.not_yet_valid"
+  ],
+  "secrets": [
+    "SIG2nbf_Hd83Kf02Lw7Pz5Rq1Ty6Uv9Xa4Cb8Ee3Gi7Jm",
+    "Bob Ventimiglia"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/orders",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "authorization",
+          "value": "bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiQm9iIFZlbnRpbWlnbGlhIiwic3ViIjoidXNlci03NyIsIm5iZiI6NDEwMjQ0NDgwMCwiZXhwIjo0MTAyNDQ4NDAwLCJzY29wZSI6InJlYWQgd3JpdGUifQ.SIG2nbf_Hd83Kf02Lw7Pz5Rq1Ty6Uv9Xa4Cb8Ee3Gi7Jm"
+        }
+      ],
+      "queryString": [],
+      "cookies": [],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [],
+      "cookies": [],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}

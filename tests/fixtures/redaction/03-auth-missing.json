@@ -1,0 +1,84 @@
+{
+  "description": "401 with no Authorization header; credentials travel in a cookie and X-Api-Key instead.",
+  "expect_findings": [
+    "auth.missing"
+  ],
+  "secrets": [
+    "COOKIE-sess-8Kq2Zp4Lw9",
+    "XAPIKEY-77hJk2LmN4pQ",
+    "SETCK-reset-3Fz8Wq1Lp"
+  ],
+  "entry": {
+    "startedDateTime": "2026-10-17T12:00:00.000Z",
+    "time": 150,
+    "request": {
+      "method": "GET",
+      "url": "https://api.example.com/v1/profile",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Cookie",
+          "value": "session_id=COOKIE-sess-8Kq2Zp4Lw9; theme=dark"
+        },
+        {
+          "name": "X-Api-Key",
+          "value": "XAPIKEY-77hJk2LmN4pQ"
+        }
+      ],
+      "queryString": [],
+      "cookies": [
+        {
+          "name": "session_id",
+          "value": "COOKIE-sess-8Kq2Zp4Lw9"
+        },
+        {
+          "name": "theme",
+          "value": "dark"
+        }
+      ],
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "response": {
+      "status": 401,
+      "statusText": "Unauthorized",
+      "httpVersion": "HTTP/1.1",
+      "headers": [
+        {
+          "name": "Set-Cookie",
+          "value": "session_id=SETCK-reset-3Fz8Wq1Lp; Path=/; Max-Age=0"
+        },
+        {
+          "name": "WWW-Authenticate",
+          "value": "Basic realm=\"api\""
+        }
+      ],
+      "cookies": [
+        {
+          "name": "session_id",
+          "value": "SETCK-reset-3Fz8Wq1Lp",
+          "path": "/",
+          "httpOnly": false,
+          "secure": false
+        }
+      ],
+      "content": {
+        "size": 0,
+        "mimeType": "application/json"
+      },
+      "redirectURL": "",
+      "headersSize": -1,
+      "bodySize": 0
+    },
+    "cache": {},
+    "timings": {
+      "blocked": -1,
+      "dns": -1,
+      "connect": -1,
+      "ssl": -1,
+      "send": 1,
+      "wait": 100,
+      "receive": 49
+    }
+  }
+}
