@@ -13,5 +13,7 @@
 pydantic>=2.6.0
 uncurl>=0.0.11
 httpx>=0.27.0
+# core/runner_safety.py's PinnedTransport imports httpcore directly.
+httpcore>=1,<2
 dnspython>=2.6.0
 cryptography>=42.0.0

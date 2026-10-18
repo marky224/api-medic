@@ -140,9 +140,9 @@ sam delete --stack-name api-medic-demo --region us-east-1
 
 ## Architectural invariants for this stack
 
-- The Lambda imports `pydantic`, `uncurl`, `httpx`, `dnspython`,
-  `cryptography`, and `api_medic.core` — **no fastapi, uvicorn, rich,
-  or typer**. Verified by `tests/unit/test_lambda_imports.py`.
+- The Lambda imports `pydantic`, `uncurl`, `httpx`, `httpcore`,
+  `dnspython`, `cryptography`, and `api_medic.core` — **no fastapi,
+  uvicorn, rich, or typer**. Verified by `tests/unit/test_lambda_imports.py`.
 - `/api/run` MUST go through `core.runner_safety.check_url_safe`
   before any socket is opened. Verified by an explicit assertion in
   the same test module.
