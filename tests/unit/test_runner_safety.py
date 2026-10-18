@@ -9,6 +9,7 @@ import httpcore
 import httpx
 import pytest
 
+from api_medic.core.runner import run
 from api_medic.core.runner_safety import (
     InvalidURLError,
     PinnedTransport,
@@ -279,9 +280,14 @@ class _RecordingStream(httpcore.MockStream):
         self._log["sent"].append(buffer)
 
 
-def _record_tcp(monkeypatch: pytest.MonkeyPatch, *responses: bytes) -> dict[str, list[Any]]:
-    """Replace httpcore's real TCP connect: record (host, port), answer from
-    `responses` (one per connection) over a _RecordingStream."""
+def _record_tcp(
+    monkeypatch: pytest.MonkeyPatch,
+    *responses: bytes,
+    fail: dict[str, type[Exception]] | None = None,
+) -> dict[str, list[Any]]:
+    """Replace httpcore's real TCP connect: record (host, port), then raise
+    fail[host] if given, else answer from `responses` (one per connection)
+    over a _RecordingStream."""
     log: dict[str, list[Any]] = {"tcp": [], "tls": [], "sent": []}
     queue = list(responses)
 
@@ -289,6 +295,8 @@ def _record_tcp(monkeypatch: pytest.MonkeyPatch, *responses: bytes) -> dict[str,
         self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
     ) -> httpcore.NetworkStream:
         log["tcp"].append((host, port))
+        if fail and host in fail:
+            raise fail[host](f"offline test: {host}")
         return _RecordingStream([queue.pop(0)], log)
 
     monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
@@ -312,6 +320,35 @@ def test_pinned_transport_connects_to_the_checked_ip_and_keeps_the_name(
     # SNI and certificate verification use the name, not the IP.
     assert log["tls"] == [("api.example.com", True, ssl.CERT_REQUIRED)]
     assert b"Host: api.example.com\r\n" in b"".join(log["sent"])
+
+
+@pytest.mark.parametrize("error", [httpcore.ConnectError, httpcore.ConnectTimeout])
+def test_pinned_transport_falls_through_to_the_next_checked_address(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    _scripted_resolver(monkeypatch, ["93.184.216.35", "93.184.216.34"])
+    log = _record_tcp(monkeypatch, _OK, fail={"93.184.216.35": error})
+
+    with httpx.Client(transport=PinnedTransport()) as client:
+        response = client.get("https://api.example.com/")
+
+    assert response.status_code == 200
+    assert log["tcp"] == [("93.184.216.35", 443), ("93.184.216.34", 443)]
+
+
+def test_pinned_run_has_no_response_when_every_checked_address_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _scripted_resolver(monkeypatch, ["93.184.216.35", "93.184.216.34"])
+    log = _record_tcp(
+        monkeypatch,
+        fail={"93.184.216.35": httpcore.ConnectError, "93.184.216.34": httpcore.ConnectTimeout},
+    )
+
+    captured = run("GET", "https://api.example.com/", probe_network=False, pin_connections=True)
+
+    assert captured.response is None
+    assert log["tcp"] == [("93.184.216.35", 443), ("93.184.216.34", 443)]
 
 
 def test_pinned_transport_refuses_a_private_answer(monkeypatch: pytest.MonkeyPatch) -> None:
