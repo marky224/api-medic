@@ -57,15 +57,19 @@ def jwt_expired(captured: CapturedRequest) -> Finding | None:
     if isinstance(sub, str) and sub:
         evidence["sub"] = sub
 
+    explanation = (
+        f"The JWT in your Authorization header expired {_humanize_seconds(expired_for)} ago."
+    )
+    # Only blame the 401 when there is one; a captured request may have no
+    # response, or the server may not have rejected the token.
+    if captured.response is not None and captured.response.status_code == 401:
+        explanation += " This is the most likely cause of the 401."
+
     return Finding(
         id="auth.jwt.expired",
         severity="critical",
         title="Bearer token has expired",
-        explanation=(
-            f"The JWT in your Authorization header expired "
-            f"{_humanize_seconds(expired_for)} ago. "
-            "This is the most likely cause of the 401."
-        ),
+        explanation=explanation,
         evidence=evidence,
         suggested_fix="Refresh the token at your token endpoint and retry.",
     )

@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 
+from api_medic import __version__
 from api_medic.core.captured import CapturedRequest
 from api_medic.core.engine import analyze
 from api_medic.core.runner import run
@@ -48,7 +49,7 @@ class TestHealth:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["ok"] is True
-        assert "version" in body
+        assert body["version"] == __version__
 
 
 class TestAnalyzeHar:

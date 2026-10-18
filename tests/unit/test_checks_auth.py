@@ -96,6 +96,22 @@ class TestJwtExpired:
         assert finding.title == "Bearer token has expired"
         assert finding.suggested_fix is not None
 
+    def test_explanation_blames_the_401_only_on_a_401(self):
+        past = int(time.time()) - 3 * 3600
+        token = _make_jwt({"sub": "user_123", "exp": past})
+        headers = {"Authorization": f"Bearer {token}"}
+        blame = "most likely cause of the 401"
+
+        on_401 = jwt_expired(_cap(headers=headers, response=_resp(401)))
+        assert on_401 is not None
+        assert on_401.explanation.endswith("This is the most likely cause of the 401.")
+
+        for response in (_resp(200), _resp(403), _resp(500), None):
+            finding = jwt_expired(_cap(headers=headers, response=response))
+            assert finding is not None
+            assert blame not in finding.explanation
+            assert finding.explanation.endswith(" ago.")
+
     def test_evidence_carries_exp_iso_and_expired_for_seconds_and_sub(self):
         past = int(time.time()) - 7200  # 2 hours
         token = _make_jwt({"sub": "user_123", "exp": past})

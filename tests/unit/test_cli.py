@@ -12,6 +12,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from api_medic import __version__
 from api_medic.cli import main as cli_main
 from api_medic.cli.main import _rewrite_bare_url, app
 from api_medic.core.captured import CapturedRequest, CapturedResponse
@@ -68,7 +69,7 @@ class TestVersionAndHelp:
     def test_version_prints_and_exits(self, runner):
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "api-medic" in result.stdout
+        assert result.stdout.strip() == f"api-medic {__version__}"
 
     def test_help_listed_when_no_args(self, runner):
         # no_args_is_help=True prints help and exits 2 (Click convention for

@@ -18,12 +18,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .. import __version__
 from ..core.engine import analyze
 from ..core.models import Report
 from ..core.parser import parse_curl, parse_har
 from ..core.runner import run as run_request
 
-app = FastAPI(title="api-medic", version="0.1")
+app = FastAPI(title="api-medic", version=__version__)
 
 # Local Vite dev server. Phase 5 deploy will add the production hosted-demo
 # origin via env config.
