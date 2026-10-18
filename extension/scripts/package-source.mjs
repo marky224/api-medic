@@ -50,7 +50,7 @@ This source corresponds to api-medic Firefox add-on version ${version}.
 
 ## Requirements
 
-- Node.js 20.x
+- Node.js 24.x
 - npm 10.x or later
 
 ## Build

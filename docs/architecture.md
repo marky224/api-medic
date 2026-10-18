@@ -330,7 +330,6 @@ api-medic/
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tsconfig.json
-│   ├── tailwind.config.js
 │   └── src/
 │       ├── main.tsx
 │       ├── App.tsx
@@ -353,7 +352,6 @@ api-medic/
 ├── extension/                  # Browser extension (Vite + React 18, MV3)
 │   ├── package.json
 │   ├── vite.config.ts
-│   ├── tailwind.config.js
 │   ├── public/
 │   │   ├── manifest.json           # Chrome MV3
 │   │   └── manifest.firefox.json   # Firefox MV3

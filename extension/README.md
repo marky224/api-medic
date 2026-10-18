@@ -69,8 +69,9 @@ minified (Vite minifies in production). `npm run package-source` produces
 `packages/api-medic-source-X.Y.Z.zip` containing a top-level `BUILD.md`,
 `LICENSE`, the `extension/` source tree, and the slice of `frontend/` the
 extension imports via the `@frontend` Vite alias. A reviewer following
-`BUILD.md` ends up with a Firefox zip whose `manifest.json` matches the
-submitted add-on byte-for-byte; CI runs that rebuild on every push.
+`BUILD.md` ends up with a Firefox zip whose files all match the submitted
+add-on byte-for-byte; CI runs that rebuild on every push and diffs every
+file.
 
 ## Architecture
 

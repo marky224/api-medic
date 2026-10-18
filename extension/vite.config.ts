@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,16 +10,23 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // React UI. Output goes to extension/dist/, which is what the user loads
 // as an unpacked extension. Manifest is copied from public/ by Vite.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@frontend": path.resolve(here, "..", "frontend", "src"),
     },
+    // Files under @frontend would otherwise resolve react from
+    // ../frontend/node_modules and bundle a second copy (invalid hook
+    // call). @vitejs/plugin-react set this itself before v6.
+    dedupe: ["react", "react-dom"],
   },
   build: {
+    // Match minimum_chrome_version / strict_min_version in the manifests;
+    // Vite's default target is newer than both.
+    target: ["chrome102", "firefox115"],
     outDir: "dist",
     emptyOutDir: true,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         devtools: path.resolve(here, "devtools.html"),
         panel: path.resolve(here, "panel.html"),

@@ -91,7 +91,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -115,7 +115,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: extension/package-lock.json
 
@@ -169,9 +169,9 @@ jobs:
           src_zip="packages/api-medic-source-${v}.zip"
           test -f "$src_zip"
 
-          # Capture the original Firefox manifest before we leave the workspace.
-          unzip -p "packages/api-medic-firefox-${v}.zip" manifest.json \
-            > /tmp/original-firefox-manifest.json
+          # Unpack the original Firefox package before we leave the workspace.
+          rm -rf /tmp/original-firefox
+          unzip -q "packages/api-medic-firefox-${v}.zip" -d /tmp/original-firefox
 
           # Extract source to a clean temp dir, then build per BUILD.md.
           rm -rf /tmp/amo-repro
@@ -187,12 +187,12 @@ jobs:
           test -f "/tmp/amo-repro/extension/packages/api-medic-firefox-${v}.zip"
           test -f "/tmp/amo-repro/extension/packages/api-medic-chrome-${v}.zip"
 
-          # The rebuilt Firefox manifest must match the originally-submitted one
-          # byte-for-byte; if it doesn't, the source zip is not a faithful
-          # reproduction of what we shipped.
-          unzip -p "/tmp/amo-repro/extension/packages/api-medic-firefox-${v}.zip" manifest.json \
-            > /tmp/rebuilt-firefox-manifest.json
-          diff /tmp/original-firefox-manifest.json /tmp/rebuilt-firefox-manifest.json
+          # Every file in the rebuilt Firefox package must match the
+          # originally-submitted one byte-for-byte; if any differs, the source
+          # zip is not a faithful reproduction of what we shipped.
+          rm -rf /tmp/rebuilt-firefox
+          unzip -q "/tmp/amo-repro/extension/packages/api-medic-firefox-${v}.zip" -d /tmp/rebuilt-firefox
+          diff -r /tmp/original-firefox /tmp/rebuilt-firefox
 
   schema-check:
     name: Verify TypeScript types are in sync with Pydantic schema

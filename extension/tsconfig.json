@@ -20,7 +20,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
 
-    "types": ["chrome", "vitest/globals", "@testing-library/jest-dom"],
+    "types": ["chrome", "node", "vitest/globals", "@testing-library/jest-dom"],
 
     "baseUrl": ".",
     "paths": {
