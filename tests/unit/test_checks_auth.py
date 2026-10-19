@@ -238,7 +238,7 @@ BEARER_TOKENS = [
 
 class TestBearerToken:
     @pytest.mark.parametrize(("value", "token"), BEARER_TOKENS)
-    def test_same_token_as_the_lazy_pattern(self, value: str, token: str | None):
+    def test_same_token_as_the_lazy_pattern(self, value: str, token: str | None) -> None:
         assert _old_token(value) == token
         assert auth._bearer_token(value) == token
 

@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from api_medic.core.checks.auth import _BEARER_RE, _decode_jwt_payload
+from api_medic.core.checks.auth import _bearer_token, _decode_jwt_payload
 from api_medic.core.engine import analyze
 from api_medic.core.models import Report
 from api_medic.core.parser import parse_har
@@ -59,8 +59,8 @@ def _jwt_claims(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Claims of the entry's Bearer JWT, decoded the way the auth checks decode them."""
     for header in entry["request"].get("headers", []):
         if header["name"].lower() == "authorization":
-            m = _BEARER_RE.match(header["value"])
-            return _decode_jwt_payload(m.group(1)) if m else None
+            token = _bearer_token(header["value"])
+            return _decode_jwt_payload(token) if token is not None else None
     return None
 
 

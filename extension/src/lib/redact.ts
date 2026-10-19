@@ -23,7 +23,7 @@ type Json = Record<string, unknown>;
 export const JWT_SIGNATURE_MARKER = "REDACTED";
 
 // Whitespace to Python or JavaScript. Python's \s (str.isspace) adds
-// \x1c-\x1f and \x85 to JavaScript's \s; JavaScript's adds ﻿.
+// \x1c-\x1f and \x85 to JavaScript's \s; JavaScript's adds \ufeff.
 const WS = "\\s\\x1c-\\x1f\\x85";
 const WS_CHAR = new RegExp(`^[${WS}]$`, "u");
 const WS_CHARS = new RegExp(`[${WS}]`, "gu");
