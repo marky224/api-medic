@@ -73,8 +73,9 @@ aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/
 ## Deploying via GitHub Actions
 
 `.github/workflows/deploy-demo.yml` runs on `workflow_run` when the CI
-workflow completes, not on the push itself. The deploy job proceeds only
-when all of these hold:
+workflow completes, not on the push itself. Its build job proceeds only
+when all of these hold (the deploy job needs the build job, so it's
+skipped whenever that one is):
 
 - the repo variable `DEMO_DEPLOY_ENABLED` is `true`,
 - the CI run concluded `success` (the integration job is
@@ -85,7 +86,7 @@ when all of these hold:
   (`github.sha`, which is `main`'s head when the deploy run is
   triggered).
 
-It checks out `workflow_run.head_sha`, the exact commit CI tested. If CI
+Both jobs use `workflow_run.head_sha`, the exact commit CI tested. If CI
 fails, nothing deploys. Re-running CI to green triggers the deploy only
 if that commit is still `main`'s tip; once a newer commit has landed, its
 own CI run is the one that deploys. The same check stops an older commit
@@ -94,51 +95,95 @@ from deploying over a newer one when two pushes finish CI out of order.
 To redeploy, use **Run workflow** on `main` (manual dispatch, below).
 Don't re-run an old "Deploy hosted demo" run: a re-run keeps that run's
 original `GITHUB_SHA` and event payload, so the tip check passes again
-and the older commit deploys over the newer one.
+and the older commit deploys over the newer one. The same goes for
+**Re-run failed jobs** on a run whose deploy job failed: it re-runs only
+the deploy, with that run's build artifact (kept for a day), so it's
+safe only while that run's commit is still `main`'s tip.
 
-Deploys run one at a time (job-level `concurrency: deploy-demo`, with
-`cancel-in-progress: false`). A running deploy is never cancelled; a
-newer pending deploy replaces an older pending one. The group is on the
-job, not the workflow, because some runs of this workflow are skipped by
-the job's `if`: failed, cancelled or superseded CI runs on `main`, and
-fork PRs from a branch named `main` (the `branches: [main]` filter lets
-those through, see below). At workflow level, those runs would still join
-the group and replace a pending deploy before being skipped.
+Deploys run one at a time (job-level `concurrency: deploy-demo` on the
+deploy job, with `cancel-in-progress: false`). A running deploy is never
+cancelled; a newer pending deploy replaces an older pending one. Builds
+have their own group, `deploy-demo-build`, with the same settings, so
+they run one at a time too and their deploys queue in the same order.
+Without it, an older commit's slow build could finish after a newer
+one's and deploy over it. The two jobs can't share one group: a
+finished build's deploy would replace the next run's pending build, and
+`main`'s tip would never deploy.
+
+The groups are on the jobs, not the workflow, because some runs of this
+workflow are skipped by the build job's `if`: failed, cancelled or
+superseded CI runs on `main`, and fork PRs from a branch named `main`
+(the `branches: [main]` filter lets those through, see below). At
+workflow level, those runs would still join the group and replace a
+pending deploy before being skipped. The deploy job has no `if` of its
+own and is skipped through `needs: build`. GitHub's docs don't say
+whether a job skipped that way joins its group, so that part is
+unverified.
 
 `workflow_run` also fires for pull_request CI runs, including fork PRs,
 and always runs the workflow file from `main` with secrets and
-`id-token: write`. The job-level `if` is what keeps PR code away from
+`id-token: write`. The build job's `if` is what keeps PR code away from
 AWS: a pull_request run fails the `event == 'push'` check. The
 `branches: [main]` filter alone isn't enough, because a fork PR from a
 branch named `main` matches it. The OIDC trust policy isn't a backstop
 here either: a `workflow_run` job's token carries the default branch ref,
 so it matches `ref:refs/heads/main` whatever triggered it.
 
-Once triggered, the workflow:
+Once triggered, the workflow runs two jobs:
 
-1. Builds the frontend with `VITE_DEMO_MODE=1` and runs `sam build`,
-   without AWS credentials.
-2. Assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC.
-3. Runs `sam deploy` with the secrets as parameter overrides.
-4. Syncs `frontend/dist/` to the S3 bucket and invalidates CloudFront.
+1. **build** has a read-only token (`contents: read`), no `id-token`
+   and no secrets. It builds the frontend with `VITE_DEMO_MODE=1`,
+   vendors `api_medic` into `deploy/lambda/`, runs `sam build`, and
+   uploads the built function directory and `frontend/dist/` as one
+   artifact, `demo-build`, kept for a day.
+2. **deploy** needs build and has `id-token: write`. It checks out only
+   `deploy/template.yaml` and `deploy/samconfig.toml` from the same
+   commit and downloads the artifact, which fails if the artifact
+   doesn't match the digest recorded at upload. It checks the artifact
+   holds only files and directories and only the two expected entries,
+   and moves the built function to `deploy/lambda/`, where the
+   template's `CodeUri` points. It then installs the SAM CLI with AWS's
+   installer, assumes the `AWS_DEPLOY_ROLE_ARN` via OIDC, runs
+   `sam deploy` with the secrets as parameter overrides, syncs the site
+   to the S3 bucket and invalidates CloudFront.
 
-The role is assumed only after the build because `npm ci` runs
-third-party install scripts, `sam build` pip-installs packages, and
-`configure-aws-credentials` exports the role's keys to every later step.
-That keeps ready-made keys out of the environment package code runs in.
-It isn't full isolation; build code can still reach the role two ways:
+`npm ci` runs third-party install scripts, and the frontend build and
+`sam build` run third-party code too, so all of that runs in the build
+job, which can't reach the role. When build and deploy were one job,
+build code could reach the role two ways. The split closes both:
 
-- **OIDC token.** With `id-token: write` on the job, any step can ask
+- **OIDC token.** With `id-token: write` on the job, any step could ask
   the runner for an OIDC token (`ACTIONS_ID_TOKEN_REQUEST_URL` and
   `ACTIONS_ID_TOKEN_REQUEST_TOKEN`) and exchange it for the role if it
-  knows the role ARN.
-- **Something left to run later.** An install script can add a
+  knew the role ARN. The build job doesn't have `id-token: write`, so
+  the runner gives its steps no way to ask for a token. The deploy job
+  does, and it runs no npm, pip or package code: only GitHub's and
+  AWS's actions, the SAM CLI from AWS's installer, and the AWS CLI that
+  comes with the runner image.
+- **Something left to run later.** An install script could add a
   directory holding an `aws` or `sam` wrapper to `$GITHUB_PATH`, or set
-  variables in `$GITHUB_ENV`. The "SAM deploy" or "Sync frontend to S3"
-  step then runs that wrapper with the role's keys. No role ARN needed.
+  variables in `$GITHUB_ENV`, and the "SAM deploy" or "Sync frontend to
+  S3" step would run that wrapper with the role's keys. No role ARN
+  needed. Those files only affect later steps of the same job, and the
+  deploy job runs on a fresh runner. The only thing that passes from
+  build to deploy is the artifact, and deploy treats it as data:
+  `sam deploy` zips the function directory and `aws s3 sync` copies the
+  site, and nothing in either is run. The build job declares no outputs
+  and the deploy job restores no cache.
 
-Building in a separate job without `id-token: write`, and passing only
-the build output to the deploy job, would close both.
+The artifact is still build output, so a compromised dependency can
+still put bad code into the Lambda or the site, as before. What it can
+no longer do is change anything else the role deploys. `sam build`
+writes its own copy of the template, but the deploy job doesn't use it:
+build code could rewrite it, and `sam deploy` would apply the rewritten
+template with the role, which can change any CloudFront distribution in
+the account and any record in the hosted zone. The stack comes from
+`deploy/template.yaml` and `deploy/samconfig.toml` at the commit
+instead.
+
+A GitHub environment on the deploy job is a possible follow-up, but it
+changes the OIDC token's subject from the branch to the environment, so
+the trust policy in `deploy/iam/` would have to change with it.
 
 The workflow is also dispatchable manually from the Actions tab. Manual
 dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the

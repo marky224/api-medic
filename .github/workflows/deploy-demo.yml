@@ -1,11 +1,20 @@
 name: Deploy hosted demo
 
 # Runs after the CI workflow completes, never in parallel with it. The
-# deploy job below only proceeds for a successful CI run on a push to main,
-# and checks out the exact commit that run tested. workflow_run also fires
-# for pull_request CI runs (fork PRs included), and it always runs this
-# file from main with secrets and id-token available, so the job-level
-# `if` is what keeps PR code away from AWS. See deploy/README.md.
+# build job below only proceeds for a successful CI run on a push to main,
+# and checks out the exact commit that run tested; the deploy job needs
+# it. workflow_run also fires for pull_request CI runs (fork PRs
+# included), and it always runs this file from main with secrets and
+# id-token available, so the build job's `if` is what keeps PR code away
+# from AWS.
+#
+# Two jobs, so no step that installs or runs package code can reach the
+# AWS deploy role. build runs npm ci, the frontend build and sam build,
+# which all run third-party code, with a read-only token and no id-token.
+# deploy can assume the role but runs no package code: it deploys the
+# template and SAM config from the commit, takes only the built Lambda
+# directory and the site from build's artifact, and runs nothing in
+# either. See deploy/README.md.
 on:
   workflow_run:
     workflows: [CI]
@@ -13,13 +22,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  id-token: write # for OIDC role assumption
-  contents: read
+# Each job sets its own.
+permissions: {}
 
 jobs:
-  deploy:
-    name: Deploy api-medic-demo to AWS
+  build:
+    name: Build api-medic-demo
     runs-on: ubuntu-latest
     # Repo variable DEMO_DEPLOY_ENABLED gates the automatic deploy — set it
     # to 'true' in repo Settings → Variables once AWS prerequisites are in
@@ -33,6 +41,9 @@ jobs:
     # head when this run was triggered), so re-running an older commit's CI,
     # or two pushes whose CI finishes out of order, can't deploy an older
     # commit over a newer one.
+    #
+    # deploy has no `if` of its own: it needs this job, so it's skipped
+    # whenever this one is.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (vars.DEMO_DEPLOY_ENABLED == 'true' &&
@@ -40,26 +51,33 @@ jobs:
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.head_sha == github.sha)
-    # One deploy at a time; a newer pending deploy replaces an older one.
+    # No id-token, so no step here can request an OIDC token. No secrets
+    # either: github.token below is this job's own read-only token.
+    permissions:
+      contents: read
+    # Builds run one at a time, so deploys queue in the order builds ran.
+    # Without this, an older commit's slow build could finish after a newer
+    # one's and deploy over it. Not deploy's group: with one shared group,
+    # a finished build's deploy would replace the next run's pending build,
+    # and main's tip would never deploy.
+    #
     # Job-level, not workflow-level: some runs of this workflow are skipped
     # by the `if` above (failed, cancelled or superseded CI runs on main,
     # and fork PRs from a branch named main, which `branches: [main]` lets
     # through). At workflow level those runs would join the group before
-    # their job is skipped and cancel a pending deploy. A job skipped by its
+    # their job is skipped and cancel a pending one. A job skipped by its
     # `if` never joins a job-level group.
     concurrency:
-      group: deploy-demo
+      group: deploy-demo-build
       cancel-in-progress: false
-    env:
-      AWS_REGION: us-east-1
-      STACK_NAME: api-medic-demo
     steps:
-      # Deploy the commit CI tested, not whatever main points at now.
+      # Build the commit CI tested, not whatever main points at now.
       # Manual dispatch has no workflow_run payload and uses the
-      # dispatched ref.
+      # dispatched ref. No token left in .git/config for build steps.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -77,7 +95,7 @@ jobs:
         uses: aws-actions/setup-sam@v3
         with:
           use-installer: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Build frontend (captured-mode)
         working-directory: frontend
@@ -94,19 +112,107 @@ jobs:
         working-directory: deploy
         run: sam build
 
-      # Assume the deploy role only after the build steps. npm ci runs
-      # third-party install scripts and sam build pip-installs packages,
-      # and this step exports the role's keys to every step after it.
+      # Only what deploy needs: the built function directory and the site.
+      # Not the template sam build writes; deploy uses the commit's.
+      - name: Stage deploy artifact
+        run: |
+          mkdir "$RUNNER_TEMP/demo-build"
+          cp -R deploy/.aws-sam/build/ApiAnalyzeFunction "$RUNNER_TEMP/demo-build/lambda"
+          cp -R frontend/dist "$RUNNER_TEMP/demo-build/frontend-dist"
+
+      # Kept a day: only this run's deploy job uses it.
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-build
+          path: ${{ runner.temp }}/demo-build/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Deploy api-medic-demo to AWS
+    needs: build
+    runs-on: ubuntu-latest
+    # The only job that can request an OIDC token. Nothing in it installs
+    # or runs package code: no npm, pip, setup-node or setup-python, and
+    # it runs nothing from the checkout or the artifact.
+    permissions:
+      contents: read
+      id-token: write # for OIDC role assumption
+    # One deploy at a time; a newer pending deploy replaces an older one.
+    # Job-level for the same reason as build's group. This job is skipped
+    # through `needs: build`, not by an `if` of its own; GitHub's docs
+    # don't say whether a job skipped that way joins its group
+    # (unverified).
+    concurrency:
+      group: deploy-demo
+      cancel-in-progress: false
+    env:
+      AWS_REGION: us-east-1
+      STACK_NAME: api-medic-demo
+    steps:
+      # The stack comes from the template and SAM config at the commit
+      # build used, not from the artifact: build code could rewrite the
+      # template sam build writes, and sam deploy would apply it with the
+      # role. Only these two files; no package code.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          sparse-checkout: |
+            deploy/template.yaml
+            deploy/samconfig.toml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # Fails if the artifact doesn't match the digest recorded at upload.
+      - name: Download deploy artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: demo-build
+          path: ${{ runner.temp }}/demo-build
+          digest-mismatch: error
+
+      # Only files and directories (no symlinks for sam or aws to follow)
+      # and only the two expected entries. Then the built function goes
+      # where the template's CodeUri (lambda/) points.
+      - name: Check the build artifact
+        run: |
+          cd "$RUNNER_TEMP/demo-build"
+          if [ -n "$(find . ! -type f ! -type d -print -quit)" ]; then
+            echo "::error::Artifact holds something other than files and directories."
+            exit 1
+          fi
+          if [ "$(ls -A | tr '\n' ' ')" != "frontend-dist lambda " ]; then
+            echo "::error::Unexpected artifact contents: $(ls -A | tr '\n' ' ')"
+            exit 1
+          fi
+          test -f lambda/handler.py
+          test -f lambda/api_medic/__init__.py
+          test -f frontend-dist/index.html
+          test ! -e "$GITHUB_WORKSPACE/deploy/lambda"
+          mv lambda "$GITHUB_WORKSPACE/deploy/lambda"
+
+      # AWS's installer, not pip. The AWS CLI comes with the runner image.
+      - name: Install AWS SAM CLI
+        uses: aws-actions/setup-sam@v3
+        with:
+          use-installer: true
+          token: ${{ github.token }}
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # --template-file stops sam looking for .aws-sam/build/template.yaml.
+      # samconfig.toml (stack name, region, capabilities) sits next to it.
       - name: SAM deploy
         working-directory: deploy
         run: |
           sam deploy \
+            --template-file template.yaml \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
@@ -129,7 +235,7 @@ jobs:
 
       - name: Sync frontend to S3
         run: |
-          aws s3 sync frontend/dist/ "s3://${{ steps.outputs.outputs.bucket }}/" \
+          aws s3 sync "$RUNNER_TEMP/demo-build/frontend-dist/" "s3://${{ steps.outputs.outputs.bucket }}/" \
             --delete
 
       - name: Invalidate CloudFront
