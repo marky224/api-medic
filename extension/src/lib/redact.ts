@@ -23,16 +23,16 @@ type Json = Record<string, unknown>;
 export const JWT_SIGNATURE_MARKER = "REDACTED";
 
 // Whitespace to Python or JavaScript. Python's \s (str.isspace) adds
-// \x1c-\x1f and \x85 to JavaScript's \s; JavaScript's adds ﻿.
+// \x1c-\x1f and \x85 to JavaScript's \s; JavaScript's adds \ufeff.
 const WS = "\\s\\x1c-\\x1f\\x85";
 const WS_CHAR = new RegExp(`^[${WS}]$`, "u");
 const WS_CHARS = new RegExp(`[${WS}]`, "gu");
 const NON_WS_RUN = new RegExp(`[^${WS}]+`, "gu");
-// Mirrors auth.py's _BEARER_RE: ^\s*[Bb]earer\s+(.+?)\s*$
-const BEARER = new RegExp(
-  `^([${WS}]*)([Bb]earer)([${WS}]+)([\\s\\S]+?)([${WS}]*)$`,
-  "u",
-);
+// Mirrors auth.py's _BEARER_RE, ^\s*[Bb]earer\s+(.+)$, with bearerParts
+// splitting off the token's trailing whitespace as _bearer_token does. The
+// lazy ([\s\S]+?)\s*$ this replaced backtracked quadratically on a long
+// whitespace run inside the token.
+const BEARER = new RegExp(`^([${WS}]*)([Bb]earer)([${WS}]+)([\\s\\S]+)$`, "u");
 const FIRST_WORD = new RegExp(`^([${WS}]*)([^${WS}]+)([\\s\\S]*)$`, "u");
 const JWT_HEADER_PART = /^[A-Za-z0-9_-]+={0,2}$/;
 
@@ -256,9 +256,9 @@ function redactCredentials(value: string): string {
 // non-whitespace in its signature becomes the marker. Whitespace anywhere in
 // the value is kept. Returns null for anything that isn't a Bearer JWT.
 function redactBearerJwt(value: string): string | null {
-  const m = BEARER.exec(value);
-  if (!m) return null;
-  const [, lead = "", scheme = "", gap = "", token = "", trail = ""] = m;
+  const bearer = bearerParts(value);
+  if (!bearer) return null;
+  const [lead, scheme, gap, token, trail] = bearer;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [first = "", claimsPart = "", signature = ""] = parts;
@@ -281,6 +281,19 @@ function redactBearerJwt(value: string): string | null {
     signature.replace(NON_WS_RUN, JWT_SIGNATURE_MARKER) +
     trail
   );
+}
+
+// A "Bearer <token>" value as [leading whitespace, scheme, separator, token,
+// trailing whitespace], or null. Exported for its tests.
+export function bearerParts(value: string): [string, string, string, string, string] | null {
+  const m = BEARER.exec(value);
+  if (!m) return null;
+  const [, lead = "", scheme = "", gap = "", rest = ""] = m;
+  // A backward scan, so it stays linear. It keeps one character, as the lazy
+  // pattern did: "Bearer" and two spaces gives the token " ".
+  let end = rest.length;
+  while (end > 1 && WS_CHAR.test(rest[end - 1]!)) end--;
+  return [lead, scheme, gap, rest.slice(0, end), rest.slice(end)];
 }
 
 // Decodes a JWT part to a JSON object: drops characters outside base64url,

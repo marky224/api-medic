@@ -25,7 +25,7 @@ export interface AnalyzeHarPayload {
 
 export const ANALYZER_CREATOR = {
   name: "api-medic-extension",
-  version: "0.2.0",
+  version: "0.2.1",
 };
 
 export function buildAnalyzePayload(entry: HarEntryLike): AnalyzeHarPayload {

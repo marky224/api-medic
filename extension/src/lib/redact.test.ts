@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { JWT_SIGNATURE_MARKER, redactEntry } from "./redact";
+import { JWT_SIGNATURE_MARKER, bearerParts, redactEntry } from "./redact";
 import {
   REDACTION_FIXTURES_DIR,
   loadRedactionScenarios,
@@ -194,6 +194,68 @@ describe("redactEntry: Authorization", () => {
   it("masks Proxy-Authorization without keeping JWT claims", () => {
     const out = redact(entry({ headers: [{ name: "Proxy-Authorization", value: `Bearer ${JWT}` }] }));
     expect(header(out, "Proxy-Authorization")).toBe(`Bearer ${"*".repeat(JWT.length)}`);
+  });
+
+  it("handles a 200,000-space run inside a Bearer token in under a second", () => {
+    // The lazy pattern retried its trailing whitespace match from every
+    // space and took many seconds here; the redactor runs synchronously in
+    // the Analyze click.
+    const spaces = " ".repeat(200_000);
+    const started = performance.now();
+    const out = maskedAuthorization(`Bearer a${spaces}b`);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(out).toBe(`Bearer *${spaces}*`);
+  });
+});
+
+// The lazy pattern redact.ts used before 0.2.1, kept to prove bearerParts
+// splits a value the same way. WS is redact.ts's whitespace set.
+const WS = "\\s\\x1c-\\x1f\\x85";
+const OLD_BEARER = new RegExp(`^([${WS}]*)([Bb]earer)([${WS}]+)([\\s\\S]+?)([${WS}]*)$`, "u");
+const oldParts = (value: string) => OLD_BEARER.exec(value)?.slice(1) ?? null;
+
+describe("bearerParts", () => {
+  it.each([
+    ["Bearer abc", "abc"],
+    ["bearer abc", "abc"],
+    ["BEARER abc", null],
+    ["Bearer", null],
+    ["Bearer ", null],
+    ["Bearer  ", " "],
+    ["Bearer \t\n", "\n"],
+    ["\t\n Bearer\t\nabc\t\n ", "abc"],
+    ["Bearer abc\r\n", "abc"],
+    ["Bearer a\r\nb\r\n", "a\r\nb"],
+    ["Bearer a b\tc ", "a b\tc"],
+    [`Bearer a${" ".repeat(50)}b`, `a${" ".repeat(50)}b`],
+    // JavaScript's \s, which includes \ufeff, plus Python's \x1c-\x1f and \x85.
+    ["\x1cBearer\x85abc\x1f\x85", "abc"],
+    ["Bearer\u3000abc\u2028\u00a0", "abc"],
+    ["Bearer abc\ufeff", "abc"],
+    ["\ufeffBearer abc", "abc"],
+    ["Bearerabc", null],
+    ["x Bearer abc", null],
+    ["Bearer \x00", "\x00"],
+    ["Bearer \u{1F600} ", "\u{1F600}"],
+    ["", null],
+  ])("splits %j as the lazy pattern did", (value, token) => {
+    const old = oldParts(value);
+    expect(old?.[3] ?? null).toBe(token);
+    expect(bearerParts(value)).toEqual(old);
+  });
+
+  it("splits every short combination as the lazy pattern did", () => {
+    const pieces = ["Bearer", "bearer", "a", ".", " ", "\t", "\r\n", "\x1c", "\x85", "\u3000", "\ufeff"];
+    const values = [""];
+    let level = [""];
+    for (let n = 1; n <= 4; n++) {
+      level = level.flatMap((v) => pieces.map((p) => v + p));
+      values.push(...level);
+    }
+    const differ = values.filter(
+      (v) => JSON.stringify(bearerParts(v)) !== JSON.stringify(oldParts(v)),
+    );
+    expect(differ).toEqual([]);
   });
 });
 
@@ -454,6 +516,7 @@ describe("redactEntry: credential names", () => {
     { name: "user[password]", value: "pw", masked: "**" },
     { name: "access_key[]", value: "AK2", masked: "***" },
     { name: "access_key[0]", value: "AK0", masked: "***" },
+    { name: "access_key[12]", value: "AK12", masked: "****" },
     { name: "code[1]", value: "7", masked: "*" },
     { name: "user[otp_code][0]", value: "123456", masked: "******" },
     { name: "user[access_key][0][]", value: "AK9", masked: "***" },

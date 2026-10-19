@@ -19,7 +19,10 @@ from ..captured import CapturedRequest
 from ..models import Finding
 from . import register
 
-_BEARER_RE = re.compile(r"^\s*[Bb]earer\s+(.+?)\s*$", re.DOTALL)
+# Greedy: _bearer_token drops the token's trailing whitespace. The lazy
+# (.+?)\s*$ it replaced backtracked quadratically on a long whitespace run
+# inside the token.
+_BEARER_RE = re.compile(r"^\s*[Bb]earer\s+(.+)$", re.DOTALL)
 
 
 @register
@@ -29,11 +32,10 @@ def jwt_expired(captured: CapturedRequest) -> Finding | None:
     if not auth:
         return None
 
-    m = _BEARER_RE.match(auth)
-    if not m:
+    token = _bearer_token(auth)
+    if token is None:
         return None
 
-    token = m.group(1)
     payload = _decode_jwt_payload(token)
     if payload is None:
         return None  # Not a JWT (opaque token, malformed, etc) — silent skip.
@@ -81,10 +83,10 @@ def jwt_not_yet_valid(captured: CapturedRequest) -> Finding | None:
     auth = _find_header(captured.headers, "Authorization")
     if not auth:
         return None
-    m = _BEARER_RE.match(auth)
-    if not m:
+    token = _bearer_token(auth)
+    if token is None:
         return None
-    payload = _decode_jwt_payload(m.group(1))
+    payload = _decode_jwt_payload(token)
     if payload is None:
         return None
     nbf = payload.get("nbf")
@@ -220,6 +222,18 @@ def _find_header(headers: dict[str, str], name: str) -> str | None:
         if k.lower() == target:
             return v
     return None
+
+
+def _bearer_token(auth: str) -> str | None:
+    """The token of a "Bearer <token>" value, without trailing whitespace."""
+    m = _BEARER_RE.match(auth)
+    if not m:
+        return None
+    token = m.group(1)
+    # A token that is all whitespace is the single character the regex
+    # backtracked into ("Bearer" and two spaces gives " "); keep it, as the
+    # lazy pattern did.
+    return token.rstrip() or token
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
