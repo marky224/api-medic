@@ -6,7 +6,9 @@ import base64
 import itertools
 import json
 import re
+import sys
 import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -19,6 +21,7 @@ from api_medic.core.checks.auth import (
     jwt_expired,
     jwt_not_yet_valid,
 )
+from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
 
 
@@ -199,6 +202,179 @@ class TestJwtNotYetValid:
         assert finding.evidence["sub"] == "user_42"
         assert finding.evidence["valid_in_seconds"] == pytest.approx(1800, abs=5)
         assert finding.evidence["nbf"].endswith("Z")
+
+
+# The clock for the claim tables below: 2027-01-15T08:00:00Z.
+_NOW = 1_800_000_000
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fromtimestamp(_NOW, tz=tz)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth, "datetime", _FrozenDatetime)
+
+
+def _jwt_from_text(payload: str) -> str:
+    """A JWT whose payload segment is `payload` exactly as written."""
+    body = base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{body}.signaturejunkjunkjunk"
+
+
+# Times no UTC datetime can hold. Both checks skip them like a missing claim.
+_OUT_OF_RANGE = {
+    "NaN": float("nan"),
+    "Infinity": float("inf"),
+    "-Infinity": float("-inf"),
+    "-1e300": -1e300,
+    "1e20": 1e20,
+    "10000-01-01": 253402300800,
+    "0000-12-31T23:59:59": -62135596801,
+}
+OUT_OF_RANGE_CLAIMS = [pytest.param(v, id=k) for k, v in _OUT_OF_RANGE.items()]
+
+# Windows converts times with gmtime_s, so there a claim outside its range
+# is out of range and the check skips it.
+_NOT_ON_WINDOWS = pytest.mark.skipif(
+    sys.platform == "win32", reason="gmtime_s covers only 1970-01-01 to 3000-12-31"
+)
+
+# (claim, (evidence, humanized time)) when the check reports the token,
+# (claim, None) when it passes it.
+EXP_CLAIMS = [
+    pytest.param(
+        _NOW - 7200,
+        ({"exp": "2027-01-15T06:00:00Z", "expired_for_seconds": 7200}, "2h 0m"),
+        id="2h-ago",
+    ),
+    pytest.param(
+        _NOW - 0.5,
+        ({"exp": "2027-01-15T07:59:59Z", "expired_for_seconds": 1}, "1s"),
+        id="half-a-second-ago",
+    ),
+    pytest.param(
+        0,
+        ({"exp": "1970-01-01T00:00:00Z", "expired_for_seconds": _NOW}, "20833d 8h"),
+        id="epoch",
+    ),
+    pytest.param(
+        -62135596800,
+        ({"exp": "0001-01-01T00:00:00Z", "expired_for_seconds": 63935596800}, "739995d 8h"),
+        id="0001-01-01",
+        marks=_NOT_ON_WINDOWS,
+    ),
+    pytest.param(_NOW, None, id="now"),
+    pytest.param(_NOW + 3600, None, id="in-1h"),
+    pytest.param(253402300799, None, id="9999-12-31T23:59:59"),
+    *[pytest.param(v, None, id=k) for k, v in _OUT_OF_RANGE.items()],
+]
+
+NBF_CLAIMS = [
+    pytest.param(
+        _NOW + 1800,
+        ({"nbf": "2027-01-15T08:30:00Z", "valid_in_seconds": 1800}, "30m 0s"),
+        id="in-30m",
+    ),
+    pytest.param(
+        _NOW + 0.5,
+        ({"nbf": "2027-01-15T08:00:00Z", "valid_in_seconds": 0}, "0s"),
+        id="in-half-a-second",
+    ),
+    pytest.param(
+        253402300799,
+        ({"nbf": "9999-12-31T23:59:59Z", "valid_in_seconds": 251602300799}, "2912063d 15h"),
+        id="9999-12-31T23:59:59",
+        marks=_NOT_ON_WINDOWS,
+    ),
+    pytest.param(_NOW, None, id="now"),
+    pytest.param(_NOW - 60, None, id="1m-ago"),
+    pytest.param(-62135596800, None, id="0001-01-01"),
+    *[pytest.param(v, None, id=k) for k, v in _OUT_OF_RANGE.items()],
+]
+
+
+@pytest.mark.usefixtures("frozen_now")
+class TestJwtTimeClaims:
+    @pytest.mark.parametrize(("exp", "expected"), EXP_CLAIMS)
+    def test_exp(self, exp: float, expected: tuple[dict[str, Any], str] | None) -> None:
+        token = _make_jwt({"sub": "user_123", "exp": exp})
+        finding = jwt_expired(_cap(headers={"Authorization": f"Bearer {token}"}))
+        if expected is None:
+            assert finding is None
+            return
+        evidence, ago = expected
+        assert finding is not None
+        assert finding.evidence == {**evidence, "sub": "user_123"}
+        assert finding.explanation == f"The JWT in your Authorization header expired {ago} ago."
+
+    @pytest.mark.parametrize(("nbf", "expected"), NBF_CLAIMS)
+    def test_nbf(self, nbf: float, expected: tuple[dict[str, Any], str] | None) -> None:
+        token = _make_jwt({"sub": "user_123", "nbf": nbf})
+        finding = jwt_not_yet_valid(_cap(headers={"Authorization": f"Bearer {token}"}))
+        if expected is None:
+            assert finding is None
+            return
+        evidence, valid_in = expected
+        assert finding is not None
+        assert finding.evidence == {**evidence, "sub": "user_123"}
+        assert finding.explanation.startswith(f"The JWT's `nbf` claim is {valid_in} in the future.")
+
+    @pytest.mark.parametrize("claim", ["exp", "nbf"])
+    @pytest.mark.parametrize("value", OUT_OF_RANGE_CLAIMS)
+    def test_out_of_range_claim_reports_like_a_token_without_it(
+        self, claim: str, value: float
+    ) -> None:
+        def findings(payload: dict[str, Any]) -> list[Any]:
+            token = _make_jwt(payload)
+            report = analyze(_cap(headers={"Authorization": f"Bearer {token}"}))
+            return [f.model_dump() for f in report.findings]
+
+        assert findings({"sub": "u", claim: value}) == findings({"sub": "u"})
+
+    @pytest.mark.parametrize(
+        ("literal", "value"),
+        [
+            ("NaN", "nan"),
+            ("Infinity", "inf"),
+            ("-Infinity", "-inf"),
+            ("1e400", "inf"),
+            ("-1e400", "-inf"),
+        ],
+    )
+    def test_payload_decoder_reads_these_literals_as_floats(self, literal: str, value: str) -> None:
+        payload = auth._decode_jwt_payload(_jwt_from_text(f'{{"exp": {literal}}}'))
+        assert payload is not None
+        assert repr(payload["exp"]) == value
+
+    @pytest.mark.parametrize("literal", ["nan", "inf", "+Infinity"])
+    def test_payload_decoder_rejects_other_spellings(self, literal: str) -> None:
+        assert auth._decode_jwt_payload(_jwt_from_text(f'{{"exp": {literal}}}')) is None
+
+
+# Payloads json.loads fails on with something other than JSONDecodeError.
+MALFORMED_PAYLOAD_TOKENS = [
+    pytest.param("a._w.b", id="not-utf-8"),  # _w is the byte 0xff
+    pytest.param(_jwt_from_text('{"exp": ' + "9" * 4301 + "}"), id="4301-digit-int"),
+    pytest.param(_jwt_from_text("[" * 100_000 + "]" * 100_000), id="nested-100000-deep"),
+]
+
+
+class TestMalformedJwtPayload:
+    @pytest.mark.parametrize("token", MALFORMED_PAYLOAD_TOKENS)
+    def test_decoder_reads_it_as_not_a_jwt(self, token: str) -> None:
+        assert auth._decode_jwt_payload(token) is None
+
+    @pytest.mark.parametrize("token", MALFORMED_PAYLOAD_TOKENS)
+    def test_reports_like_a_token_that_is_not_a_jwt(self, token: str) -> None:
+        def findings(token: str) -> list[Any]:
+            report = analyze(_cap(headers={"Authorization": f"Bearer {token}"}))
+            return [f.model_dump() for f in report.findings]
+
+        assert findings(token) == findings("not-a-jwt")
 
 
 # The lazy pattern auth.py used before the fix, kept to prove the new one

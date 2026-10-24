@@ -43,13 +43,16 @@ def jwt_expired(captured: CapturedRequest) -> Finding | None:
     exp = payload.get("exp")
     if not isinstance(exp, (int, float)):
         return None  # No exp claim — non-expiring tokens are valid.
+    exp_at = _claim_time(exp)
+    if exp_at is None:
+        return None  # An exp no datetime can hold is skipped the same way.
 
     now = int(datetime.now(tz=timezone.utc).timestamp())
     if exp >= now:
         return None  # Still valid.
 
     expired_for = now - int(exp)
-    exp_iso = datetime.fromtimestamp(int(exp), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    exp_iso = exp_at.isoformat().replace("+00:00", "Z")
 
     evidence: dict[str, Any] = {
         "exp": exp_iso,
@@ -92,13 +95,16 @@ def jwt_not_yet_valid(captured: CapturedRequest) -> Finding | None:
     nbf = payload.get("nbf")
     if not isinstance(nbf, (int, float)):
         return None
+    nbf_at = _claim_time(nbf)
+    if nbf_at is None:
+        return None
 
     now = int(datetime.now(tz=timezone.utc).timestamp())
     if nbf <= now:
         return None
 
     valid_in = int(nbf) - now
-    nbf_iso = datetime.fromtimestamp(int(nbf), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    nbf_iso = nbf_at.isoformat().replace("+00:00", "Z")
     evidence: dict[str, Any] = {"nbf": nbf_iso, "valid_in_seconds": valid_in}
     sub = payload.get("sub")
     if isinstance(sub, str) and sub:
@@ -249,11 +255,27 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError, a payload that isn't UTF-8 and
+        # an integer over Python's 4,300-digit limit; RecursionError covers
+        # deep nesting.
         return None
     if not isinstance(data, dict):
         return None
     return data
+
+
+def _claim_time(claim: int | float) -> datetime | None:
+    """The UTC time an `exp` or `nbf` claim names, to the second.
+
+    None when no datetime can hold it: NaN and ±Infinity (json.loads
+    accepts both, and reads 1e400 as Infinity), times before year 1 or
+    after year 9999, and any the platform's time conversion rejects.
+    """
+    try:
+        return datetime.fromtimestamp(int(claim), tz=timezone.utc)
+    except (OverflowError, ValueError, OSError):
+        return None
 
 
 def _humanize_seconds(s: int) -> str:
