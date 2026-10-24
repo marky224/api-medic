@@ -20,6 +20,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - The `auth.jwt.expired` finding says the expired token is "the most likely cause of the 401" only when the response is a 401. Before, it said so for any status, and for a captured request with no response.
 - `deploy/README.md` says to redeploy with Run workflow on `main`, since re-running an old deploy run deploys that run's older commit. It and the comment in `deploy-demo.yml` also give the right reason the deploy's concurrency group is job-level.
 - The frontend `HarUpload` and `RequestComposer` Re-run tests now wait for the second request instead of asserting the call count as soon as the already-rendered Report matched. The `HarUpload` one failed CI intermittently.
+- `auth.jwt.expired` and `auth.jwt.not_yet_valid` skip an `exp` or `nbf` claim that no date can hold, as they skip a token without that claim. Before, an `exp` of `NaN`, `-Infinity`, `-1e300` or a time before year 1, or an `nbf` of `NaN`, `Infinity`, `1e20` or a time after year 9999, made the check raise. Python's JSON parser accepts `NaN`, `Infinity` and `-Infinity` in a JWT payload, and reads `1e400` as `Infinity`. The hosted demo's `/api/analyze` answered such a token with a 400 carrying Python's error message or a 500 "Internal error.", and the CLI and `api-medic serve` failed too. Every other claim gives the same finding, or none, as before.
 
 ### Security
 

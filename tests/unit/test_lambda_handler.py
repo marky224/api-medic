@@ -192,6 +192,31 @@ class TestAnalyzeCurl:
         assert capsys.readouterr().err == ""
 
 
+class TestAnalyzeJwtTimeClaims:
+    @staticmethod
+    def _findings(payload: str) -> list[dict[str, Any]]:
+        """Findings for a curl command whose Bearer JWT payload is `payload`
+        as written."""
+        b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
+        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.{b64}.sig'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 200, result["body"]
+        findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
+        return findings
+
+    @pytest.mark.parametrize("claim", ["exp", "nbf"])
+    @pytest.mark.parametrize(
+        "literal",
+        ["NaN", "Infinity", "-Infinity", "-1e300", "1e20", "253402300800", "-62135596801"],
+    )
+    def test_out_of_range_claim_gives_the_report_of_a_token_without_it(
+        self, claim: str, literal: str
+    ) -> None:
+        with_claim = self._findings(f'{{"sub": "u", "{claim}": {literal}}}')
+        assert with_claim == self._findings('{"sub": "u"}')
+
+
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
         result = handler.lambda_handler(
