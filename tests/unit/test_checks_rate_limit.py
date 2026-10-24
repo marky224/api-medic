@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.checks.rate_limit import rate_limit_approaching, rate_limit_hit
 from api_medic.core.models import TimingBreakdown
@@ -151,3 +153,48 @@ class TestRateLimitApproaching:
             )
         )
         assert rate_limit_approaching(cap) is None
+
+
+_FULL = {
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1000",
+    "X-RateLimit-Remaining": "5",
+    "X-RateLimit-Reset": "1761399420",
+}
+
+# Values no int comes from: more digits than int()'s 4,300-digit limit, and
+# digits other than ASCII 0-9 (str.isdigit() takes "²"; \\d also takes
+# Arabic-Indic and fullwidth digits).
+_UNPARSEABLE = ["9" * 4301, "0" * 4301, "\u00b2", "\u0661\u0662", "\uff13"]
+_UNPARSEABLE_IDS = ["4301-nines", "4301-zeros", "superscript-two", "arabic-indic-12", "fullwidth-3"]
+
+
+class TestUnparseableValues:
+    """A value that can't become an int is treated as absent, like any other
+    value that doesn't parse. 4,301 digits, and "²" in Retry-After, used to
+    raise ValueError; the other non-ASCII digits used to parse."""
+
+    @pytest.mark.parametrize("value", _UNPARSEABLE, ids=_UNPARSEABLE_IDS)
+    @pytest.mark.parametrize("name", list(_FULL))
+    def test_hit_gives_the_finding_without_it(self, name: str, value: str) -> None:
+        without = {k: v for k, v in _FULL.items() if k != name}
+        with_it = rate_limit_hit(_cap(_resp(429, without | {name: value})))
+        assert with_it == rate_limit_hit(_cap(_resp(429, without)))
+
+    @pytest.mark.parametrize("value", _UNPARSEABLE, ids=_UNPARSEABLE_IDS)
+    @pytest.mark.parametrize("name", ["X-RateLimit-Limit", "X-RateLimit-Remaining"])
+    def test_approaching_gives_no_finding(self, name: str, value: str) -> None:
+        headers = {"X-RateLimit-Limit": "1000", "X-RateLimit-Remaining": "5"}
+        assert rate_limit_approaching(_cap(_resp(200, headers | {name: value}))) is None
+
+    @pytest.mark.parametrize(
+        ("value", "parsed"),
+        [("0", 0), ("007", 7), (" 42 ", 42), ("9" * 4300, int("9" * 4300))],
+        ids=["zero", "leading-zeros", "padded", "4300-nines"],
+    )
+    def test_ascii_digits_parse_as_before(self, value: str, parsed: int) -> None:
+        finding = rate_limit_hit(
+            _cap(_resp(429, {"Retry-After": value, "X-RateLimit-Limit": value}))
+        )
+        assert finding is not None
+        assert finding.evidence == {"limit": parsed, "retry_after_seconds": parsed}

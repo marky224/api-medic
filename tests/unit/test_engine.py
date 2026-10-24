@@ -104,3 +104,32 @@ class TestUnpairedSurrogate:
         with pytest.raises(PydanticSerializationError) as e:
             report.model_dump_json()
         assert is_unencodable_text_error(e.value)
+
+
+_RATE_LIMIT_HEADERS = {
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1000",
+    "X-RateLimit-Remaining": "5",
+    "X-RateLimit-Reset": "1761399420",
+}
+
+
+class TestUnparseableRateLimitValues:
+    """A rate-limit header no int comes from gives the findings of a
+    response without it. These used to make analyze() raise ValueError."""
+
+    @staticmethod
+    def _findings(status: int, headers: dict[str, str]) -> list[Any]:
+        response = CapturedResponse(
+            status_code=status, status_text="", headers=headers, body=b"", protocol="HTTP/2"
+        )
+        return analyze(_live(response=response)).findings
+
+    @pytest.mark.parametrize(
+        "value", ["9" * 4301, "\u00b2"], ids=["4301-digits", "superscript-two"]
+    )
+    @pytest.mark.parametrize("name", list(_RATE_LIMIT_HEADERS))
+    @pytest.mark.parametrize("status", [429, 200])
+    def test_findings_match_a_response_without_it(self, status: int, name: str, value: str) -> None:
+        without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
+        assert self._findings(status, without | {name: value}) == self._findings(status, without)

@@ -314,6 +314,52 @@ class TestUnencodableText:
         assert json.loads(result["body"]) == {"detail": "Internal error."}
 
 
+def _har_response_findings(status: int, headers: dict[str, str]) -> list[dict[str, Any]]:
+    """Findings /api/analyze gives for a HAR whose response has `status` and
+    `headers`."""
+    response: dict[str, Any] = {
+        "status": status,
+        "statusText": "",
+        "headers": [{"name": k, "value": v} for k, v in headers.items()],
+        "httpVersion": "HTTP/1.1",
+    }
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/", "headers": []},
+        "response": response,
+        "timings": {},
+    }
+    har = {"log": {"version": "1.2", "entries": [entry]}}
+    result = handler.lambda_handler(
+        _event("POST", "/api/analyze", json.dumps({"kind": "har", "har": har})), None
+    )
+    assert result["statusCode"] == 200, result["body"]
+    findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
+    return findings
+
+
+_RATE_LIMIT_HEADERS = {
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1000",
+    "X-RateLimit-Remaining": "5",
+    "X-RateLimit-Reset": "1761399420",
+}
+
+
+class TestAnalyzeUnparseableRateLimitValues:
+    """A rate-limit header no int comes from gives the report of a response
+    without it. These used to be a 400 carrying Python's error message."""
+
+    @pytest.mark.parametrize(
+        "value", ["9" * 4301, "\u00b2"], ids=["4301-digits", "superscript-two"]
+    )
+    @pytest.mark.parametrize("name", list(_RATE_LIMIT_HEADERS))
+    @pytest.mark.parametrize("status", [429, 200])
+    def test_gives_the_findings_without_it(self, status: int, name: str, value: str) -> None:
+        without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
+        with_it = _har_response_findings(status, without | {name: value})
+        assert with_it == _har_response_findings(status, without)
+
+
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
         result = handler.lambda_handler(

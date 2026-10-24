@@ -101,9 +101,13 @@ def _parse_int(v: str | None) -> int | None:
     if v is None:
         return None
     s = v.strip()
-    if not re.fullmatch(r"-?\d+", s):
+    # [0-9], not \d: \d also matches non-ASCII digits such as "٣".
+    if not re.fullmatch(r"-?[0-9]+", s):
         return None
-    return int(s)
+    try:
+        return int(s)
+    except ValueError:  # More digits than int() takes (4,300 by default).
+        return None
 
 
 def _parse_retry_after(v: str | None) -> int | None:
@@ -115,7 +119,7 @@ def _parse_retry_after(v: str | None) -> int | None:
     if v is None:
         return None
     s = v.strip()
-    return int(s) if s.isdigit() else None
+    return None if s.startswith("-") else _parse_int(s)
 
 
 def _parse_unix_to_iso(v: str | None) -> str | None:
