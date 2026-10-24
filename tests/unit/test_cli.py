@@ -223,6 +223,47 @@ class TestRunCommand:
         assert "Header must be" in (result.stderr or result.stdout)
 
 
+# --- Unencodable text ------------------------------------------------------
+
+
+class TestUnencodableText:
+    """Input can carry an unpaired surrogate (a HAR's "\\ud800" escape, or
+    an argument that isn't valid UTF-8, which Python decodes to one). UTF-8
+    can't encode it, so -o json can't either: the CLI says so and exits 2,
+    as it does for other bad input, instead of printing a traceback."""
+
+    _MESSAGE = "input holds text that can't be encoded as JSON"
+
+    def test_from_curl(self, runner: CliRunner) -> None:
+        curl = "curl https://api.example.com/ -H 'X-Note: a\ud800b'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+        assert result.stdout == ""
+
+    def test_from_har(self, runner: CliRunner, tmp_path: Any) -> None:
+        har = {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "GET",
+                            "url": "https://api.example.com/",
+                            "headers": [{"name": "X-Note", "value": "a\ud800b"}],
+                        }
+                    }
+                ]
+            }
+        }
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(har), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
+
 # --- Stream-encoding regression -------------------------------------------
 
 

@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic_core import PydanticSerializationError
 
 from .. import __version__
 from ..core.engine import analyze
-from ..core.models import Report
+from ..core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
@@ -129,7 +130,13 @@ def _emit(
         color = not no_color and (save is not None or sys.stdout.isatty())
         text = render_terminal(report, color=color)
     elif output is OutputFormat.json:
-        text = render_json(report)
+        try:
+            text = render_json(report)
+        except PydanticSerializationError as e:
+            # An unpaired surrogate from the input; anything else is a bug.
+            if not is_unencodable_text_error(e):
+                raise
+            raise typer.BadParameter(UNENCODABLE_TEXT) from e
     elif output is OutputFormat.markdown:
         text = render_markdown(report)
     elif output is OutputFormat.html:

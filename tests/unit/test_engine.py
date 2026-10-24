@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
+
+import pytest
+from pydantic_core import PydanticSerializationError
 
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
-from api_medic.core.models import TimingBreakdown
+from api_medic.core.models import TimingBreakdown, is_unencodable_text_error
+from api_medic.core.parser import parse_curl
 
 
 def _live(**overrides: Any) -> CapturedRequest:
@@ -73,3 +78,29 @@ class TestAnalyze:
         # No checks fire on a healthy 200/JSON response yet (jwt.expired needs a JWT).
         report = analyze(_live())
         assert report.findings == []
+
+
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate, which json.loads decodes as one.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnpairedSurrogate:
+    """Input can carry an unpaired surrogate into the Report: a decoded JWT's
+    `sub` copied into evidence, or any header value."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_report_cannot_be_encoded_as_json(self, header: str) -> None:
+        report = analyze(parse_curl(f"curl https://api.example.com/ -H '{header}'"))
+        with pytest.raises(PydanticSerializationError) as e:
+            report.model_dump_json()
+        assert is_unencodable_text_error(e.value)

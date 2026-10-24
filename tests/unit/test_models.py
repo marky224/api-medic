@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+from pydantic_core import PydanticSerializationError
 
 from api_medic.core.models import (
     Finding,
@@ -15,6 +16,7 @@ from api_medic.core.models import (
     RequestSummary,
     ResponseSummary,
     TimingBreakdown,
+    is_unencodable_text_error,
 )
 
 
@@ -195,3 +197,31 @@ class TestReportRoundTrip:
     def test_response_can_be_null_for_failed_requests(self) -> None:
         report = _minimal_report(response=None)
         assert report.response is None
+
+
+class TestUnencodableTextError:
+    """JSON input can carry an unpaired surrogate ("\\ud800"), which UTF-8
+    can't encode, so a Report holding one can't be serialized."""
+
+    def test_report_holding_an_unpaired_surrogate(self) -> None:
+        request = RequestSummary(
+            method="GET",
+            url="https://example.com",
+            headers={"X-Note": "a\ud800b"},
+            body_size_bytes=0,
+        )
+        with pytest.raises(PydanticSerializationError) as e:
+            _minimal_report(request=request).model_dump_json()
+        assert is_unencodable_text_error(e.value)
+
+    def test_other_serialization_errors_are_not_it(self) -> None:
+        finding = Finding(
+            id="auth.jwt.expired",
+            severity="critical",
+            title="Expired",
+            explanation="...",
+            evidence={"exp": object()},
+        )
+        with pytest.raises(PydanticSerializationError) as e:
+            _minimal_report(findings=[finding]).model_dump_json()
+        assert not is_unencodable_text_error(e.value)

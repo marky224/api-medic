@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 from typing import Any
@@ -13,7 +14,8 @@ from fastapi.testclient import TestClient
 from api_medic import __version__
 from api_medic.core import runner
 from api_medic.core.captured import CapturedDns, CapturedRequest, CapturedResponse
-from api_medic.core.models import TimingBreakdown
+from api_medic.core.engine import analyze
+from api_medic.core.models import Finding, Report, TimingBreakdown
 from api_medic.web.app import app
 
 
@@ -245,6 +247,74 @@ class TestAnalyzeEndpoint:
     def test_invalid_kind_returns_422(self, client):
         r = client.post("/api/analyze", json={"kind": "raw", "raw": "..."})
         assert r.status_code == 422
+
+
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+_UNENCODABLE = "input holds text that can't be encoded as JSON"
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnencodableText:
+    """JSON input can carry an unpaired surrogate (\\ud800), which UTF-8
+    can't encode. A report that would hold one gets a 400 saying so; these
+    used to be a 500."""
+
+    @staticmethod
+    def _post(client: TestClient, path: str, payload: dict[str, Any]) -> httpx.Response:
+        # json.dumps escapes the surrogate as \ud800; httpx's json= would
+        # try to encode it as UTF-8 and fail in the test itself.
+        response: httpx.Response = client.post(
+            path, content=json.dumps(payload), headers={"Content-Type": "application/json"}
+        )
+        return response
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_analyze_returns_400(self, client: TestClient, header: str) -> None:
+        curl = f"curl https://api.example.com/ -H '{header}'"
+        r = self._post(client, "/api/analyze", {"kind": "curl", "curl": curl})
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+    def test_run_returns_400(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        headers = {"Authorization": f"Bearer {_SURROGATE_SUB_JWT}"}
+        monkeypatch.setattr(
+            "api_medic.web.app.run_request", lambda **kw: _fake_captured(headers=headers)
+        )
+        r = self._post(
+            client,
+            "/api/run",
+            {"method": "GET", "url": "https://api.example.com/", "headers": headers},
+        )
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+    def test_other_serialization_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def unserializable(captured: CapturedRequest) -> Report:
+            report = analyze(captured)
+            finding = Finding(
+                id="auth.jwt.expired",
+                severity="critical",
+                title="Expired",
+                explanation="...",
+                evidence={"exp": object()},
+            )
+            return report.model_copy(update={"findings": [finding]})
+
+        monkeypatch.setattr("api_medic.web.app.analyze", unserializable)
+        client = TestClient(app, raise_server_exceptions=False)
+        r = self._post(client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/"})
+        assert r.status_code == 500
 
 
 class TestCors:

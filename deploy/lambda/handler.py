@@ -43,9 +43,11 @@ import traceback
 from typing import Any
 
 import httpx
+from pydantic_core import PydanticSerializationError
 
 from api_medic import __version__
 from api_medic.core.engine import analyze
+from api_medic.core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
 from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run as run_request
 from api_medic.core.runner import validate_request
@@ -135,11 +137,7 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
     except (ValueError, KeyError) as e:
         return _err(400, str(e))
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": report.model_dump_json(),
-    }
+    return _report_response(report)
 
 
 def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
@@ -195,10 +193,21 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
     except UnsafeURLError as e:
         return _err(400, str(e))
     report = analyze(captured)
+    return _report_response(report)
+
+
+def _report_response(report: Report) -> dict[str, Any]:
+    try:
+        body = report.model_dump_json()
+    except PydanticSerializationError as e:
+        # An unpaired surrogate from the input; anything else is a bug.
+        if not is_unencodable_text_error(e):
+            raise
+        return _err(400, UNENCODABLE_TEXT)
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
-        "body": report.model_dump_json(),
+        "body": body,
     }
 
 

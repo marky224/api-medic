@@ -14,13 +14,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BaseModel, Field
+from pydantic_core import PydanticSerializationError
 
 from .. import __version__
 from ..core.engine import analyze
-from ..core.models import Report
+from ..core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
 from ..core.parser import parse_curl, parse_har
 from ..core.runner import run as run_request
 from ..core.runner_safety import InvalidRequestError
@@ -36,6 +38,15 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(PydanticSerializationError)
+async def _unencodable_report(request: Request, exc: PydanticSerializationError) -> JSONResponse:
+    # FastAPI serializes the returned Report; an unpaired surrogate from the
+    # input fails that. Anything else is a bug and stays a 500.
+    if not is_unencodable_text_error(exc):
+        raise exc
+    return JSONResponse(status_code=400, content={"detail": UNENCODABLE_TEXT})
 
 
 def _non_empty(value: str) -> str:

@@ -25,6 +25,7 @@ import pytest
 from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedRequest
 from api_medic.core.engine import analyze
+from api_medic.core.models import Finding, Report
 from api_medic.core.runner import run
 
 _DEPLOY_LAMBDA = Path(__file__).parent.parent.parent / "deploy" / "lambda"
@@ -244,6 +245,73 @@ class TestAnalyzeMalformedJwtPayload:
     )
     def test_gives_the_report_of_a_token_that_is_not_a_jwt(self, payload: bytes) -> None:
         assert _bearer_findings(_jwt(payload)) == _bearer_findings("not-a-jwt")
+
+
+_UNENCODABLE = "input holds text that can't be encoded as JSON"
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnencodableText:
+    """JSON input can carry an unpaired surrogate (\\ud800), which UTF-8
+    can't encode. A report that would hold one gets a 400 saying so; these
+    used to be a 500."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_analyze_returns_400(self, header: str) -> None:
+        curl = f"curl https://api.example.com/ -H '{header}'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+    def test_run_returns_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(
+                transport=httpx.MockTransport(lambda request: httpx.Response(401)),
+                probe_network=False,
+            )
+            return run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        body = json.dumps(
+            {
+                "method": "GET",
+                "url": "https://api.example.com/",
+                "headers": {"Authorization": f"Bearer {_SURROGATE_SUB_JWT}"},
+            }
+        )
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+    def test_other_serialization_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def unserializable(captured: CapturedRequest) -> Report:
+            report = analyze(captured)
+            finding = Finding(
+                id="auth.jwt.expired",
+                severity="critical",
+                title="Expired",
+                explanation="...",
+                evidence={"exp": object()},
+            )
+            return report.model_copy(update={"findings": [finding]})
+
+        monkeypatch.setattr(handler, "analyze", unserializable)
+        body = json.dumps({"kind": "curl", "curl": "curl https://api.example.com/"})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 500
+        assert json.loads(result["body"]) == {"detail": "Internal error."}
 
 
 class TestAnalyzeRouting:

@@ -15,6 +15,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticSerializationError
 
 Severity = Literal["info", "warning", "critical"]
 """Severity levels for findings, ordered low → high."""
@@ -137,3 +138,17 @@ class Report(BaseModel):
         consumer. Anyone constructing a Report can pass findings in any order.
         """
         return sorted(v, key=lambda f: (_SEVERITY_RANK[f.severity], f.id))
+
+
+UNENCODABLE_TEXT = "input holds text that can't be encoded as JSON"
+"""What the Lambda, the local web app and the CLI's JSON output answer when
+`is_unencodable_text_error` says a Report can't be serialized."""
+
+
+def is_unencodable_text_error(error: PydanticSerializationError) -> bool:
+    """True when `model_dump_json` failed on an unpaired surrogate.
+
+    JSON input can carry one ("\\ud800"), into a header value or a decoded
+    JWT claim copied into evidence, but UTF-8 can't encode it.
+    """
+    return "surrogates not allowed" in str(error)
