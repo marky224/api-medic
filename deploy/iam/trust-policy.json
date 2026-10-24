@@ -11,7 +11,11 @@
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:marky224/api-medic:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": [
+            "repo:marky224/api-medic:ref:refs/heads/main",
+            "repo:marky224/api-medic:environment:demo"
+          ],
+          "token.actions.githubusercontent.com:job_workflow_ref": "marky224/api-medic/.github/workflows/deploy-demo.yml@refs/heads/main"
         }
       }
     }
