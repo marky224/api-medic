@@ -184,7 +184,8 @@ class TestUnparseableValues:
     @pytest.mark.parametrize("value", _UNPARSEABLE, ids=_UNPARSEABLE_IDS)
     @pytest.mark.parametrize("name", ["X-RateLimit-Limit", "X-RateLimit-Remaining"])
     def test_approaching_gives_no_finding(self, name: str, value: str) -> None:
-        headers = {"X-RateLimit-Limit": "1000", "X-RateLimit-Remaining": "5"}
+        # Remaining 0, so a Limit read as any positive number would fire.
+        headers = {"X-RateLimit-Limit": "1000", "X-RateLimit-Remaining": "0"}
         assert rate_limit_approaching(_cap(_resp(200, headers | {name: value}))) is None
 
     @pytest.mark.parametrize(
