@@ -13,6 +13,7 @@ import logging
 import socket
 import ssl
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -204,6 +205,14 @@ class TestAnalyzeJwtTimeClaims:
         assert result["statusCode"] == 200, result["body"]
         findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
         return findings
+
+    def test_expired_token_is_reported(self) -> None:
+        findings = self._findings(f'{{"sub": "u", "exp": {int(time.time()) - 7200}}}')
+        assert "auth.jwt.expired" in [f["id"] for f in findings]
+
+    def test_not_yet_valid_token_is_reported(self) -> None:
+        findings = self._findings(f'{{"sub": "u", "nbf": {int(time.time()) + 1800}}}')
+        assert "auth.jwt.not_yet_valid" in [f["id"] for f in findings]
 
     @pytest.mark.parametrize("claim", ["exp", "nbf"])
     @pytest.mark.parametrize(

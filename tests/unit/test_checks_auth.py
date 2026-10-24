@@ -6,6 +6,7 @@ import base64
 import itertools
 import json
 import re
+import sys
 import time
 from datetime import datetime
 from typing import Any
@@ -236,6 +237,12 @@ _OUT_OF_RANGE = {
 }
 OUT_OF_RANGE_CLAIMS = [pytest.param(v, id=k) for k, v in _OUT_OF_RANGE.items()]
 
+# Windows converts times with gmtime_s, so there a claim outside its range
+# is out of range and the check skips it.
+_NOT_ON_WINDOWS = pytest.mark.skipif(
+    sys.platform == "win32", reason="gmtime_s covers only 1970-01-01 to 3000-12-31"
+)
+
 # (claim, (evidence, humanized time)) when the check reports the token,
 # (claim, None) when it passes it.
 EXP_CLAIMS = [
@@ -258,6 +265,7 @@ EXP_CLAIMS = [
         -62135596800,
         ({"exp": "0001-01-01T00:00:00Z", "expired_for_seconds": 63935596800}, "739995d 8h"),
         id="0001-01-01",
+        marks=_NOT_ON_WINDOWS,
     ),
     pytest.param(_NOW, None, id="now"),
     pytest.param(_NOW + 3600, None, id="in-1h"),
@@ -280,6 +288,7 @@ NBF_CLAIMS = [
         253402300799,
         ({"nbf": "9999-12-31T23:59:59Z", "valid_in_seconds": 251602300799}, "2912063d 15h"),
         id="9999-12-31T23:59:59",
+        marks=_NOT_ON_WINDOWS,
     ),
     pytest.param(_NOW, None, id="now"),
     pytest.param(_NOW - 60, None, id="1m-ago"),
