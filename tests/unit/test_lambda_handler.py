@@ -193,18 +193,28 @@ class TestAnalyzeCurl:
         assert capsys.readouterr().err == ""
 
 
+def _jwt(payload: bytes) -> str:
+    """A JWT whose payload segment is `payload` exactly."""
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+def _bearer_findings(token: str) -> list[dict[str, Any]]:
+    """Findings for a curl command that sends `token` as its Bearer token."""
+    curl = f"curl https://api.example.com/ -H 'Authorization: Bearer {token}'"
+    body = json.dumps({"kind": "curl", "curl": curl})
+    result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+    assert result["statusCode"] == 200, result["body"]
+    findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
+    return findings
+
+
 class TestAnalyzeJwtTimeClaims:
     @staticmethod
     def _findings(payload: str) -> list[dict[str, Any]]:
         """Findings for a curl command whose Bearer JWT payload is `payload`
         as written."""
-        b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
-        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.{b64}.sig'"
-        body = json.dumps({"kind": "curl", "curl": curl})
-        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
-        assert result["statusCode"] == 200, result["body"]
-        findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
-        return findings
+        return _bearer_findings(_jwt(payload.encode("utf-8")))
 
     def test_expired_token_is_reported(self) -> None:
         findings = self._findings(f'{{"sub": "u", "exp": {int(time.time()) - 7200}}}')
@@ -224,6 +234,16 @@ class TestAnalyzeJwtTimeClaims:
     ) -> None:
         with_claim = self._findings(f'{{"sub": "u", "{claim}": {literal}}}')
         assert with_claim == self._findings('{"sub": "u"}')
+
+
+class TestAnalyzeMalformedJwtPayload:
+    @pytest.mark.parametrize(
+        "payload",
+        [b"\xff", b'{"exp": ' + b"9" * 4301 + b"}", b"[" * 100_000 + b"]" * 100_000],
+        ids=["not-utf-8", "4301-digit-int", "nested-100000-deep"],
+    )
+    def test_gives_the_report_of_a_token_that_is_not_a_jwt(self, payload: bytes) -> None:
+        assert _bearer_findings(_jwt(payload)) == _bearer_findings("not-a-jwt")
 
 
 class TestAnalyzeRouting:

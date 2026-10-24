@@ -255,7 +255,10 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # ValueError covers JSONDecodeError, a payload that isn't UTF-8 and
+        # an integer over Python's 4,300-digit limit; RecursionError covers
+        # deep nesting.
         return None
     if not isinstance(data, dict):
         return None

@@ -355,6 +355,28 @@ class TestJwtTimeClaims:
         assert auth._decode_jwt_payload(_jwt_from_text(f'{{"exp": {literal}}}')) is None
 
 
+# Payloads json.loads fails on with something other than JSONDecodeError.
+MALFORMED_PAYLOAD_TOKENS = [
+    pytest.param("a._w.b", id="not-utf-8"),  # _w is the byte 0xff
+    pytest.param(_jwt_from_text('{"exp": ' + "9" * 4301 + "}"), id="4301-digit-int"),
+    pytest.param(_jwt_from_text("[" * 100_000 + "]" * 100_000), id="nested-100000-deep"),
+]
+
+
+class TestMalformedJwtPayload:
+    @pytest.mark.parametrize("token", MALFORMED_PAYLOAD_TOKENS)
+    def test_decoder_reads_it_as_not_a_jwt(self, token: str) -> None:
+        assert auth._decode_jwt_payload(token) is None
+
+    @pytest.mark.parametrize("token", MALFORMED_PAYLOAD_TOKENS)
+    def test_reports_like_a_token_that_is_not_a_jwt(self, token: str) -> None:
+        def findings(token: str) -> list[Any]:
+            report = analyze(_cap(headers={"Authorization": f"Bearer {token}"}))
+            return [f.model_dump() for f in report.findings]
+
+        assert findings(token) == findings("not-a-jwt")
+
+
 # The lazy pattern auth.py used before the fix, kept to prove the new one
 # finds the same token.
 _OLD_BEARER_RE = re.compile(r"^\s*[Bb]earer\s+(.+?)\s*$", re.DOTALL)
