@@ -314,15 +314,19 @@ class TestUnencodableText:
         assert json.loads(result["body"]) == {"detail": "Internal error."}
 
 
-def _har_response_findings(status: int, headers: dict[str, str]) -> list[dict[str, Any]]:
-    """Findings /api/analyze gives for a HAR whose response has `status` and
-    `headers`."""
+def _har_response_findings(
+    status: int, headers: dict[str, str], body: str | None = None
+) -> list[dict[str, Any]]:
+    """Findings /api/analyze gives for a HAR whose response has `status`,
+    `headers` and, if given, the JSON-typed body `body`."""
     response: dict[str, Any] = {
         "status": status,
         "statusText": "",
         "headers": [{"name": k, "value": v} for k, v in headers.items()],
         "httpVersion": "HTTP/1.1",
     }
+    if body is not None:
+        response["content"] = {"mimeType": "application/json", "text": body}
     entry = {
         "request": {"method": "GET", "url": "https://api.example.com/", "headers": []},
         "response": response,
@@ -358,6 +362,52 @@ class TestAnalyzeUnparseableRateLimitValues:
         without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
         with_it = _har_response_findings(status, without | {name: value})
         assert with_it == _har_response_findings(status, without)
+
+
+class TestMalformedJsonBodiesPythonCantRead:
+    """JSON-typed bodies json.loads raises on with something other than
+    JSONDecodeError get a report. These used to be a 400 carrying Python's
+    message or a 500."""
+
+    @pytest.mark.parametrize(
+        "body",
+        ["9" * 4301, "[" * 100_000 + "]" * 100_000],
+        ids=["4301-digit-int", "nested-100000-deep"],
+    )
+    def test_valid_json_past_python_limits_gives_the_findings_of_valid_json(
+        self, body: str
+    ) -> None:
+        with_it = _har_response_findings(200, {"Content-Type": "application/json"}, body)
+        assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
+
+    def test_analyze_body_that_is_not_utf_8_gets_malformed_json(self) -> None:
+        # A HAR's text reaches the check as UTF-8; a NUL as the second byte
+        # makes json.loads read it as UTF-16, and five bytes can't be.
+        findings = _har_response_findings(200, {"Content-Type": "application/json"}, "{\x00}\x00 ")
+        assert [f["id"] for f in findings] == ["body.malformed_json"]
+
+    def test_run_body_that_is_not_utf_8_gets_malformed_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def latin_1(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, headers={"Content-Type": "application/json"}, content=b'{"name": "caf\xe9"}'
+            )
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(transport=httpx.MockTransport(latin_1), probe_network=False)
+            return run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        body = json.dumps({"method": "GET", "url": "https://api.example.com/"})
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        assert result["statusCode"] == 200, result["body"]
+        findings = json.loads(result["body"])["findings"]
+        assert "body.malformed_json" in [f["id"] for f in findings]
 
 
 class TestAnalyzeRouting:

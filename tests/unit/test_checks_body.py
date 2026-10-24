@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import gzip
 
+import pytest
+
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.checks.body import (
     content_length_mismatch,
@@ -83,6 +85,98 @@ class TestMalformedJson:
 
     def test_empty_body_skipped(self):
         cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=b""))
+        assert malformed_json(cap) is None
+
+
+# Valid JSON that only Python's limits reject: an integer over int()'s
+# 4,300-digit limit, and nesting deeper than the recursion limit.
+_PYTHON_LIMITS = [b"9" * 4301, b'{"n": ' + b"9" * 4301 + b"}", b"[" * 100_000 + b"]" * 100_000]
+_PYTHON_LIMITS_IDS = ["4301-digit-int", "4301-digit-int-in-object", "nested-100000-deep"]
+
+
+class TestMalformedJsonBodiesPythonCantRead:
+    """Bodies json.loads raises on with something other than JSONDecodeError.
+    Each used to make the check raise."""
+
+    def test_invalid_json_finding_is_unchanged(self) -> None:
+        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=b'{"name": "alex"'))
+        finding = malformed_json(cap)
+        assert finding is not None
+        assert finding.model_dump() == {
+            "id": "body.malformed_json",
+            "severity": "critical",
+            "title": "Response body is not valid JSON",
+            "explanation": (
+                "Content-Type declares JSON but the body fails to parse: Expecting ',' "
+                "delimiter. Most clients will throw an exception trying to deserialize this."
+            ),
+            "evidence": {
+                "content_type": "application/json",
+                "parse_error": "Expecting ',' delimiter: line 1 column 16 (char 15)",
+                "first_bytes": '{"name": "alex"',
+            },
+            "suggested_fix": (
+                "Check the server output for stray HTML, BOM, or stack traces "
+                "appended to the JSON. Fix the server."
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        ("body", "codec", "reason", "parse_error", "first_bytes"),
+        [
+            (
+                b'{"name": "caf\xe9"}',
+                "UTF-8",
+                "invalid continuation byte",
+                "'utf-8' codec can't decode byte 0xe9 in position 13: invalid continuation byte",
+                '{"name": "caf\ufffd"}',
+            ),
+            (
+                b"\xff",
+                "UTF-8",
+                "invalid start byte",
+                "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
+                "\ufffd",
+            ),
+            # A NUL as the second byte makes json.loads read it as UTF-16.
+            (
+                b"{\x00}\x00 ",
+                "UTF-16-LE",
+                "truncated data",
+                "'utf-16-le' codec can't decode byte 0x20 in position 4: truncated data",
+                "{\x00}\x00 ",
+            ),
+        ],
+        ids=["latin-1", "lone-ff", "odd-length-utf-16"],
+    )
+    def test_body_that_is_not_utf_8_is_flagged(
+        self, body: bytes, codec: str, reason: str, parse_error: str, first_bytes: str
+    ) -> None:
+        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=body))
+        finding = malformed_json(cap)
+        assert finding is not None
+        assert finding.model_dump() == {
+            "id": "body.malformed_json",
+            "severity": "critical",
+            "title": "Response body is not valid JSON",
+            "explanation": (
+                f"Content-Type declares JSON but the body can't be decoded as {codec} "
+                f"text: {reason}. JSON must be UTF-8 (RFC 8259). Most clients will "
+                "throw an exception trying to deserialize this."
+            ),
+            "evidence": {
+                "content_type": "application/json",
+                "parse_error": parse_error,
+                "first_bytes": first_bytes,
+            },
+            "suggested_fix": (
+                "Send the body as UTF-8, or fix the Content-Type if the body isn't JSON."
+            ),
+        }
+
+    @pytest.mark.parametrize("body", _PYTHON_LIMITS, ids=_PYTHON_LIMITS_IDS)
+    def test_valid_json_past_python_limits_is_skipped(self, body: bytes) -> None:
+        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=body))
         assert malformed_json(cap) is None
 
 

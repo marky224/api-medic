@@ -133,3 +133,32 @@ class TestUnparseableRateLimitValues:
     def test_findings_match_a_response_without_it(self, status: int, name: str, value: str) -> None:
         without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
         assert self._findings(status, without | {name: value}) == self._findings(status, without)
+
+
+class TestMalformedJsonBodiesPythonCantRead:
+    """JSON-typed bodies json.loads raises on with something other than
+    JSONDecodeError. These used to make analyze() raise."""
+
+    @staticmethod
+    def _findings(body: bytes) -> list[Any]:
+        response = CapturedResponse(
+            status_code=200,
+            status_text="OK",
+            headers={"Content-Type": "application/json"},
+            body=body,
+            protocol="HTTP/2",
+        )
+        return analyze(_live(response=response)).findings
+
+    def test_body_that_is_not_utf_8_gets_malformed_json(self) -> None:
+        assert [f.id for f in self._findings(b'{"name": "caf\xe9"}')] == ["body.malformed_json"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [b"9" * 4301, b"[" * 100_000 + b"]" * 100_000],
+        ids=["4301-digit-int", "nested-100000-deep"],
+    )
+    def test_valid_json_past_python_limits_gives_the_findings_of_valid_json(
+        self, body: bytes
+    ) -> None:
+        assert self._findings(body) == self._findings(b"[]")

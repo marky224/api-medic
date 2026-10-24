@@ -48,6 +48,30 @@ def malformed_json(captured: CapturedRequest) -> Finding | None:
                 "appended to the JSON. Fix the server."
             ),
         )
+    except UnicodeDecodeError as e:
+        # json.loads decodes bytes as UTF-8, or UTF-16/32 if it detects them.
+        preview = body[:120].decode("utf-8", errors="replace")
+        return Finding(
+            id="body.malformed_json",
+            severity="critical",
+            title="Response body is not valid JSON",
+            explanation=(
+                "Content-Type declares JSON but the body can't be decoded as "
+                f"{e.encoding.upper()} text: {e.reason}. JSON must be UTF-8 (RFC 8259). "
+                "Most clients will throw an exception trying to deserialize this."
+            ),
+            evidence={
+                "content_type": ct,
+                "parse_error": str(e),
+                "first_bytes": preview,
+            },
+            suggested_fix="Send the body as UTF-8, or fix the Content-Type if the body isn't JSON.",
+        )
+    except (ValueError, RecursionError):
+        # Valid JSON that only Python's limits reject: an integer over
+        # int()'s 4,300 digits, or nesting deeper than the recursion limit.
+        # (Both errors above are ValueErrors too, so they must come first.)
+        return None
     return None
 
 
