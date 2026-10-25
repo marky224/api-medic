@@ -365,6 +365,11 @@ class TestAnalyzeUnparseableRateLimitValues:
         assert with_it == _har_response_findings(status, without)
 
 
+# What the parser says about a NUL right after "{", once the body is read as
+# UTF-8.
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+
+
 class TestMalformedJsonBodiesPythonCantRead:
     """JSON-typed bodies get a report: the check reads them as UTF-8 only,
     parses integers without converting them, and skips nesting past the
@@ -383,16 +388,24 @@ class TestMalformedJsonBodiesPythonCantRead:
         assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
 
     @pytest.mark.parametrize(
-        "body",
-        ["{\x00}\x00 ", "{\x00}\x00", "9" * 4301 + "x"],
+        ("body", "parse_error"),
+        [
+            ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+            ("{\x00}\x00", _NUL_PARSE_ERROR),
+            ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+        ],
         ids=["odd-length-nul", "utf-16-le-nul", "long-int-then-junk"],
     )
-    def test_analyze_body_that_fails_to_parse_gets_malformed_json(self, body: str) -> None:
+    def test_analyze_body_that_fails_to_parse_gets_malformed_json(
+        self, body: str, parse_error: str
+    ) -> None:
         # A HAR's text reaches the check as UTF-8. NUL bytes used to make
-        # json.loads read it as UTF-16 (the second accepted as "{}"), and
-        # int() raised on the long integer before the parser saw the "x".
+        # json.loads read it as UTF-16 (the first failing to decode, the
+        # second accepted as "{}"), and int() raised on the long integer
+        # before the parser saw the "x".
         findings = _har_response_findings(200, {"Content-Type": "application/json"}, body)
         assert [f["id"] for f in findings] == ["body.malformed_json"]
+        assert findings[0]["evidence"]["parse_error"] == parse_error
 
     def test_analyze_deep_nesting_is_skipped_even_when_malformed(self) -> None:
         with_it = _har_response_findings(200, {"Content-Type": "application/json"}, "[" * 100_000)
