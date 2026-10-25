@@ -141,8 +141,9 @@ class Report(BaseModel):
 
 
 UNENCODABLE_TEXT = "input holds text that can't be encoded as JSON"
-"""What the Lambda, the local web app and the CLI's JSON output answer when
-`is_unencodable_text_error` says a Report can't be serialized."""
+"""What the Lambda, the local web app and the CLI answer when a Report, or
+the CLI's rendering of it, holds an unpaired surrogate that UTF-8 can't
+encode (see `is_unencodable_text_error`)."""
 
 
 def is_unencodable_text_error(error: PydanticSerializationError | UnicodeEncodeError) -> bool:

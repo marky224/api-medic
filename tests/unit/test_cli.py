@@ -7,6 +7,7 @@ return a synthetic CapturedRequest so tests stay offline. One
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 from typing import Any
@@ -226,11 +227,22 @@ class TestRunCommand:
 # --- Unencodable text ------------------------------------------------------
 
 
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
 class TestUnencodableText:
     """Input can carry an unpaired surrogate (a HAR's "\\ud800" escape, or
     an argument that isn't valid UTF-8, which Python decodes to one). UTF-8
-    can't encode it, so -o json can't either: the CLI says so and exits 2,
-    as it does for other bad input, instead of printing a traceback."""
+    can't encode it, so -o json can't, and the other formats can't write
+    text that shows it: the CLI says so and exits 2, as it does for other
+    bad input, instead of printing a traceback."""
 
     _MESSAGE = "input holds text that can't be encoded as JSON"
 
@@ -262,6 +274,35 @@ class TestUnencodableText:
         assert result.exit_code == 2
         assert isinstance(result.exception, SystemExit)
         assert self._MESSAGE in result.stderr
+
+    @pytest.mark.parametrize("fmt", ["json", "terminal", "markdown", "html"])
+    def test_surrogate_the_output_shows(self, runner: CliRunner, fmt: str) -> None:
+        # The expired-token finding shows the JWT's sub in every format.
+        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer {_SURROGATE_SUB_JWT}'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", fmt])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("fmt", ["terminal", "markdown", "html"])
+    def test_save_writes_nothing(self, runner: CliRunner, tmp_path: Any, fmt: str) -> None:
+        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer {_SURROGATE_SUB_JWT}'"
+        path = tmp_path / "report.out"
+        result = runner.invoke(
+            app, ["from-curl", curl, "--no-execute", "-o", fmt, "--save", str(path)]
+        )
+        assert result.exit_code == 2
+        assert self._MESSAGE in result.stderr
+        assert not path.exists()
+
+    @pytest.mark.parametrize("fmt", ["terminal", "markdown", "html"])
+    def test_surrogate_the_output_does_not_show(self, runner: CliRunner, fmt: str) -> None:
+        # These formats don't show request headers, so the text encodes.
+        curl = "curl https://api.example.com/ -H 'X-Note: a\ud800b'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", fmt])
+        assert result.exit_code == 0, result.stderr
+        assert "api.example.com" in result.stdout
 
 
 # --- Stream-encoding regression -------------------------------------------

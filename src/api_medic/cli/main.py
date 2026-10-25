@@ -144,6 +144,13 @@ def _emit(
     else:  # pragma: no cover — Enum exhausts above
         raise typer.BadParameter(f"Unknown output format: {output}")
 
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as e:
+        # The other formats keep an unpaired surrogate from the input that
+        # they show, and writing it would fail; UTF-8 raises for nothing else.
+        raise typer.BadParameter(UNENCODABLE_TEXT) from e
+
     if save is not None:
         save.write_text(text, encoding="utf-8")
         typer.echo(f"Wrote {save}", err=True)
