@@ -338,6 +338,44 @@ class TestUnencodableText:
         r = _post(client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/"})
         assert r.status_code == 500
 
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            ("/api/analyze", {"kind": "x\ud800"}),
+            ("/api/analyze", {"kind": "har", "har": "\ud800"}),
+            ("/api/run", {"method": "GET", "url": "https://x.com/", "headers": "\ud800"}),
+            (
+                "/api/analyze",
+                {
+                    "kind": "har",
+                    "har": {"log": {"entries": [{"request": {"url": "https://x.com/\ud800"}}]}},
+                },
+            ),
+            (
+                "/api/analyze",
+                {
+                    "kind": "har",
+                    "har": {
+                        "log": {
+                            "entries": [{"request": {"method": 1, "url": "https://x.com/\ud800"}}]
+                        }
+                    },
+                },
+            ),
+        ],
+        ids=["kind", "har-string", "run-headers", "har-url-no-method", "har-url-method-int"],
+    )
+    def test_error_response_that_would_echo_a_surrogate(
+        self, client: TestClient, path: str, payload: dict[str, Any]
+    ) -> None:
+        """FastAPI's 422 quotes the invalid input, and the 400 for a HAR
+        parse error quotes the entry's URL. Rendering either raises the same
+        UnicodeEncodeError, which the app-level handler answers. The Lambda
+        answers these with its own message instead (see its tests)."""
+        r = _post(client, path, payload)
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
     def test_other_unicode_encode_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def run_request(**kwargs: Any) -> CapturedRequest:
             raise UnicodeEncodeError("ascii", "caf\u00e9", 3, 4, "ordinal not in range(128)")

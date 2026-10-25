@@ -440,6 +440,32 @@ class TestMalformedJsonBodiesPythonCantRead:
         assert "body.malformed_json" in [f["id"] for f in findings]
 
 
+class TestAnalyzeHarParseErrorQuotingASurrogate:
+    """parse_har's error quotes the entry's URL, unpaired surrogate and all;
+    json.dumps escapes it, so the handler sends that message. api-medic
+    serve can't render it and answers with the unencodable-text message."""
+
+    @pytest.mark.parametrize(
+        ("request_", "detail"),
+        [
+            (
+                {"url": "https://x.com/\ud800"},
+                "HAR entry[0] (https://x.com/\ud800): request.method is missing.",
+            ),
+            (
+                {"method": 1, "url": "https://x.com/\ud800"},
+                "HAR entry[0] (https://x.com/\ud800): request.method must be a string, got int.",
+            ),
+        ],
+        ids=["no-method", "method-int"],
+    )
+    def test_returns_400_with_the_parse_error(self, request_: dict[str, Any], detail: str) -> None:
+        payload = {"kind": "har", "har": {"log": {"entries": [{"request": request_}]}}}
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": detail}
+
+
 class TestAnalyzeRejectsInputThatCantMakeAReport:
     """analyze() can't make a Report of a URL or method holding an unpaired
     surrogate (RequestSummary can't validate it); the handler answers 400
