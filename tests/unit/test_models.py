@@ -225,3 +225,14 @@ class TestUnencodableTextError:
         with pytest.raises(PydanticSerializationError) as e:
             _minimal_report(findings=[finding]).model_dump_json()
         assert not is_unencodable_text_error(e.value)
+
+    def test_unicode_encode_error_on_a_surrogate(self) -> None:
+        # What JSONResponse raises when older FastAPI renders such a Report.
+        with pytest.raises(UnicodeEncodeError) as e:
+            "a\ud800b".encode("utf-8")
+        assert is_unencodable_text_error(e.value)
+
+    def test_other_unicode_encode_errors_are_not_it(self) -> None:
+        with pytest.raises(UnicodeEncodeError) as e:
+            "caf\u00e9".encode("ascii")
+        assert not is_unencodable_text_error(e.value)

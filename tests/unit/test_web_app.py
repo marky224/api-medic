@@ -7,6 +7,7 @@ import json
 import socket
 from typing import Any
 
+import fastapi.routing
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from api_medic.core import runner
 from api_medic.core.captured import CapturedDns, CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
 from api_medic.core.models import Finding, Report, TimingBreakdown
+from api_medic.core.parser import parse_curl, parse_har
 from api_medic.web.app import app
 
 
@@ -261,19 +263,39 @@ _UNENCODABLE = "input holds text that can't be encoded as JSON"
 _SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
 
 
+def _post(client: TestClient, path: str, payload: dict[str, Any]) -> httpx.Response:
+    # json.dumps escapes a surrogate as \ud800; httpx's json= would try to
+    # encode it as UTF-8 and fail in the test itself.
+    response: httpx.Response = client.post(
+        path, content=json.dumps(payload), headers={"Content-Type": "application/json"}
+    )
+    return response
+
+
+@pytest.fixture(params=["dump_json", "model_dump"])
+def serialization(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each way FastAPI serializes a returned Report. Today's FastAPI uses
+    pydantic's dump_json, which raises PydanticSerializationError on a
+    surrogate. Older releases pyproject allows use model_dump(mode="json")
+    and JSONResponse, which raises UnicodeEncodeError. Today's takes that
+    path too when the route handler's isinstance(response_class,
+    DefaultPlaceholder) check fails, which hiding DefaultPlaceholder forces."""
+    if request.param == "model_dump":
+        monkeypatch.setattr(fastapi.routing, "DefaultPlaceholder", type("NoFastPath", (), {}))
+
+
+@pytest.mark.usefixtures("serialization")
 class TestUnencodableText:
     """JSON input can carry an unpaired surrogate (\\ud800), which UTF-8
-    can't encode. A report that would hold one gets a 400 saying so; these
-    used to be a 500."""
+    can't encode. A report that would hold one gets a 400 saying so. These
+    used to be a 500, and on the model_dump path still were."""
 
-    @staticmethod
-    def _post(client: TestClient, path: str, payload: dict[str, Any]) -> httpx.Response:
-        # json.dumps escapes the surrogate as \ud800; httpx's json= would
-        # try to encode it as UTF-8 and fail in the test itself.
-        response: httpx.Response = client.post(
-            path, content=json.dumps(payload), headers={"Content-Type": "application/json"}
+    def test_report_without_a_surrogate_is_sent(self, client: TestClient) -> None:
+        r = _post(
+            client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/ -H 'X-A: b'"}
         )
-        return response
+        assert r.status_code == 200
+        assert r.json()["request"]["headers"] == {"X-A": "b"}
 
     @pytest.mark.parametrize(
         "header",
@@ -282,7 +304,7 @@ class TestUnencodableText:
     )
     def test_analyze_returns_400(self, client: TestClient, header: str) -> None:
         curl = f"curl https://api.example.com/ -H '{header}'"
-        r = self._post(client, "/api/analyze", {"kind": "curl", "curl": curl})
+        r = _post(client, "/api/analyze", {"kind": "curl", "curl": curl})
         assert r.status_code == 400
         assert r.json() == {"detail": _UNENCODABLE}
 
@@ -291,7 +313,7 @@ class TestUnencodableText:
         monkeypatch.setattr(
             "api_medic.web.app.run_request", lambda **kw: _fake_captured(headers=headers)
         )
-        r = self._post(
+        r = _post(
             client,
             "/api/run",
             {"method": "GET", "url": "https://api.example.com/", "headers": headers},
@@ -313,8 +335,52 @@ class TestUnencodableText:
 
         monkeypatch.setattr("api_medic.web.app.analyze", unserializable)
         client = TestClient(app, raise_server_exceptions=False)
-        r = self._post(client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/"})
+        r = _post(client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/"})
         assert r.status_code == 500
+
+    def test_other_unicode_encode_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def run_request(**kwargs: Any) -> CapturedRequest:
+            raise UnicodeEncodeError("ascii", "caf\u00e9", 3, 4, "ordinal not in range(128)")
+
+        monkeypatch.setattr("api_medic.web.app.run_request", run_request)
+        client = TestClient(app, raise_server_exceptions=False)
+        r = _post(client, "/api/run", {"method": "GET", "url": "https://api.example.com/"})
+        assert r.status_code == 500
+
+
+# Input parse_har and parse_curl accept but analyze() can't make a Report of:
+# RequestSummary can't validate a str holding an unpaired surrogate.
+_UNREPORTABLE: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {"entries": [{"request": {"method": "GET", "url": "https://x.com/\ud800"}}]}
+        },
+    },
+    {
+        "kind": "har",
+        "har": {"log": {"entries": [{"request": {"method": "G\ud800T", "url": "https://x.com/"}}]}},
+    },
+    {"kind": "curl", "curl": "curl 'https://x.com/\ud800'"},
+]
+_UNREPORTABLE_IDS = ["har-url", "har-method", "curl-url"]
+
+
+class TestAnalyzeRejectsInputThatCantMakeAReport:
+    """A ValueError from analyze() is a 400 with its message, as on the
+    hosted demo. These used to be a 500."""
+
+    @pytest.mark.parametrize("payload", _UNREPORTABLE, ids=_UNREPORTABLE_IDS)
+    def test_returns_400_with_the_error(self, client: TestClient, payload: dict[str, Any]) -> None:
+        if payload["kind"] == "har":
+            captured = parse_har(payload["har"])
+        else:
+            captured = parse_curl(payload["curl"])
+        with pytest.raises(ValueError) as e:
+            analyze(captured)
+        r = _post(client, "/api/analyze", payload)
+        assert r.status_code == 400
+        assert r.json() == {"detail": str(e.value)}
 
 
 class TestCors:

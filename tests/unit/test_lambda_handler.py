@@ -26,6 +26,7 @@ from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedRequest
 from api_medic.core.engine import analyze
 from api_medic.core.models import Finding, Report
+from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run
 
 _DEPLOY_LAMBDA = Path(__file__).parent.parent.parent / "deploy" / "lambda"
@@ -408,6 +409,46 @@ class TestMalformedJsonBodiesPythonCantRead:
         assert result["statusCode"] == 200, result["body"]
         findings = json.loads(result["body"])["findings"]
         assert "body.malformed_json" in [f["id"] for f in findings]
+
+
+class TestAnalyzeRejectsInputThatCantMakeAReport:
+    """analyze() can't make a Report of a URL or method holding an unpaired
+    surrogate (RequestSummary can't validate it); the handler answers 400
+    with the error, which api-medic serve now matches."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "kind": "har",
+                "har": {
+                    "log": {
+                        "entries": [{"request": {"method": "GET", "url": "https://x.com/\ud800"}}]
+                    }
+                },
+            },
+            {
+                "kind": "har",
+                "har": {
+                    "log": {
+                        "entries": [{"request": {"method": "G\ud800T", "url": "https://x.com/"}}]
+                    }
+                },
+            },
+            {"kind": "curl", "curl": "curl 'https://x.com/\ud800'"},
+        ],
+        ids=["har-url", "har-method", "curl-url"],
+    )
+    def test_returns_400_with_the_error(self, payload: dict[str, Any]) -> None:
+        if payload["kind"] == "har":
+            captured = parse_har(payload["har"])
+        else:
+            captured = parse_curl(payload["curl"])
+        with pytest.raises(ValueError) as e:
+            analyze(captured)
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": str(e.value)}
 
 
 class TestAnalyzeRouting:

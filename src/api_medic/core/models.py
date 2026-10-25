@@ -145,10 +145,14 @@ UNENCODABLE_TEXT = "input holds text that can't be encoded as JSON"
 `is_unencodable_text_error` says a Report can't be serialized."""
 
 
-def is_unencodable_text_error(error: PydanticSerializationError) -> bool:
-    """True when `model_dump_json` failed on an unpaired surrogate.
+def is_unencodable_text_error(error: PydanticSerializationError | UnicodeEncodeError) -> bool:
+    """True when encoding a Report as JSON failed on an unpaired surrogate.
 
     JSON input can carry one ("\\ud800"), into a header value or a decoded
     JWT claim copied into evidence, but UTF-8 can't encode it.
+    `model_dump_json` raises PydanticSerializationError; encoding a dump
+    with `str.encode` raises UnicodeEncodeError.
     """
+    # tests/unit/test_models.py pins this text, so a pydantic-core release
+    # that rewords it fails CI instead of turning these 400s into 500s.
     return "surrogates not allowed" in str(error)
