@@ -65,8 +65,9 @@ jobs:
     # by the `if` above (failed, cancelled or superseded CI runs on main,
     # and fork PRs from a branch named main, which `branches: [main]` lets
     # through). At workflow level those runs would join the group before
-    # their job is skipped and cancel a pending one. A job skipped by its
-    # `if` never joins a job-level group.
+    # their job is skipped and cancel a pending one. GitHub's docs don't
+    # say whether a job skipped by its own `if` joins a job-level group
+    # (unverified, as for deploy below).
     concurrency:
       group: deploy-demo-build
       cancel-in-progress: false
@@ -134,6 +135,12 @@ jobs:
     name: Deploy api-medic-demo to AWS
     needs: build
     runs-on: ubuntu-latest
+    # In the demo environment, which only main can deploy to, so its OIDC
+    # token's subject is repo:marky224/api-medic:environment:demo rather
+    # than the branch. The deploy role's trust policy
+    # (deploy/iam/trust-policy.json) accepts that subject. See
+    # deploy/README.md.
+    environment: demo
     # The only job that can request an OIDC token. Nothing in it installs
     # or runs package code: no npm, pip, setup-node or setup-python, and
     # it runs nothing from the checkout or the artifact.
@@ -187,10 +194,16 @@ jobs:
             echo "::error::Unexpected artifact contents: $(ls -A | tr '\n' ' ')"
             exit 1
           fi
-          test -f lambda/handler.py
-          test -f lambda/api_medic/__init__.py
-          test -f frontend-dist/index.html
-          test ! -e "$GITHUB_WORKSPACE/deploy/lambda"
+          for f in lambda/handler.py lambda/api_medic/__init__.py frontend-dist/index.html; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Artifact has no $f."
+              exit 1
+            fi
+          done
+          if [ -e "$GITHUB_WORKSPACE/deploy/lambda" ]; then
+            echo "::error::deploy/lambda already exists, so mv would put the built function inside it."
+            exit 1
+          fi
           mv lambda "$GITHUB_WORKSPACE/deploy/lambda"
 
       # AWS's installer, not pip. The AWS CLI comes with the runner image.

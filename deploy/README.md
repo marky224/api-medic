@@ -25,9 +25,17 @@ Lambda. DNS is managed by Route 53.
    the cert to issue (status `ISSUED`).
 3. **GitHub OIDC role** so the deploy workflow can assume an IAM role
    without long-lived keys. The role's trust policy should allow
-   `sts:AssumeRoleWithWebIdentity` from `repo:marky224/api-medic:ref:refs/heads/main`.
+   `sts:AssumeRoleWithWebIdentity` from
+   `repo:marky224/api-medic:environment:demo`, the subject of a job in
+   the `demo` environment (step 5), and only for a job in
+   `deploy-demo.yml` on `main`: its `job_workflow_ref` condition is
+   `marky224/api-medic/.github/workflows/deploy-demo.yml@refs/heads/main`.
+   Until a follow-up drops it, it also allows
+   `repo:marky224/api-medic:ref:refs/heads/main`, the deploy job's
+   subject before it ran in the environment.
    Its trust and inline policies live in `deploy/iam/` and are applied
-   by hand, not by CI. The inline policy's role statements cover only
+   by hand, not by CI; apply the trust policy only after `demo` exists
+   with its `main`-only rule. The inline policy's role statements cover only
    `role/api-medic-demo-ApiAnalyzeFunctionRole-*`, which is SAM's
    generated function role: SAM gives it the logical ID
    `<function logical ID>Role`, and CloudFormation names it
@@ -43,6 +51,15 @@ Lambda. DNS is managed by Route 53.
    - `ACM_CERTIFICATE_ARN` — the ARN of the cert from step 2
    - `ROUTE53_HOSTED_ZONE_ID` — the hosted zone ID for `markandrewmarquez.com`
      (visible in the Route 53 console; 21-char string starting with `Z`)
+5. **GitHub environment** `demo`, with its `main`-only rule in place
+   before the trust policy from step 3 is applied and before the
+   workflow first runs with it: a job that names an environment that
+   doesn't exist creates it with no rules. In repo Settings →
+   Environments → New environment, name it `demo`. Under Deployment
+   branches and tags, choose Selected branches and tags and add one
+   rule: Ref type Branch, name pattern `main`. Clear "Allow
+   administrators to bypass configured protection rules". Add no
+   required reviewers, wait timer, secrets or variables.
 
 ## Deploying manually (one-shot)
 
@@ -115,19 +132,22 @@ workflow are skipped by the build job's `if`: failed, cancelled or
 superseded CI runs on `main`, and fork PRs from a branch named `main`
 (the `branches: [main]` filter lets those through, see below). At
 workflow level, those runs would still join the group and replace a
-pending deploy before being skipped. The deploy job has no `if` of its
-own and is skipped through `needs: build`. GitHub's docs don't say
-whether a job skipped that way joins its group, so that part is
-unverified.
+pending deploy before being skipped. GitHub's docs don't say whether a
+skipped job joins a job-level group, either when its own `if` skips it
+(build) or when it's skipped through `needs: build` (deploy, which has
+no `if` of its own), so both are unverified.
 
 `workflow_run` also fires for pull_request CI runs, including fork PRs,
 and always runs the workflow file from `main` with secrets and
 `id-token: write`. The build job's `if` is what keeps PR code away from
 AWS: a pull_request run fails the `event == 'push'` check. The
 `branches: [main]` filter alone isn't enough, because a fork PR from a
-branch named `main` matches it. The OIDC trust policy isn't a backstop
-here either: a `workflow_run` job's token carries the default branch ref,
-so it matches `ref:refs/heads/main` whatever triggered it.
+branch named `main` matches it. Neither the OIDC trust policy nor the
+`demo` environment is a backstop here: a `workflow_run` run's ref is
+the default branch whatever triggered it, so its deploy job passes the
+environment's `main` rule, and its token carries the `environment:demo`
+subject and the `deploy-demo.yml@refs/heads/main` workflow ref that the
+trust policy accepts.
 
 Once triggered, the workflow runs two jobs:
 
@@ -136,10 +156,11 @@ Once triggered, the workflow runs two jobs:
    vendors `api_medic` into `deploy/lambda/`, runs `sam build`, and
    uploads the built function directory and `frontend/dist/` as one
    artifact, `demo-build`, kept for a day.
-2. **deploy** needs build and has `id-token: write`. It checks out only
-   `deploy/template.yaml` and `deploy/samconfig.toml` from the same
-   commit and downloads the artifact, which fails if the artifact
-   doesn't match the digest recorded at upload. It checks the artifact
+2. **deploy** needs build, runs in the `demo` environment and has
+   `id-token: write`. It checks out only `deploy/template.yaml` and
+   `deploy/samconfig.toml` from the same commit and downloads the
+   artifact, which fails if the artifact doesn't match the digest
+   recorded at upload. It checks the artifact
    holds only files and directories and only the two expected entries,
    and moves the built function to `deploy/lambda/`, where the
    template's `CodeUri` points. It then installs the SAM CLI with AWS's
@@ -181,13 +202,35 @@ the account and any record in the hosted zone. The stack comes from
 `deploy/template.yaml` and `deploy/samconfig.toml` at the commit
 instead.
 
-A GitHub environment on the deploy job is a possible follow-up, but it
-changes the OIDC token's subject from the branch to the environment, so
-the trust policy in `deploy/iam/` would have to change with it.
+The deploy job runs in the GitHub environment `demo`; the build job runs
+in none. A job in an environment gets an OIDC token whose subject names
+the environment, `repo:marky224/api-medic:environment:demo`, instead of
+the branch, and the role's trust policy accepts that subject. GitHub
+checks the environment's one rule, branch `main`, against the run's ref
+before the job starts, so a job that names `demo` on any other branch or
+tag fails before its first step. The trust policy also pins the workflow
+file: its `job_workflow_ref` condition only matches a job in
+`.github/workflows/deploy-demo.yml` running on `main`, so a job in
+another workflow, or in this one on another branch, can't assume the
+role whatever its subject. Renaming or moving `deploy-demo.yml` means
+changing that condition first. Until a follow-up drops it, the trust policy
+also accepts `repo:marky224/api-medic:ref:refs/heads/main`, the subject
+the deploy job had before it ran in the environment. `demo` has to exist
+with its `main`-only rule before the trust policy is applied (see the
+prerequisites above).
+
+The environment has no required reviewers, so every merge to `main`
+still deploys without a click; adding them later is a settings change
+only. It holds no secrets or variables: the three secrets from step 4 and
+`DEMO_DEPLOY_ENABLED` stay repo-level, and the build job, which has no
+environment, reads the variable in its `if`.
 
 The workflow is also dispatchable manually from the Actions tab. Manual
 dispatch skips the `DEMO_DEPLOY_ENABLED` and CI checks and deploys the
-dispatched ref (the trust policy only accepts `main`).
+dispatched ref, which has to be `main`: from any other branch or a tag,
+the build job still runs, but the deploy job fails before its first step
+because `demo` only lets `main` deploy. The trust policy's
+`job_workflow_ref` condition only matches `main` too.
 
 ## Tearing down
 
