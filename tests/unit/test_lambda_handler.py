@@ -366,9 +366,10 @@ class TestAnalyzeUnparseableRateLimitValues:
 
 
 class TestMalformedJsonBodiesPythonCantRead:
-    """JSON-typed bodies json.loads raises on with something other than
-    JSONDecodeError get a report. These used to be a 400 carrying Python's
-    message or a 500."""
+    """JSON-typed bodies get a report: the check reads them as UTF-8 only,
+    parses integers without converting them, and skips nesting past the
+    recursion limit. Bodies json.loads raised on with something other than
+    JSONDecodeError used to be a 400 carrying Python's message or a 500."""
 
     @pytest.mark.parametrize(
         "body",
@@ -381,25 +382,40 @@ class TestMalformedJsonBodiesPythonCantRead:
         with_it = _har_response_findings(200, {"Content-Type": "application/json"}, body)
         assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
 
-    def test_analyze_body_that_is_not_utf_8_gets_malformed_json(self) -> None:
-        # A HAR's text reaches the check as UTF-8; a NUL as the second byte
-        # makes json.loads read it as UTF-16, and five bytes can't be.
-        findings = _har_response_findings(200, {"Content-Type": "application/json"}, "{\x00}\x00 ")
+    @pytest.mark.parametrize(
+        "body",
+        ["{\x00}\x00 ", "{\x00}\x00", "9" * 4301 + "x"],
+        ids=["odd-length-nul", "utf-16-le-nul", "long-int-then-junk"],
+    )
+    def test_analyze_body_that_fails_to_parse_gets_malformed_json(self, body: str) -> None:
+        # A HAR's text reaches the check as UTF-8. NUL bytes used to make
+        # json.loads read it as UTF-16 (the second accepted as "{}"), and
+        # int() raised on the long integer before the parser saw the "x".
+        findings = _har_response_findings(200, {"Content-Type": "application/json"}, body)
         assert [f["id"] for f in findings] == ["body.malformed_json"]
 
+    def test_analyze_deep_nesting_is_skipped_even_when_malformed(self) -> None:
+        with_it = _har_response_findings(200, {"Content-Type": "application/json"}, "[" * 100_000)
+        assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
+
+    @pytest.mark.parametrize(
+        "content",
+        [b'{"name": "caf\xe9"}', "{}".encode("utf-16")],
+        ids=["latin-1", "utf-16-with-bom"],
+    )
     def test_run_body_that_is_not_utf_8_gets_malformed_json(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, content: bytes
     ) -> None:
         def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
-        def latin_1(request: httpx.Request) -> httpx.Response:
+        def not_utf_8(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
-                200, headers={"Content-Type": "application/json"}, content=b'{"name": "caf\xe9"}'
+                200, headers={"Content-Type": "application/json"}, content=content
             )
 
         def run_offline(**kwargs: Any) -> CapturedRequest:
-            kwargs.update(transport=httpx.MockTransport(latin_1), probe_network=False)
+            kwargs.update(transport=httpx.MockTransport(not_utf_8), probe_network=False)
             return run(**kwargs)
 
         monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)

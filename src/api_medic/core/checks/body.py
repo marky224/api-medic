@@ -1,7 +1,7 @@
 """Body / content diagnostic checks.
 
 Three checks against the response body and its declared metadata:
-  * body.malformed_json — Content-Type JSON, body fails to parse
+  * body.malformed_json — Content-Type JSON, body isn't UTF-8 or fails to parse
   * body.content_length_mismatch — Content-Length header vs actual byte length
   * body.encoding_mismatch — Content-Encoding declared, body lacks the magic
     bytes (gzip-only for v1; brotli and deflate have no reliable magic prefix)
@@ -15,6 +15,10 @@ from ..captured import CapturedRequest
 from ..models import Finding
 from . import register
 
+# parse_int=str keeps integers as their digits: int() refuses more than
+# 4,300, which would stop the parse before it reached any real error.
+_JSON = json.JSONDecoder(parse_int=str)
+
 
 @register
 def malformed_json(captured: CapturedRequest) -> Finding | None:
@@ -27,7 +31,9 @@ def malformed_json(captured: CapturedRequest) -> Finding | None:
     if not body:
         return None
     try:
-        json.loads(body)
+        # UTF-8 only, as RFC 8259 requires, dropping a leading BOM as
+        # json.loads did; json.loads also took UTF-16 and UTF-32.
+        _JSON.decode(body.decode("utf-8-sig"))
     except json.JSONDecodeError as e:
         preview = body[:120].decode("utf-8", errors="replace")
         return Finding(
@@ -49,15 +55,14 @@ def malformed_json(captured: CapturedRequest) -> Finding | None:
             ),
         )
     except UnicodeDecodeError as e:
-        # json.loads decodes bytes as UTF-8, or UTF-16/32 if it detects them.
         preview = body[:120].decode("utf-8", errors="replace")
         return Finding(
             id="body.malformed_json",
             severity="critical",
             title="Response body is not valid JSON",
             explanation=(
-                "Content-Type declares JSON but the body can't be decoded as "
-                f"{e.encoding.upper()} text: {e.reason}. JSON must be UTF-8 (RFC 8259). "
+                "Content-Type declares JSON but the body can't be decoded as UTF-8 "
+                f"text: {e.reason}. JSON must be UTF-8 (RFC 8259). "
                 "Most clients will throw an exception trying to deserialize this."
             ),
             evidence={
@@ -67,10 +72,10 @@ def malformed_json(captured: CapturedRequest) -> Finding | None:
             },
             suggested_fix="Send the body as UTF-8, or fix the Content-Type if the body isn't JSON.",
         )
-    except (ValueError, RecursionError):
-        # Valid JSON that only Python's limits reject: an integer over
-        # int()'s 4,300 digits, or nesting deeper than the recursion limit.
-        # (Both errors above are ValueErrors too, so they must come first.)
+    except RecursionError:
+        # Nesting deeper than the recursion limit (about 10,000 levels on
+        # Python 3.12) stops the parser before it can tell whether the JSON
+        # is valid, so the body is skipped either way.
         return None
     return None
 

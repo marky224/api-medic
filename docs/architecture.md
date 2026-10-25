@@ -259,7 +259,7 @@ Don't try to implement every possible HTTP check in v1. Pick a focused, high-imp
 
 **Body / content (3 checks)**
 
-- `body.malformed_json` — Content-Type says JSON, body fails to parse
+- `body.malformed_json` — Content-Type says JSON, body isn't UTF-8 or fails to parse
 - `body.content_length_mismatch` — Content-Length header doesn't match body length
 - `body.encoding_mismatch` — Content-Encoding declared but body isn't actually encoded that way
 

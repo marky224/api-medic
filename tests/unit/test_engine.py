@@ -136,8 +136,8 @@ class TestUnparseableRateLimitValues:
 
 
 class TestMalformedJsonBodiesPythonCantRead:
-    """JSON-typed bodies json.loads raises on with something other than
-    JSONDecodeError. These used to make analyze() raise."""
+    """JSON-typed bodies are read as UTF-8 only. Bodies json.loads raised on
+    with something other than JSONDecodeError used to make analyze() raise."""
 
     @staticmethod
     def _findings(body: bytes) -> list[Any]:
@@ -150,8 +150,13 @@ class TestMalformedJsonBodiesPythonCantRead:
         )
         return analyze(_live(response=response)).findings
 
-    def test_body_that_is_not_utf_8_gets_malformed_json(self) -> None:
-        assert [f.id for f in self._findings(b'{"name": "caf\xe9"}')] == ["body.malformed_json"]
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"name": "caf\xe9"}', "{}".encode("utf-16"), b"{\x00}\x00", b"9" * 4301 + b"x"],
+        ids=["latin-1", "utf-16-with-bom", "utf-16-le-nul", "long-int-then-junk"],
+    )
+    def test_gets_malformed_json(self, body: bytes) -> None:
+        assert [f.id for f in self._findings(body)] == ["body.malformed_json"]
 
     @pytest.mark.parametrize(
         "body",
@@ -162,6 +167,9 @@ class TestMalformedJsonBodiesPythonCantRead:
         self, body: bytes
     ) -> None:
         assert self._findings(body) == self._findings(b"[]")
+
+    def test_deep_nesting_is_skipped_even_when_malformed(self) -> None:
+        assert self._findings(b"[" * 100_000) == self._findings(b"[]")
 
 
 # Remaining with 309+ more digits than Limit: remaining / limit is too large

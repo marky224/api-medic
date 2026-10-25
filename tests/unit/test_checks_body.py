@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+from typing import Any
 
 import pytest
 
@@ -88,79 +89,140 @@ class TestMalformedJson:
         assert malformed_json(cap) is None
 
 
-# Valid JSON that only Python's limits reject: an integer over int()'s
-# 4,300-digit limit, and nesting deeper than the recursion limit.
+# Valid JSON past Python's limits: integers over int()'s 4,300-digit limit
+# (parsed without converting them), and nesting deeper than the recursion
+# limit (about 10,000 levels on Python 3.12).
 _PYTHON_LIMITS = [b"9" * 4301, b'{"n": ' + b"9" * 4301 + b"}", b"[" * 100_000 + b"]" * 100_000]
 _PYTHON_LIMITS_IDS = ["4301-digit-int", "4301-digit-int-in-object", "nested-100000-deep"]
 
 
+def _finding(body: bytes) -> dict[str, Any] | None:
+    finding = malformed_json(_cap(_resp(headers={"Content-Type": "application/json"}, body=body)))
+    return None if finding is None else finding.model_dump()
+
+
+def _parse_error_finding(
+    explanation_error: str, parse_error: str, first_bytes: str
+) -> dict[str, Any]:
+    return {
+        "id": "body.malformed_json",
+        "severity": "critical",
+        "title": "Response body is not valid JSON",
+        "explanation": (
+            f"Content-Type declares JSON but the body fails to parse: {explanation_error}. "
+            "Most clients will throw an exception trying to deserialize this."
+        ),
+        "evidence": {
+            "content_type": "application/json",
+            "parse_error": parse_error,
+            "first_bytes": first_bytes,
+        },
+        "suggested_fix": (
+            "Check the server output for stray HTML, BOM, or stack traces "
+            "appended to the JSON. Fix the server."
+        ),
+    }
+
+
 class TestMalformedJsonBodiesPythonCantRead:
-    """Bodies json.loads raises on with something other than JSONDecodeError.
-    Each used to make the check raise."""
+    """The body is read as UTF-8 only, as RFC 8259 requires, with a leading
+    UTF-8 BOM dropped as before. Bodies json.loads raised on with something
+    other than JSONDecodeError used to make the check raise."""
 
     def test_invalid_json_finding_is_unchanged(self) -> None:
-        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=b'{"name": "alex"'))
-        finding = malformed_json(cap)
-        assert finding is not None
-        assert finding.model_dump() == {
-            "id": "body.malformed_json",
-            "severity": "critical",
-            "title": "Response body is not valid JSON",
-            "explanation": (
-                "Content-Type declares JSON but the body fails to parse: Expecting ',' "
-                "delimiter. Most clients will throw an exception trying to deserialize this."
-            ),
-            "evidence": {
-                "content_type": "application/json",
-                "parse_error": "Expecting ',' delimiter: line 1 column 16 (char 15)",
-                "first_bytes": '{"name": "alex"',
-            },
-            "suggested_fix": (
-                "Check the server output for stray HTML, BOM, or stack traces "
-                "appended to the JSON. Fix the server."
-            ),
-        }
+        assert _finding(b'{"name": "alex"') == _parse_error_finding(
+            "Expecting ',' delimiter",
+            "Expecting ',' delimiter: line 1 column 16 (char 15)",
+            '{"name": "alex"',
+        )
 
     @pytest.mark.parametrize(
-        ("body", "codec", "reason", "parse_error", "first_bytes"),
+        ("body", "parse_error"),
+        [
+            (b"\xef\xbb\xbf{}", None),
+            (
+                b"\xef\xbb\xbf{",
+                "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+            ),
+            (b"\xef\xbb\xbf\xef\xbb\xbf{}", "Expecting value: line 1 column 1 (char 0)"),
+        ],
+        ids=["bom-valid", "bom-invalid", "two-boms"],
+    )
+    def test_utf_8_bom_is_dropped_as_before(self, body: bytes, parse_error: str | None) -> None:
+        finding = _finding(body)
+        if parse_error is None:
+            assert finding is None
+        else:
+            assert finding is not None
+            assert finding["evidence"]["parse_error"] == parse_error
+
+    @pytest.mark.parametrize(
+        ("body", "reason", "parse_error", "first_bytes"),
         [
             (
                 b'{"name": "caf\xe9"}',
-                "UTF-8",
                 "invalid continuation byte",
                 "'utf-8' codec can't decode byte 0xe9 in position 13: invalid continuation byte",
                 '{"name": "caf\ufffd"}',
             ),
             (
                 b"\xff",
-                "UTF-8",
                 "invalid start byte",
                 "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
                 "\ufffd",
             ),
-            # A NUL as the second byte makes json.loads read it as UTF-16.
+            # UTF-16 and UTF-32 JSON, which json.loads detects and used to accept.
             (
-                b"{\x00}\x00 ",
-                "UTF-16-LE",
-                "truncated data",
-                "'utf-16-le' codec can't decode byte 0x20 in position 4: truncated data",
-                "{\x00}\x00 ",
+                b"\xff\xfe{\x00}\x00",
+                "invalid start byte",
+                "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
+                "\ufffd\ufffd{\x00}\x00",
+            ),
+            (
+                b"\xfe\xff\x00{\x00}",
+                "invalid start byte",
+                "'utf-8' codec can't decode byte 0xfe in position 0: invalid start byte",
+                "\ufffd\ufffd\x00{\x00}",
+            ),
+            (
+                b"\xff\xfe\x00\x00{\x00\x00\x00}\x00\x00\x00",
+                "invalid start byte",
+                "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
+                "\ufffd\ufffd\x00\x00{\x00\x00\x00}\x00\x00\x00",
+            ),
+            # A UTF-8-encoded surrogate, which json.loads used to let through.
+            (
+                b'"\xed\xa0\x80"',
+                "invalid continuation byte",
+                "'utf-8' codec can't decode byte 0xed in position 1: invalid continuation byte",
+                '"\ufffd\ufffd\ufffd"',
+            ),
+            (
+                b"\xef\xbb\xbf{\xff}",
+                "invalid start byte",
+                "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte",
+                "\ufeff{\ufffd}",
             ),
         ],
-        ids=["latin-1", "lone-ff", "odd-length-utf-16"],
+        ids=[
+            "latin-1",
+            "lone-ff",
+            "utf-16-le-bom",
+            "utf-16-be-bom",
+            "utf-32-le-bom",
+            "encoded-surrogate",
+            "bom-then-ff",
+        ],
     )
     def test_body_that_is_not_utf_8_is_flagged(
-        self, body: bytes, codec: str, reason: str, parse_error: str, first_bytes: str
+        self, body: bytes, reason: str, parse_error: str, first_bytes: str
     ) -> None:
-        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=body))
-        finding = malformed_json(cap)
-        assert finding is not None
-        assert finding.model_dump() == {
+        assert _finding(body) == {
             "id": "body.malformed_json",
             "severity": "critical",
             "title": "Response body is not valid JSON",
             "explanation": (
-                f"Content-Type declares JSON but the body can't be decoded as {codec} "
+                "Content-Type declares JSON but the body can't be decoded as UTF-8 "
                 f"text: {reason}. JSON must be UTF-8 (RFC 8259). Most clients will "
                 "throw an exception trying to deserialize this."
             ),
@@ -174,10 +236,51 @@ class TestMalformedJsonBodiesPythonCantRead:
             ),
         }
 
+    @pytest.mark.parametrize(
+        ("body", "explanation_error", "parse_error"),
+        [
+            # NUL bytes made json.loads read these as UTF-16; they are UTF-8.
+            (
+                b"{\x00}\x00",
+                "Expecting property name enclosed in double quotes",
+                "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+            ),
+            (b"\x00{\x00}", "Expecting value", "Expecting value: line 1 column 1 (char 0)"),
+            (
+                b"{\x00}\x00 ",
+                "Expecting property name enclosed in double quotes",
+                "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+            ),
+            # Malformed JSON holding an integer over int()'s limit used to be
+            # skipped: int() raised before the parser reached the error.
+            (b"9" * 4301 + b"x", "Extra data", "Extra data: line 1 column 4302 (char 4301)"),
+            (
+                b'{"a": ' + b"9" * 4301 + b', "b": }',
+                "Expecting value",
+                "Expecting value: line 1 column 4315 (char 4314)",
+            ),
+        ],
+        ids=[
+            "utf-16-le-nul",
+            "utf-16-be-nul",
+            "odd-length-nul",
+            "long-int-then-junk",
+            "long-int-then-missing-value",
+        ],
+    )
+    def test_body_that_fails_to_parse_as_utf_8_is_flagged(
+        self, body: bytes, explanation_error: str, parse_error: str
+    ) -> None:
+        first_bytes = body[:120].decode("utf-8", errors="replace")
+        assert _finding(body) == _parse_error_finding(explanation_error, parse_error, first_bytes)
+
     @pytest.mark.parametrize("body", _PYTHON_LIMITS, ids=_PYTHON_LIMITS_IDS)
-    def test_valid_json_past_python_limits_is_skipped(self, body: bytes) -> None:
-        cap = _cap(_resp(headers={"Content-Type": "application/json"}, body=body))
-        assert malformed_json(cap) is None
+    def test_valid_json_past_python_limits_is_not_flagged(self, body: bytes) -> None:
+        assert _finding(body) is None
+
+    def test_deep_nesting_is_skipped_even_when_malformed(self) -> None:
+        # The parser hits the recursion limit before it reaches the error.
+        assert _finding(b"[" * 100_000) is None
 
 
 class TestContentLengthMismatch:
