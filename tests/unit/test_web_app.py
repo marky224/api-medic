@@ -429,6 +429,35 @@ class TestAnalyzeUnencodableBodyText:
         assert r.json() == {"detail": _UNENCODABLE}
 
 
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+def _rate_limited_har(remaining: str) -> dict[str, Any]:
+    headers = [
+        {"name": "X-RateLimit-Limit", "value": "1"},
+        {"name": "X-RateLimit-Remaining", "value": remaining},
+    ]
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/"},
+        "response": {"status": 200, "headers": headers},
+    }
+    return {"log": {"entries": [entry]}}
+
+
+class TestAnalyzeApproachingRatioTooLargeForAFloat:
+    """These used to be a 500."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_gives_the_findings_of_a_ratio_of_one(self, client: TestClient, remaining: str) -> None:
+        r = client.post("/api/analyze", json={"kind": "har", "har": _rate_limited_har(remaining)})
+        assert r.status_code == 200
+        same = client.post("/api/analyze", json={"kind": "har", "har": _rate_limited_har("1")})
+        assert r.json()["findings"] == same.json()["findings"]
+
+
 class TestCors:
     def test_preflight_for_vite_origin_succeeds(self, client):
         r = client.options(

@@ -199,3 +199,23 @@ class TestUnparseableValues:
         )
         assert finding is not None
         assert finding.evidence == {"limit": parsed, "retry_after_seconds": parsed}
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+class TestApproachingRatioTooLargeForAFloat:
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    @pytest.mark.parametrize("limit", ["1", "100"])
+    def test_gives_no_finding(self, limit: str, remaining: str) -> None:
+        headers = {"X-RateLimit-Limit": limit, "X-RateLimit-Remaining": remaining}
+        assert rate_limit_approaching(_cap(_resp(200, headers))) is None
+
+    def test_ratio_too_small_for_a_float_still_fires(self) -> None:
+        headers = {"X-RateLimit-Limit": "1" + "0" * 400, "X-RateLimit-Remaining": "1"}
+        finding = rate_limit_approaching(_cap(_resp(200, headers)))
+        assert finding is not None
+        assert finding.explanation.endswith("(0%). At this rate you'll hit 429 soon.")

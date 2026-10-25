@@ -162,3 +162,24 @@ class TestMalformedJsonBodiesPythonCantRead:
         self, body: bytes
     ) -> None:
         assert self._findings(body) == self._findings(b"[]")
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+class TestApproachingRatioTooLargeForAFloat:
+    """These used to make analyze() raise OverflowError."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_findings_match_a_ratio_of_one(self, remaining: str) -> None:
+        def findings(remaining: str) -> list[Any]:
+            headers = {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": remaining}
+            response = CapturedResponse(
+                status_code=200, status_text="", headers=headers, body=b"", protocol="HTTP/2"
+            )
+            return analyze(_live(response=response)).findings
+
+        assert findings(remaining) == findings("1")

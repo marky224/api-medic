@@ -337,6 +337,39 @@ class TestUnencodableText:
         assert self._MESSAGE in result.stderr
 
 
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+def _rate_limited_har(remaining: str) -> dict[str, Any]:
+    headers = [
+        {"name": "X-RateLimit-Limit", "value": "1"},
+        {"name": "X-RateLimit-Remaining", "value": remaining},
+    ]
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/"},
+        "response": {"status": 200, "headers": headers},
+    }
+    return {"log": {"entries": [entry]}}
+
+
+@pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+def test_from_har_approaching_ratio_too_large_for_a_float(
+    runner: CliRunner, tmp_path: Any, remaining: str
+) -> None:
+    """This used to print an OverflowError traceback and exit 1."""
+    findings = []
+    for value in (remaining, "1"):
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(_rate_limited_har(value)), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        findings.append(json.loads(result.stdout)["findings"])
+    assert findings[0] == findings[1]
+
+
 # --- Stream-encoding regression -------------------------------------------
 
 

@@ -497,6 +497,25 @@ class TestAnalyzeUnencodableBodyText:
         assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
 
 
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+class TestAnalyzeApproachingRatioTooLargeForAFloat:
+    """These used to be a 500 "Internal error."."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_gives_the_findings_of_a_ratio_of_one(self, remaining: str) -> None:
+        with_it = _har_response_findings(
+            200, {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": remaining}
+        )
+        assert with_it == _har_response_findings(
+            200, {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": "1"}
+        )
+
+
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
         result = handler.lambda_handler(
