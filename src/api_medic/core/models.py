@@ -141,9 +141,17 @@ class Report(BaseModel):
 
 
 UNENCODABLE_TEXT = "input holds text that can't be encoded as JSON"
-"""What the Lambda, the local web app and the CLI answer when a Report, or
-the CLI's rendering of it, holds an unpaired surrogate that UTF-8 can't
-encode (see `is_unencodable_text_error`)."""
+"""What the Lambda, the local web app and the CLI answer when a HAR or curl
+body, a Report, or the CLI's rendering of one holds an unpaired surrogate
+that UTF-8 can't encode (see `UnencodableTextError` and
+`is_unencodable_text_error`)."""
+
+
+class UnencodableTextError(ValueError):
+    """Input text holds an unpaired surrogate, which UTF-8 can't encode."""
+
+    def __init__(self) -> None:
+        super().__init__(UNENCODABLE_TEXT)
 
 
 def is_unencodable_text_error(error: PydanticSerializationError | UnicodeEncodeError) -> bool:

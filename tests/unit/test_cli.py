@@ -304,6 +304,38 @@ class TestUnencodableText:
         assert result.exit_code == 0, result.stderr
         assert "api.example.com" in result.stdout
 
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {
+                "request": {
+                    "method": "POST",
+                    "url": "https://api.example.com/",
+                    "postData": {"text": "a\ud800"},
+                }
+            },
+            {
+                "request": {"method": "GET", "url": "https://api.example.com/"},
+                "response": {"status": 200, "content": {"text": "\ud800"}},
+            },
+        ],
+        ids=["post-data", "response-content"],
+    )
+    def test_from_har_body_text(self, runner: CliRunner, tmp_path: Any, entry: Any) -> None:
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps({"log": {"entries": [entry]}}), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path)])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
+    def test_from_curl_data(self, runner: CliRunner) -> None:
+        curl = "curl https://api.example.com/ -d 'a\ud800'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
 
 # --- Stream-encoding regression -------------------------------------------
 

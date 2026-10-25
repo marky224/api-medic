@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
 
+from api_medic.core.models import UNENCODABLE_TEXT
 from api_medic.core.parser import parse_curl, parse_har
 
 
@@ -410,3 +412,66 @@ class TestParseCurl:
         with pytest.raises(ValueError, match="argparse rejected it"):
             parse_curl("curl https://api.example.com/ --cookie 'session=SECRET-7f3a'")
         assert capsys.readouterr().err == ""
+
+
+# HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
+# encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
+# message was the 400's detail.
+_UNENCODABLE_BODY_TEXT: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://api.example.com/",
+                            "postData": {"mimeType": "text/plain", "text": "a\ud800"},
+                        }
+                    }
+                ]
+            }
+        },
+    },
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {"method": "GET", "url": "https://api.example.com/"},
+                        "response": {"status": 200, "content": {"text": "\ud800"}},
+                    }
+                ]
+            }
+        },
+    },
+    {"kind": "curl", "curl": "curl https://api.example.com/ -d 'a\ud800'"},
+]
+_UNENCODABLE_BODY_TEXT_IDS = ["har-post-data", "har-response-content", "curl-data"]
+
+
+class TestUnencodableBodyText:
+    @pytest.mark.parametrize("payload", _UNENCODABLE_BODY_TEXT, ids=_UNENCODABLE_BODY_TEXT_IDS)
+    def test_raises_the_unencodable_text_error(self, payload: dict[str, Any]) -> None:
+        with pytest.raises(ValueError, match=f"^{re.escape(UNENCODABLE_TEXT)}$"):
+            if payload["kind"] == "har":
+                parse_har(payload["har"])
+            else:
+                parse_curl(payload["curl"])
+
+    def test_text_without_a_surrogate_is_encoded_as_before(self) -> None:
+        har = _minimal_har(
+            request={
+                "method": "POST",
+                "url": "https://api.example.com/",
+                "postData": {"text": "caf\u00e9"},
+            },
+            response={"status": 200, "content": {"text": "\u2603"}},
+        )
+        captured = parse_har(har)
+        assert captured.body == "caf\u00e9".encode()
+        assert captured.response is not None
+        assert captured.response.body == "\u2603".encode()
+        assert parse_curl("curl https://x.com/ -d 'caf\u00e9'").body == "caf\u00e9".encode()

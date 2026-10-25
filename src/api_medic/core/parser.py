@@ -19,7 +19,7 @@ from typing import Any
 import uncurl  # type: ignore[import-untyped]
 
 from .captured import CapturedRequest, CapturedResponse
-from .models import TimingBreakdown
+from .models import TimingBreakdown, UnencodableTextError
 
 # HAR `httpVersion` strings vary by browser: Chromium writes 'http/2.0' lowercase
 # with .0, Firefox writes 'HTTP/2.0' uppercase with .0, and some tools use the
@@ -98,7 +98,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
 
     request_headers = _har_headers(request.get("headers"))
     body_text = (request.get("postData") or {}).get("text", "")
-    body = body_text.encode("utf-8") if isinstance(body_text, str) and body_text else b""
+    body = _utf8(body_text) if isinstance(body_text, str) and body_text else b""
 
     captured_response: CapturedResponse | None = None
     response_obj = entry.get("response")
@@ -106,9 +106,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
         resp_headers = _har_headers(response_obj.get("headers"))
         resp_body_text = (response_obj.get("content") or {}).get("text", "")
         resp_body = (
-            resp_body_text.encode("utf-8")
-            if isinstance(resp_body_text, str) and resp_body_text
-            else b""
+            _utf8(resp_body_text) if isinstance(resp_body_text, str) and resp_body_text else b""
         )
         try:
             status_code = int(response_obj["status"])
@@ -160,7 +158,7 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
-    body = ctx.data.encode("utf-8") if ctx.data else b""
+    body = _utf8(ctx.data) if ctx.data else b""
 
     return CapturedRequest(
         method=method,
@@ -171,6 +169,15 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         timing=TimingBreakdown(),
         source="curl",
     )
+
+
+def _utf8(text: str) -> bytes:
+    """`text` as UTF-8. JSON input can carry an unpaired surrogate ("\\ud800")
+    that UTF-8 can't encode; that is UnencodableTextError."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as e:
+        raise UnencodableTextError from e
 
 
 def _har_headers(raw: Any) -> dict[str, str]:

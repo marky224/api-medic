@@ -26,7 +26,12 @@ from pydantic_core import PydanticSerializationError
 
 from .. import __version__
 from ..core.engine import analyze
-from ..core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
+from ..core.models import (
+    UNENCODABLE_TEXT,
+    Report,
+    UnencodableTextError,
+    is_unencodable_text_error,
+)
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
@@ -272,7 +277,10 @@ def from_curl(
     verbose: VerboseOption = False,
 ) -> None:
     """Parse a curl command and (by default) execute it."""
-    captured = parse_curl(curl)
+    try:
+        captured = parse_curl(curl)
+    except UnencodableTextError as e:
+        raise typer.BadParameter(str(e)) from e
     if not no_execute:
         # Re-issue the parsed request through the live Runner so we get a real
         # response, timing, and DNS/TLS data.
@@ -298,7 +306,10 @@ def from_har(
 ) -> None:
     """Analyze a captured HAR file (no execution)."""
     raw = file.read_text(encoding="utf-8")
-    captured = parse_har(raw)
+    try:
+        captured = parse_har(raw)
+    except UnencodableTextError as e:
+        raise typer.BadParameter(str(e)) from e
     report = analyze(captured)
     if verbose:
         _emit_findings_summary(report)

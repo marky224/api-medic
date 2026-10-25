@@ -451,6 +451,52 @@ class TestAnalyzeRejectsInputThatCantMakeAReport:
         assert json.loads(result["body"]) == {"detail": str(e.value)}
 
 
+# HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
+# encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
+# message was the 400's detail.
+_UNENCODABLE_BODY_TEXT: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://api.example.com/",
+                            "postData": {"mimeType": "text/plain", "text": "a\ud800"},
+                        }
+                    }
+                ]
+            }
+        },
+    },
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {"method": "GET", "url": "https://api.example.com/"},
+                        "response": {"status": 200, "content": {"text": "\ud800"}},
+                    }
+                ]
+            }
+        },
+    },
+    {"kind": "curl", "curl": "curl https://api.example.com/ -d 'a\ud800'"},
+]
+_UNENCODABLE_BODY_TEXT_IDS = ["har-post-data", "har-response-content", "curl-data"]
+
+
+class TestAnalyzeUnencodableBodyText:
+    @pytest.mark.parametrize("payload", _UNENCODABLE_BODY_TEXT, ids=_UNENCODABLE_BODY_TEXT_IDS)
+    def test_returns_400(self, payload: dict[str, Any]) -> None:
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+
 class TestAnalyzeRouting:
     def test_unknown_kind_400(self):
         result = handler.lambda_handler(
