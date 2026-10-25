@@ -443,6 +443,57 @@ class TestInputThatCantMakeAReport:
         assert _flat(str(e.value)) in _flat(result.stderr)
 
 
+# JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
+# body.malformed_json reports for each (None: no finding). NUL bytes used to
+# make json.loads read the first three as UTF-16, and int() stopped the
+# fourth's parse before the "x".
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+_HAR_JSON_BODIES = [
+    ("{\x00}\x00", _NUL_PARSE_ERROR),
+    ("\x00{\x00}", "Expecting value: line 1 column 1 (char 0)"),
+    ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+    ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+    ("9" * 4301, None),
+    ("[" * 100_000 + "]" * 100_000, None),
+    ("[" * 100_000, None),
+]
+_HAR_JSON_BODIES_IDS = [
+    "utf-16-le-nul",
+    "utf-16-be-nul",
+    "odd-length-nul",
+    "long-int-then-junk",
+    "long-int",
+    "nested-100000-deep",
+    "nested-100000-deep-malformed",
+]
+
+
+def _json_body_har(text: str) -> dict[str, Any]:
+    response = {
+        "status": 200,
+        "headers": [{"name": "Content-Type", "value": "application/json"}],
+        "content": {"text": text},
+    }
+    entry = {"request": {"method": "GET", "url": "https://api.example.com/"}, "response": response}
+    return {"log": {"entries": [entry]}}
+
+
+def _parse_errors(findings: list[dict[str, Any]]) -> list[str]:
+    return [f["evidence"]["parse_error"] for f in findings if f["id"] == "body.malformed_json"]
+
+
+@pytest.mark.parametrize(("text", "parse_error"), _HAR_JSON_BODIES, ids=_HAR_JSON_BODIES_IDS)
+def test_from_har_json_body_is_read_as_utf_8(
+    runner: CliRunner, tmp_path: Any, text: str, parse_error: str | None
+) -> None:
+    path = tmp_path / "in.har"
+    path.write_text(json.dumps(_json_body_har(text)), encoding="utf-8")
+    result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+    assert result.exit_code == 0, result.stderr
+    findings = json.loads(result.stdout)["findings"]
+    assert _parse_errors(findings) == ([] if parse_error is None else [parse_error])
+
+
 # --- Stream-encoding regression -------------------------------------------
 
 

@@ -496,6 +496,88 @@ class TestAnalyzeApproachingRatioTooLargeForAFloat:
         assert r.json()["findings"] == same.json()["findings"]
 
 
+# JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
+# body.malformed_json reports for each (None: no finding). NUL bytes used to
+# make json.loads read the first three as UTF-16, and int() stopped the
+# fourth's parse before the "x".
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+_HAR_JSON_BODIES = [
+    ("{\x00}\x00", _NUL_PARSE_ERROR),
+    ("\x00{\x00}", "Expecting value: line 1 column 1 (char 0)"),
+    ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+    ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+    ("9" * 4301, None),
+    ("[" * 100_000 + "]" * 100_000, None),
+    ("[" * 100_000, None),
+]
+_HAR_JSON_BODIES_IDS = [
+    "utf-16-le-nul",
+    "utf-16-be-nul",
+    "odd-length-nul",
+    "long-int-then-junk",
+    "long-int",
+    "nested-100000-deep",
+    "nested-100000-deep-malformed",
+]
+
+
+def _json_body_har(text: str) -> dict[str, Any]:
+    response = {
+        "status": 200,
+        "headers": [{"name": "Content-Type", "value": "application/json"}],
+        "content": {"text": text},
+    }
+    entry = {"request": {"method": "GET", "url": "https://api.example.com/"}, "response": response}
+    return {"log": {"entries": [entry]}}
+
+
+def _parse_errors(findings: list[dict[str, Any]]) -> list[str]:
+    return [f["evidence"]["parse_error"] for f in findings if f["id"] == "body.malformed_json"]
+
+
+class TestJsonBodiesAreReadAsUtf8:
+    """body.malformed_json reads a JSON-typed body as UTF-8 only, parses
+    integers without converting them, and skips nesting past the recursion
+    limit, in serve as in the Lambda."""
+
+    @pytest.mark.parametrize(("text", "parse_error"), _HAR_JSON_BODIES, ids=_HAR_JSON_BODIES_IDS)
+    def test_analyze_har_body(self, client: TestClient, text: str, parse_error: str | None) -> None:
+        r = _post(client, "/api/analyze", {"kind": "har", "har": _json_body_har(text)})
+        assert r.status_code == 200
+        assert _parse_errors(r.json()["findings"]) == ([] if parse_error is None else [parse_error])
+
+    @pytest.mark.parametrize(
+        ("body", "reason"),
+        [
+            (b'{"name": "caf\xe9"}', "invalid continuation byte"),
+            ("{}".encode("utf-16"), "invalid start byte"),
+            (b'"\xed\xa0\x80"', "invalid continuation byte"),
+        ],
+        ids=["latin-1", "utf-16-with-bom", "encoded-surrogate"],
+    )
+    def test_run_body_that_is_not_utf_8(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, body: bytes, reason: str
+    ) -> None:
+        # Only a live response can carry these: a HAR's text is UTF-8.
+        response = CapturedResponse(
+            status_code=200,
+            status_text="OK",
+            headers={"Content-Type": "application/json"},
+            body=body,
+            protocol="HTTP/2",
+        )
+        monkeypatch.setattr(
+            "api_medic.web.app.run_request", lambda **kw: _fake_captured(response=response)
+        )
+        r = client.post("/api/run", json={"method": "GET", "url": "https://api.example.com/"})
+        assert r.status_code == 200
+        explanations = [
+            f["explanation"] for f in r.json()["findings"] if f["id"] == "body.malformed_json"
+        ]
+        assert len(explanations) == 1
+        assert f"can't be decoded as UTF-8 text: {reason}." in explanations[0]
+
+
 class TestCors:
     def test_preflight_for_vite_origin_succeeds(self, client):
         r = client.options(
