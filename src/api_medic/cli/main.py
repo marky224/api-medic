@@ -25,6 +25,7 @@ import typer
 from pydantic_core import PydanticSerializationError
 
 from .. import __version__
+from ..core.captured import CapturedRequest
 from ..core.engine import analyze
 from ..core.models import (
     UNENCODABLE_TEXT,
@@ -35,6 +36,7 @@ from ..core.models import (
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
+from ..core.runner_safety import InvalidRequestError
 
 app = typer.Typer(
     name="api-medic",
@@ -163,6 +165,19 @@ def _emit(
         typer.echo(text)
 
 
+def _analyze(captured: CapturedRequest) -> Report:
+    """analyze(), answering input it can't make a Report of as bad input.
+
+    A URL or method holding an unpaired surrogate parses, but analyze()
+    raises ValueError; the hosted demo and api-medic serve answer 400 with
+    its text.
+    """
+    try:
+        return analyze(captured)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+
+
 def _emit_findings_summary(report: Report) -> None:
     """One-line stderr summary, used by --verbose."""
     n = len(report.findings)
@@ -284,13 +299,18 @@ def from_curl(
     if not no_execute:
         # Re-issue the parsed request through the live Runner so we get a real
         # response, timing, and DNS/TLS data.
-        captured = runner_run(
-            captured.method,
-            captured.url,
-            headers=captured.headers,
-            body=captured.body if captured.body else None,
-        )
-    report = analyze(captured)
+        try:
+            captured = runner_run(
+                captured.method,
+                captured.url,
+                headers=captured.headers,
+                body=captured.body if captured.body else None,
+            )
+        except InvalidRequestError as e:
+            # Refused before anything is sent, e.g. a URL holding an unpaired
+            # surrogate; the hosted demo's /api/run answers 400 with this text.
+            raise typer.BadParameter(str(e)) from e
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)
@@ -310,7 +330,7 @@ def from_har(
         captured = parse_har(raw)
     except UnencodableTextError as e:
         raise typer.BadParameter(str(e)) from e
-    report = analyze(captured)
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)

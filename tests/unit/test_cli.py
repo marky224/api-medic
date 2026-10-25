@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import socket
 import sys
 from typing import Any
 
@@ -19,7 +21,11 @@ from api_medic import __version__
 from api_medic.cli import main as cli_main
 from api_medic.cli.main import _rewrite_bare_url, app
 from api_medic.core.captured import CapturedRequest, CapturedResponse
+from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
+from api_medic.core.parser import parse_curl, parse_har
+from api_medic.core.runner import validate_request
+from api_medic.core.runner_safety import InvalidRequestError
 
 
 def _captured(
@@ -368,6 +374,73 @@ def test_from_har_approaching_ratio_too_large_for_a_float(
         assert result.exit_code == 0, result.stderr
         findings.append(json.loads(result.stdout)["findings"])
     assert findings[0] == findings[1]
+
+
+# --- Input analyze() can't make a Report of --------------------------------
+
+
+def _flat(text: str) -> str:
+    """`text` without Rich's error box and line wrapping."""
+    return " ".join(re.sub(r"[\u2500-\u257f]", " ", text).split())
+
+
+class TestInputThatCantMakeAReport:
+    """A URL or method holding an unpaired surrogate parses, but analyze()
+    raises ValueError: RequestSummary can't validate it. from-har and
+    from-curl answer it as bad input, exit 2 with the text the Lambda's and
+    serve's 400 carry. They used to print a traceback and exit 1."""
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            {"method": "GET", "url": "https://x.com/\ud800"},
+            {"method": "G\ud800T", "url": "https://x.com/"},
+        ],
+        ids=["url", "method"],
+    )
+    def test_from_har(self, runner: CliRunner, tmp_path: Any, request_: dict[str, Any]) -> None:
+        har = {"log": {"entries": [{"request": request_}]}}
+        with pytest.raises(ValueError) as e:
+            analyze(parse_har(har))
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(har), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path)])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("execute", [False, True], ids=["no-execute", "live"])
+    def test_from_curl(self, runner: CliRunner, fake_runner: Any, execute: bool) -> None:
+        # The fake runner returns the URL as given, so analyze() gets it live too.
+        curl = "curl 'https://x.com/\ud800'"
+        with pytest.raises(ValueError) as e:
+            analyze(parse_curl(curl))
+        args = ["from-curl", curl] if execute else ["from-curl", curl, "--no-execute"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert len(fake_runner) == (1 if execute else 0)
+
+    @pytest.mark.parametrize(
+        "url", ["https://x.com/\ud800", "https://x.com:99999/"], ids=["surrogate", "bad-port"]
+    )
+    def test_from_curl_live_url_the_runner_rejects(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        # The real runner refuses these before any lookup or send, with the
+        # message the Lambda's and serve's /api/run 400 carry.
+        def getaddrinfo(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GET", url, {}, None)
+        result = runner.invoke(app, ["from-curl", f"curl '{url}'"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
 
 
 # --- Stream-encoding regression -------------------------------------------
