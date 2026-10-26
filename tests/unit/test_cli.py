@@ -380,7 +380,11 @@ def test_from_har_approaching_ratio_too_large_for_a_float(
 
 
 def _flat(text: str) -> str:
-    """`text` without Rich's error box and line wrapping."""
+    """`text` without Rich's colour codes, error box and line wrapping.
+
+    Rich forces colour when GITHUB_ACTIONS is set, so CI output carries ANSI codes.
+    """
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
     return " ".join(re.sub(r"[\u2500-\u257f]", " ", text).split())
 
 
