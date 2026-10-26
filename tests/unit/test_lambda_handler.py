@@ -194,6 +194,22 @@ class TestAnalyzeCurl:
         assert result["statusCode"] == 400
         assert capsys.readouterr().err == ""
 
+    def test_curl_over_the_limit_400_without_parsing_it(self) -> None:
+        """A command over parser.MAX_CURL_CHARS (100,000) is refused before
+        uncurl splits it, which slows down quadratically; one of 1,000,000
+        characters took over 10 seconds and could hold the Lambda."""
+        curl = "curl https://api.example.com/ -d '" + "a" * 99_966 + "'"
+        assert len(curl) == 100_001
+        body = json.dumps({"kind": "curl", "curl": curl})
+        started = time.perf_counter()
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        elapsed = time.perf_counter() - started
+        assert result["statusCode"] == 400
+        assert elapsed < 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert json.loads(result["body"])["detail"] == str(e.value)
+
 
 def _jwt(payload: bytes) -> str:
     """A JWT whose payload segment is `payload` exactly."""
@@ -239,10 +255,12 @@ class TestAnalyzeJwtTimeClaims:
 
 
 class TestAnalyzeMalformedJwtPayload:
+    # 30,000 deep is past json's recursion limit (under 10,000 levels on
+    # Python 3.12) and keeps the curl command under parser.MAX_CURL_CHARS.
     @pytest.mark.parametrize(
         "payload",
-        [b"\xff", b'{"exp": ' + b"9" * 4301 + b"}", b"[" * 100_000 + b"]" * 100_000],
-        ids=["not-utf-8", "4301-digit-int", "nested-100000-deep"],
+        [b"\xff", b'{"exp": ' + b"9" * 4301 + b"}", b"[" * 30_000 + b"]" * 30_000],
+        ids=["not-utf-8", "4301-digit-int", "nested-30000-deep"],
     )
     def test_gives_the_report_of_a_token_that_is_not_a_jwt(self, payload: bytes) -> None:
         assert _bearer_findings(_jwt(payload)) == _bearer_findings("not-a-jwt")

@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import pytest
+import uncurl  # type: ignore[import-untyped]
 
 from api_medic.core.models import UNENCODABLE_TEXT
 from api_medic.core.parser import parse_curl, parse_har
@@ -374,6 +375,16 @@ class TestParseHar:
         assert cap.response.protocol == "QUIC-experimental"
 
 
+# Mirrors parser.MAX_CURL_CHARS.
+_MAX_CURL_CHARS = 100_000
+_CURL_HEAD = "curl https://api.example.com/ -H 'Cookie: session=SECRET-7f3a' -d '"
+
+
+def _curl_of_length(n: int) -> str:
+    """A curl command exactly `n` characters long, padded with -d data."""
+    return _CURL_HEAD + "a" * (n - len(_CURL_HEAD) - 1) + "'"
+
+
 class TestParseCurl:
     def test_post_with_data_and_headers(self):
         curl = (
@@ -412,6 +423,25 @@ class TestParseCurl:
         with pytest.raises(ValueError, match="argparse rejected it"):
             parse_curl("curl https://api.example.com/ --cookie 'session=SECRET-7f3a'")
         assert capsys.readouterr().err == ""
+
+    def test_command_at_the_limit_parses(self) -> None:
+        cap = parse_curl(_curl_of_length(_MAX_CURL_CHARS))
+        assert cap.url == "https://api.example.com/"
+        assert cap.body == b"a" * (_MAX_CURL_CHARS - len(_CURL_HEAD) - 1)
+
+    def test_command_over_the_limit_raises_before_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # shlex, which uncurl splits the command with, slows down
+        # quadratically: a 1,000,000-character command took over 10 seconds.
+        def parse_context(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("parsed the command")
+
+        monkeypatch.setattr(uncurl, "parse_context", parse_context)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_of_length(_MAX_CURL_CHARS + 1))
+        # Names the limit and quotes none of the command.
+        assert str(e.value) == "Curl command is too long (limit: 100,000 characters)."
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import socket
+import time
 from typing import Any
 
 import fastapi.routing
@@ -240,6 +241,19 @@ class TestAnalyzeEndpoint:
         assert report["source"] == "curl"
         assert report["request"]["method"] == "GET"
         assert report["response"] is None
+
+    def test_curl_over_the_limit_returns_400(self, client: TestClient) -> None:
+        # One character over parser.MAX_CURL_CHARS (100,000).
+        curl = "curl https://api.example.com/ -d '" + "a" * 99_966 + "'"
+        assert len(curl) == 100_001
+        started = time.perf_counter()
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        elapsed = time.perf_counter() - started
+        assert r.status_code == 400
+        assert elapsed < 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert r.json()["detail"] == str(e.value)
 
     def test_invalid_har_returns_400(self, client):
         r = client.post("/api/analyze", json={"kind": "har", "har": {"foo": "bar"}})

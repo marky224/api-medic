@@ -38,6 +38,11 @@ _HTTP_VERSION_NORMALIZATIONS = {
     "h3": "HTTP/3",
 }
 
+# uncurl splits the command with shlex, which slows down quadratically:
+# 1,000,000 characters took over 10 seconds locally, and the hosted demo's
+# Lambda, with its 30-second timeout, runs slower. 100,000 take about 0.1 s.
+MAX_CURL_CHARS = 100_000
+
 
 def _normalize_http_version(raw: Any) -> str:
     if not isinstance(raw, str):
@@ -142,6 +147,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     The curl command describes a request only — the resulting CapturedRequest
     has no `response`. Pair with `core.runner` to actually execute it.
     """
+    if len(curl_str) > MAX_CURL_CHARS:
+        raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
     if not curl_str.strip():
         raise ValueError("Empty curl command.")
     try:

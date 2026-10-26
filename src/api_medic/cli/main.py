@@ -294,7 +294,7 @@ def from_curl(
     """Parse a curl command and (by default) execute it."""
     try:
         captured = parse_curl(curl)
-    except UnencodableTextError as e:
+    except ValueError as e:
         raise typer.BadParameter(str(e)) from e
     if not no_execute:
         # Re-issue the parsed request through the live Runner so we get a real
