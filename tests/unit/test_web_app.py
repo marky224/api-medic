@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import socket
 from typing import Any
 
+import fastapi.routing
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +15,9 @@ from fastapi.testclient import TestClient
 from api_medic import __version__
 from api_medic.core import runner
 from api_medic.core.captured import CapturedDns, CapturedRequest, CapturedResponse
-from api_medic.core.models import TimingBreakdown
+from api_medic.core.engine import analyze
+from api_medic.core.models import Finding, Report, TimingBreakdown
+from api_medic.core.parser import parse_curl, parse_har
 from api_medic.web.app import app
 
 
@@ -245,6 +249,333 @@ class TestAnalyzeEndpoint:
     def test_invalid_kind_returns_422(self, client):
         r = client.post("/api/analyze", json={"kind": "raw", "raw": "..."})
         assert r.status_code == 422
+
+
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+_UNENCODABLE = "input holds text that can't be encoded as JSON"
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+def _post(client: TestClient, path: str, payload: dict[str, Any]) -> httpx.Response:
+    # json.dumps escapes a surrogate as \ud800; httpx's json= would try to
+    # encode it as UTF-8 and fail in the test itself.
+    response: httpx.Response = client.post(
+        path, content=json.dumps(payload), headers={"Content-Type": "application/json"}
+    )
+    return response
+
+
+@pytest.fixture(params=["dump_json", "model_dump"])
+def serialization(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each way FastAPI serializes a returned Report. Today's FastAPI uses
+    pydantic's dump_json, which raises PydanticSerializationError on a
+    surrogate. Older releases pyproject allows use model_dump(mode="json")
+    and JSONResponse, which raises UnicodeEncodeError. Today's takes that
+    path too when the route handler's isinstance(response_class,
+    DefaultPlaceholder) check fails, which hiding DefaultPlaceholder forces."""
+    if request.param == "model_dump":
+        monkeypatch.setattr(fastapi.routing, "DefaultPlaceholder", type("NoFastPath", (), {}))
+
+
+@pytest.mark.usefixtures("serialization")
+class TestUnencodableText:
+    """JSON input can carry an unpaired surrogate (\\ud800), which UTF-8
+    can't encode. A report that would hold one gets a 400 saying so. These
+    used to be a 500, and on the model_dump path still were."""
+
+    def test_report_without_a_surrogate_is_sent(self, client: TestClient) -> None:
+        r = _post(
+            client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/ -H 'X-A: b'"}
+        )
+        assert r.status_code == 200
+        assert r.json()["request"]["headers"] == {"X-A": "b"}
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_analyze_returns_400(self, client: TestClient, header: str) -> None:
+        curl = f"curl https://api.example.com/ -H '{header}'"
+        r = _post(client, "/api/analyze", {"kind": "curl", "curl": curl})
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+    def test_run_returns_400(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        headers = {"Authorization": f"Bearer {_SURROGATE_SUB_JWT}"}
+        monkeypatch.setattr(
+            "api_medic.web.app.run_request", lambda **kw: _fake_captured(headers=headers)
+        )
+        r = _post(
+            client,
+            "/api/run",
+            {"method": "GET", "url": "https://api.example.com/", "headers": headers},
+        )
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+    def test_other_serialization_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def unserializable(captured: CapturedRequest) -> Report:
+            report = analyze(captured)
+            finding = Finding(
+                id="auth.jwt.expired",
+                severity="critical",
+                title="Expired",
+                explanation="...",
+                evidence={"exp": object()},
+            )
+            return report.model_copy(update={"findings": [finding]})
+
+        monkeypatch.setattr("api_medic.web.app.analyze", unserializable)
+        client = TestClient(app, raise_server_exceptions=False)
+        r = _post(client, "/api/analyze", {"kind": "curl", "curl": "curl https://x.com/"})
+        assert r.status_code == 500
+
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            ("/api/analyze", {"kind": "x\ud800"}),
+            ("/api/analyze", {"kind": "har", "har": "\ud800"}),
+            ("/api/run", {"method": "GET", "url": "https://x.com/", "headers": "\ud800"}),
+            (
+                "/api/analyze",
+                {
+                    "kind": "har",
+                    "har": {"log": {"entries": [{"request": {"url": "https://x.com/\ud800"}}]}},
+                },
+            ),
+            (
+                "/api/analyze",
+                {
+                    "kind": "har",
+                    "har": {
+                        "log": {
+                            "entries": [{"request": {"method": 1, "url": "https://x.com/\ud800"}}]
+                        }
+                    },
+                },
+            ),
+        ],
+        ids=["kind", "har-string", "run-headers", "har-url-no-method", "har-url-method-int"],
+    )
+    def test_error_response_that_would_echo_a_surrogate(
+        self, client: TestClient, path: str, payload: dict[str, Any]
+    ) -> None:
+        """FastAPI's 422 quotes the invalid input, and the 400 for a HAR
+        parse error quotes the entry's URL. Rendering either raises the same
+        UnicodeEncodeError, which the app-level handler answers. The Lambda
+        answers these with its own message instead (see its tests)."""
+        r = _post(client, path, payload)
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+    def test_other_unicode_encode_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def run_request(**kwargs: Any) -> CapturedRequest:
+            raise UnicodeEncodeError("ascii", "caf\u00e9", 3, 4, "ordinal not in range(128)")
+
+        monkeypatch.setattr("api_medic.web.app.run_request", run_request)
+        client = TestClient(app, raise_server_exceptions=False)
+        r = _post(client, "/api/run", {"method": "GET", "url": "https://api.example.com/"})
+        assert r.status_code == 500
+
+
+# Input parse_har and parse_curl accept but analyze() can't make a Report of:
+# RequestSummary can't validate a str holding an unpaired surrogate.
+_UNREPORTABLE: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {"entries": [{"request": {"method": "GET", "url": "https://x.com/\ud800"}}]}
+        },
+    },
+    {
+        "kind": "har",
+        "har": {"log": {"entries": [{"request": {"method": "G\ud800T", "url": "https://x.com/"}}]}},
+    },
+    {"kind": "curl", "curl": "curl 'https://x.com/\ud800'"},
+]
+_UNREPORTABLE_IDS = ["har-url", "har-method", "curl-url"]
+
+
+class TestAnalyzeRejectsInputThatCantMakeAReport:
+    """A ValueError from analyze() is a 400 with its message, as on the
+    hosted demo. These used to be a 500."""
+
+    @pytest.mark.parametrize("payload", _UNREPORTABLE, ids=_UNREPORTABLE_IDS)
+    def test_returns_400_with_the_error(self, client: TestClient, payload: dict[str, Any]) -> None:
+        if payload["kind"] == "har":
+            captured = parse_har(payload["har"])
+        else:
+            captured = parse_curl(payload["curl"])
+        with pytest.raises(ValueError) as e:
+            analyze(captured)
+        r = _post(client, "/api/analyze", payload)
+        assert r.status_code == 400
+        assert r.json() == {"detail": str(e.value)}
+
+
+# HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
+# encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
+# message was the 400's detail.
+_UNENCODABLE_BODY_TEXT: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://api.example.com/",
+                            "postData": {"mimeType": "text/plain", "text": "a\ud800"},
+                        }
+                    }
+                ]
+            }
+        },
+    },
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {"method": "GET", "url": "https://api.example.com/"},
+                        "response": {"status": 200, "content": {"text": "\ud800"}},
+                    }
+                ]
+            }
+        },
+    },
+    {"kind": "curl", "curl": "curl https://api.example.com/ -d 'a\ud800'"},
+]
+_UNENCODABLE_BODY_TEXT_IDS = ["har-post-data", "har-response-content", "curl-data"]
+
+
+class TestAnalyzeUnencodableBodyText:
+    @pytest.mark.parametrize("payload", _UNENCODABLE_BODY_TEXT, ids=_UNENCODABLE_BODY_TEXT_IDS)
+    def test_returns_400(self, client: TestClient, payload: dict[str, Any]) -> None:
+        r = _post(client, "/api/analyze", payload)
+        assert r.status_code == 400
+        assert r.json() == {"detail": _UNENCODABLE}
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+def _rate_limited_har(remaining: str) -> dict[str, Any]:
+    headers = [
+        {"name": "X-RateLimit-Limit", "value": "1"},
+        {"name": "X-RateLimit-Remaining", "value": remaining},
+    ]
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/"},
+        "response": {"status": 200, "headers": headers},
+    }
+    return {"log": {"entries": [entry]}}
+
+
+class TestAnalyzeApproachingRatioTooLargeForAFloat:
+    """These used to be a 500."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_gives_the_findings_of_a_ratio_of_one(self, client: TestClient, remaining: str) -> None:
+        r = client.post("/api/analyze", json={"kind": "har", "har": _rate_limited_har(remaining)})
+        assert r.status_code == 200
+        same = client.post("/api/analyze", json={"kind": "har", "har": _rate_limited_har("1")})
+        assert r.json()["findings"] == same.json()["findings"]
+
+
+# JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
+# body.malformed_json reports for each (None: no finding). NUL bytes used to
+# make json.loads read the first three as UTF-16, and int() stopped the
+# fourth's parse before the "x".
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+_HAR_JSON_BODIES = [
+    ("{\x00}\x00", _NUL_PARSE_ERROR),
+    ("\x00{\x00}", "Expecting value: line 1 column 1 (char 0)"),
+    ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+    ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+    ("9" * 4301, None),
+    ("[" * 100_000 + "]" * 100_000, None),
+    ("[" * 100_000, None),
+]
+_HAR_JSON_BODIES_IDS = [
+    "utf-16-le-nul",
+    "utf-16-be-nul",
+    "odd-length-nul",
+    "long-int-then-junk",
+    "long-int",
+    "nested-100000-deep",
+    "nested-100000-deep-malformed",
+]
+
+
+def _json_body_har(text: str) -> dict[str, Any]:
+    response = {
+        "status": 200,
+        "headers": [{"name": "Content-Type", "value": "application/json"}],
+        "content": {"text": text},
+    }
+    entry = {"request": {"method": "GET", "url": "https://api.example.com/"}, "response": response}
+    return {"log": {"entries": [entry]}}
+
+
+def _parse_errors(findings: list[dict[str, Any]]) -> list[str]:
+    return [f["evidence"]["parse_error"] for f in findings if f["id"] == "body.malformed_json"]
+
+
+class TestJsonBodiesAreReadAsUtf8:
+    """body.malformed_json reads a JSON-typed body as UTF-8 only, parses
+    integers without converting them, and skips nesting past the recursion
+    limit, in serve as in the Lambda."""
+
+    @pytest.mark.parametrize(("text", "parse_error"), _HAR_JSON_BODIES, ids=_HAR_JSON_BODIES_IDS)
+    def test_analyze_har_body(self, client: TestClient, text: str, parse_error: str | None) -> None:
+        r = _post(client, "/api/analyze", {"kind": "har", "har": _json_body_har(text)})
+        assert r.status_code == 200
+        assert _parse_errors(r.json()["findings"]) == ([] if parse_error is None else [parse_error])
+
+    @pytest.mark.parametrize(
+        ("body", "reason"),
+        [
+            (b'{"name": "caf\xe9"}', "invalid continuation byte"),
+            ("{}".encode("utf-16"), "invalid start byte"),
+            (b'"\xed\xa0\x80"', "invalid continuation byte"),
+        ],
+        ids=["latin-1", "utf-16-with-bom", "encoded-surrogate"],
+    )
+    def test_run_body_that_is_not_utf_8(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, body: bytes, reason: str
+    ) -> None:
+        # Only a live response can carry these: a HAR's text is UTF-8.
+        response = CapturedResponse(
+            status_code=200,
+            status_text="OK",
+            headers={"Content-Type": "application/json"},
+            body=body,
+            protocol="HTTP/2",
+        )
+        monkeypatch.setattr(
+            "api_medic.web.app.run_request", lambda **kw: _fake_captured(response=response)
+        )
+        r = client.post("/api/run", json={"method": "GET", "url": "https://api.example.com/"})
+        assert r.status_code == 200
+        explanations = [
+            f["explanation"] for f in r.json()["findings"] if f["id"] == "body.malformed_json"
+        ]
+        assert len(explanations) == 1
+        assert f"can't be decoded as UTF-8 text: {reason}." in explanations[0]
 
 
 class TestCors:

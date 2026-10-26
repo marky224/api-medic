@@ -73,7 +73,11 @@ def rate_limit_approaching(captured: CapturedRequest) -> Finding | None:
 
     if limit is None or remaining is None or limit <= 0 or remaining < 0:
         return None
-    if remaining / limit >= APPROACHING_THRESHOLD:
+    try:
+        ratio = remaining / limit
+    except OverflowError:  # Too large for a float, so far above the threshold.
+        return None
+    if ratio >= APPROACHING_THRESHOLD:
         return None
 
     return Finding(
@@ -82,7 +86,7 @@ def rate_limit_approaching(captured: CapturedRequest) -> Finding | None:
         title="Approaching rate limit",
         explanation=(
             f"X-RateLimit-Remaining is {remaining} of {limit} "
-            f"({remaining / limit * 100:.0f}%). At this rate you'll hit 429 soon."
+            f"({ratio * 100:.0f}%). At this rate you'll hit 429 soon."
         ),
         evidence={"limit": limit, "remaining": remaining},
         suggested_fix="Slow down or batch requests to stay within the limit.",
@@ -101,9 +105,13 @@ def _parse_int(v: str | None) -> int | None:
     if v is None:
         return None
     s = v.strip()
-    if not re.fullmatch(r"-?\d+", s):
+    # [0-9], not \d: \d also matches non-ASCII digits such as "٣".
+    if not re.fullmatch(r"-?[0-9]+", s):
         return None
-    return int(s)
+    try:
+        return int(s)
+    except ValueError:  # More digits than int() takes (4,300 by default).
+        return None
 
 
 def _parse_retry_after(v: str | None) -> int | None:
@@ -115,7 +123,7 @@ def _parse_retry_after(v: str | None) -> int | None:
     if v is None:
         return None
     s = v.strip()
-    return int(s) if s.isdigit() else None
+    return None if s.startswith("-") else _parse_int(s)
 
 
 def _parse_unix_to_iso(v: str | None) -> str | None:

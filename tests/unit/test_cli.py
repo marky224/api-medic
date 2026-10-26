@@ -7,7 +7,10 @@ return a synthetic CapturedRequest so tests stay offline. One
 
 from __future__ import annotations
 
+import base64
 import json
+import re
+import socket
 import sys
 from typing import Any
 
@@ -18,7 +21,11 @@ from api_medic import __version__
 from api_medic.cli import main as cli_main
 from api_medic.cli.main import _rewrite_bare_url, app
 from api_medic.core.captured import CapturedRequest, CapturedResponse
+from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
+from api_medic.core.parser import parse_curl, parse_har
+from api_medic.core.runner import validate_request
+from api_medic.core.runner_safety import InvalidRequestError
 
 
 def _captured(
@@ -221,6 +228,274 @@ class TestRunCommand:
         result = runner.invoke(app, ["run", "https://x.com/", "-H", "no-colon-here"])
         assert result.exit_code != 0
         assert "Header must be" in (result.stderr or result.stdout)
+
+
+# --- Unencodable text ------------------------------------------------------
+
+
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnencodableText:
+    """Input can carry an unpaired surrogate (a HAR's "\\ud800" escape, or
+    an argument that isn't valid UTF-8, which Python decodes to one). UTF-8
+    can't encode it, so -o json can't, and the other formats can't write
+    text that shows it: the CLI says so and exits 2, as it does for other
+    bad input, instead of printing a traceback."""
+
+    _MESSAGE = "input holds text that can't be encoded as JSON"
+
+    def test_from_curl(self, runner: CliRunner) -> None:
+        curl = "curl https://api.example.com/ -H 'X-Note: a\ud800b'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+        assert result.stdout == ""
+
+    def test_from_har(self, runner: CliRunner, tmp_path: Any) -> None:
+        har = {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "GET",
+                            "url": "https://api.example.com/",
+                            "headers": [{"name": "X-Note", "value": "a\ud800b"}],
+                        }
+                    }
+                ]
+            }
+        }
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(har), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
+    @pytest.mark.parametrize("fmt", ["json", "terminal", "markdown", "html"])
+    def test_surrogate_the_output_shows(self, runner: CliRunner, fmt: str) -> None:
+        # The expired-token finding shows the JWT's sub in every format.
+        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer {_SURROGATE_SUB_JWT}'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", fmt])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("fmt", ["terminal", "markdown", "html"])
+    def test_save_writes_nothing(self, runner: CliRunner, tmp_path: Any, fmt: str) -> None:
+        curl = f"curl https://api.example.com/ -H 'Authorization: Bearer {_SURROGATE_SUB_JWT}'"
+        path = tmp_path / "report.out"
+        result = runner.invoke(
+            app, ["from-curl", curl, "--no-execute", "-o", fmt, "--save", str(path)]
+        )
+        assert result.exit_code == 2
+        assert self._MESSAGE in result.stderr
+        assert not path.exists()
+
+    @pytest.mark.parametrize("fmt", ["terminal", "markdown", "html"])
+    def test_surrogate_the_output_does_not_show(self, runner: CliRunner, fmt: str) -> None:
+        # These formats don't show request headers, so the text encodes.
+        curl = "curl https://api.example.com/ -H 'X-Note: a\ud800b'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", fmt])
+        assert result.exit_code == 0, result.stderr
+        assert "api.example.com" in result.stdout
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {
+                "request": {
+                    "method": "POST",
+                    "url": "https://api.example.com/",
+                    "postData": {"text": "a\ud800"},
+                }
+            },
+            {
+                "request": {"method": "GET", "url": "https://api.example.com/"},
+                "response": {"status": 200, "content": {"text": "\ud800"}},
+            },
+        ],
+        ids=["post-data", "response-content"],
+    )
+    def test_from_har_body_text(self, runner: CliRunner, tmp_path: Any, entry: Any) -> None:
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps({"log": {"entries": [entry]}}), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path)])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
+    def test_from_curl_data(self, runner: CliRunner) -> None:
+        curl = "curl https://api.example.com/ -d 'a\ud800'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert self._MESSAGE in result.stderr
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+def _rate_limited_har(remaining: str) -> dict[str, Any]:
+    headers = [
+        {"name": "X-RateLimit-Limit", "value": "1"},
+        {"name": "X-RateLimit-Remaining", "value": remaining},
+    ]
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/"},
+        "response": {"status": 200, "headers": headers},
+    }
+    return {"log": {"entries": [entry]}}
+
+
+@pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+def test_from_har_approaching_ratio_too_large_for_a_float(
+    runner: CliRunner, tmp_path: Any, remaining: str
+) -> None:
+    """This used to print an OverflowError traceback and exit 1."""
+    findings = []
+    for value in (remaining, "1"):
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(_rate_limited_har(value)), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        findings.append(json.loads(result.stdout)["findings"])
+    assert findings[0] == findings[1]
+
+
+# --- Input analyze() can't make a Report of --------------------------------
+
+
+def _flat(text: str) -> str:
+    """`text` without Rich's colour codes, error box and line wrapping.
+
+    Rich forces colour when GITHUB_ACTIONS is set, so CI output carries ANSI codes.
+    """
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return " ".join(re.sub(r"[\u2500-\u257f]", " ", text).split())
+
+
+class TestInputThatCantMakeAReport:
+    """A URL or method holding an unpaired surrogate parses, but analyze()
+    raises ValueError: RequestSummary can't validate it. from-har and
+    from-curl answer it as bad input, exit 2 with the text the Lambda's and
+    serve's 400 carry. They used to print a traceback and exit 1."""
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            {"method": "GET", "url": "https://x.com/\ud800"},
+            {"method": "G\ud800T", "url": "https://x.com/"},
+        ],
+        ids=["url", "method"],
+    )
+    def test_from_har(self, runner: CliRunner, tmp_path: Any, request_: dict[str, Any]) -> None:
+        har = {"log": {"entries": [{"request": request_}]}}
+        with pytest.raises(ValueError) as e:
+            analyze(parse_har(har))
+        path = tmp_path / "in.har"
+        path.write_text(json.dumps(har), encoding="utf-8")
+        result = runner.invoke(app, ["from-har", str(path)])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("execute", [False, True], ids=["no-execute", "live"])
+    def test_from_curl(self, runner: CliRunner, fake_runner: Any, execute: bool) -> None:
+        # The fake runner returns the URL as given, so analyze() gets it live too.
+        curl = "curl 'https://x.com/\ud800'"
+        with pytest.raises(ValueError) as e:
+            analyze(parse_curl(curl))
+        args = ["from-curl", curl] if execute else ["from-curl", curl, "--no-execute"]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert len(fake_runner) == (1 if execute else 0)
+
+    @pytest.mark.parametrize(
+        "url", ["https://x.com/\ud800", "https://x.com:99999/"], ids=["surrogate", "bad-port"]
+    )
+    def test_from_curl_live_url_the_runner_rejects(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        # The real runner refuses these before any lookup or send, with the
+        # message the Lambda's and serve's /api/run 400 carry.
+        def getaddrinfo(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GET", url, {}, None)
+        result = runner.invoke(app, ["from-curl", f"curl '{url}'"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+
+
+# JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
+# body.malformed_json reports for each (None: no finding). NUL bytes used to
+# make json.loads read the first three as UTF-16, and int() stopped the
+# fourth's parse before the "x".
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+_HAR_JSON_BODIES = [
+    ("{\x00}\x00", _NUL_PARSE_ERROR),
+    ("\x00{\x00}", "Expecting value: line 1 column 1 (char 0)"),
+    ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+    ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+    ("9" * 4301, None),
+    ("[" * 100_000 + "]" * 100_000, None),
+    ("[" * 100_000, None),
+]
+_HAR_JSON_BODIES_IDS = [
+    "utf-16-le-nul",
+    "utf-16-be-nul",
+    "odd-length-nul",
+    "long-int-then-junk",
+    "long-int",
+    "nested-100000-deep",
+    "nested-100000-deep-malformed",
+]
+
+
+def _json_body_har(text: str) -> dict[str, Any]:
+    response = {
+        "status": 200,
+        "headers": [{"name": "Content-Type", "value": "application/json"}],
+        "content": {"text": text},
+    }
+    entry = {"request": {"method": "GET", "url": "https://api.example.com/"}, "response": response}
+    return {"log": {"entries": [entry]}}
+
+
+def _parse_errors(findings: list[dict[str, Any]]) -> list[str]:
+    return [f["evidence"]["parse_error"] for f in findings if f["id"] == "body.malformed_json"]
+
+
+@pytest.mark.parametrize(("text", "parse_error"), _HAR_JSON_BODIES, ids=_HAR_JSON_BODIES_IDS)
+def test_from_har_json_body_is_read_as_utf_8(
+    runner: CliRunner, tmp_path: Any, text: str, parse_error: str | None
+) -> None:
+    path = tmp_path / "in.har"
+    path.write_text(json.dumps(_json_body_har(text)), encoding="utf-8")
+    result = runner.invoke(app, ["from-har", str(path), "-o", "json"])
+    assert result.exit_code == 0, result.stderr
+    findings = json.loads(result.stdout)["findings"]
+    assert _parse_errors(findings) == ([] if parse_error is None else [parse_error])
 
 
 # --- Stream-encoding regression -------------------------------------------

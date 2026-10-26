@@ -15,6 +15,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticSerializationError
 
 Severity = Literal["info", "warning", "critical"]
 """Severity levels for findings, ordered low → high."""
@@ -137,3 +138,30 @@ class Report(BaseModel):
         consumer. Anyone constructing a Report can pass findings in any order.
         """
         return sorted(v, key=lambda f: (_SEVERITY_RANK[f.severity], f.id))
+
+
+UNENCODABLE_TEXT = "input holds text that can't be encoded as JSON"
+"""What the Lambda, the local web app and the CLI answer when a HAR or curl
+body, a Report, or the CLI's rendering of one holds an unpaired surrogate
+that UTF-8 can't encode (see `UnencodableTextError` and
+`is_unencodable_text_error`)."""
+
+
+class UnencodableTextError(ValueError):
+    """Input text holds an unpaired surrogate, which UTF-8 can't encode."""
+
+    def __init__(self) -> None:
+        super().__init__(UNENCODABLE_TEXT)
+
+
+def is_unencodable_text_error(error: PydanticSerializationError | UnicodeEncodeError) -> bool:
+    """True when encoding a Report as JSON failed on an unpaired surrogate.
+
+    JSON input can carry one ("\\ud800"), into a header value or a decoded
+    JWT claim copied into evidence, but UTF-8 can't encode it.
+    `model_dump_json` raises PydanticSerializationError; encoding a dump
+    with `str.encode` raises UnicodeEncodeError.
+    """
+    # tests/unit/test_models.py pins this text, so a pydantic-core release
+    # that rewords it fails CI instead of turning these 400s into 500s.
+    return "surrogates not allowed" in str(error)

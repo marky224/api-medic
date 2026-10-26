@@ -22,13 +22,21 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic_core import PydanticSerializationError
 
 from .. import __version__
+from ..core.captured import CapturedRequest
 from ..core.engine import analyze
-from ..core.models import Report
+from ..core.models import (
+    UNENCODABLE_TEXT,
+    Report,
+    UnencodableTextError,
+    is_unencodable_text_error,
+)
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
+from ..core.runner_safety import InvalidRequestError
 
 app = typer.Typer(
     name="api-medic",
@@ -129,7 +137,13 @@ def _emit(
         color = not no_color and (save is not None or sys.stdout.isatty())
         text = render_terminal(report, color=color)
     elif output is OutputFormat.json:
-        text = render_json(report)
+        try:
+            text = render_json(report)
+        except PydanticSerializationError as e:
+            # An unpaired surrogate from the input; anything else is a bug.
+            if not is_unencodable_text_error(e):
+                raise
+            raise typer.BadParameter(UNENCODABLE_TEXT) from e
     elif output is OutputFormat.markdown:
         text = render_markdown(report)
     elif output is OutputFormat.html:
@@ -137,11 +151,31 @@ def _emit(
     else:  # pragma: no cover — Enum exhausts above
         raise typer.BadParameter(f"Unknown output format: {output}")
 
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as e:
+        # The other formats keep an unpaired surrogate from the input that
+        # they show, and writing it would fail; UTF-8 raises for nothing else.
+        raise typer.BadParameter(UNENCODABLE_TEXT) from e
+
     if save is not None:
         save.write_text(text, encoding="utf-8")
         typer.echo(f"Wrote {save}", err=True)
     else:
         typer.echo(text)
+
+
+def _analyze(captured: CapturedRequest) -> Report:
+    """analyze(), answering input it can't make a Report of as bad input.
+
+    A URL or method holding an unpaired surrogate parses, but analyze()
+    raises ValueError; the hosted demo and api-medic serve answer 400 with
+    its text.
+    """
+    try:
+        return analyze(captured)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
 def _emit_findings_summary(report: Report) -> None:
@@ -258,17 +292,25 @@ def from_curl(
     verbose: VerboseOption = False,
 ) -> None:
     """Parse a curl command and (by default) execute it."""
-    captured = parse_curl(curl)
+    try:
+        captured = parse_curl(curl)
+    except UnencodableTextError as e:
+        raise typer.BadParameter(str(e)) from e
     if not no_execute:
         # Re-issue the parsed request through the live Runner so we get a real
         # response, timing, and DNS/TLS data.
-        captured = runner_run(
-            captured.method,
-            captured.url,
-            headers=captured.headers,
-            body=captured.body if captured.body else None,
-        )
-    report = analyze(captured)
+        try:
+            captured = runner_run(
+                captured.method,
+                captured.url,
+                headers=captured.headers,
+                body=captured.body if captured.body else None,
+            )
+        except InvalidRequestError as e:
+            # Refused before anything is sent, e.g. a URL holding an unpaired
+            # surrogate; the hosted demo's /api/run answers 400 with this text.
+            raise typer.BadParameter(str(e)) from e
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)
@@ -284,8 +326,11 @@ def from_har(
 ) -> None:
     """Analyze a captured HAR file (no execution)."""
     raw = file.read_text(encoding="utf-8")
-    captured = parse_har(raw)
-    report = analyze(captured)
+    try:
+        captured = parse_har(raw)
+    except UnencodableTextError as e:
+        raise typer.BadParameter(str(e)) from e
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)

@@ -25,6 +25,8 @@ import pytest
 from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedRequest
 from api_medic.core.engine import analyze
+from api_medic.core.models import Finding, Report
+from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.runner import run
 
 _DEPLOY_LAMBDA = Path(__file__).parent.parent.parent / "deploy" / "lambda"
@@ -244,6 +246,329 @@ class TestAnalyzeMalformedJwtPayload:
     )
     def test_gives_the_report_of_a_token_that_is_not_a_jwt(self, payload: bytes) -> None:
         assert _bearer_findings(_jwt(payload)) == _bearer_findings("not-a-jwt")
+
+
+_UNENCODABLE = "input holds text that can't be encoded as JSON"
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate. The expired-token finding copies sub into evidence.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnencodableText:
+    """JSON input can carry an unpaired surrogate (\\ud800), which UTF-8
+    can't encode. A report that would hold one gets a 400 saying so; these
+    used to be a 500."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_analyze_returns_400(self, header: str) -> None:
+        curl = f"curl https://api.example.com/ -H '{header}'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+    def test_run_returns_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(
+                transport=httpx.MockTransport(lambda request: httpx.Response(401)),
+                probe_network=False,
+            )
+            return run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        body = json.dumps(
+            {
+                "method": "GET",
+                "url": "https://api.example.com/",
+                "headers": {"Authorization": f"Bearer {_SURROGATE_SUB_JWT}"},
+            }
+        )
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+    def test_other_serialization_errors_stay_500(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def unserializable(captured: CapturedRequest) -> Report:
+            report = analyze(captured)
+            finding = Finding(
+                id="auth.jwt.expired",
+                severity="critical",
+                title="Expired",
+                explanation="...",
+                evidence={"exp": object()},
+            )
+            return report.model_copy(update={"findings": [finding]})
+
+        monkeypatch.setattr(handler, "analyze", unserializable)
+        body = json.dumps({"kind": "curl", "curl": "curl https://api.example.com/"})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 500
+        assert json.loads(result["body"]) == {"detail": "Internal error."}
+
+
+def _har_response_findings(
+    status: int, headers: dict[str, str], body: str | None = None
+) -> list[dict[str, Any]]:
+    """Findings /api/analyze gives for a HAR whose response has `status`,
+    `headers` and, if given, the JSON-typed body `body`."""
+    response: dict[str, Any] = {
+        "status": status,
+        "statusText": "",
+        "headers": [{"name": k, "value": v} for k, v in headers.items()],
+        "httpVersion": "HTTP/1.1",
+    }
+    if body is not None:
+        response["content"] = {"mimeType": "application/json", "text": body}
+    entry = {
+        "request": {"method": "GET", "url": "https://api.example.com/", "headers": []},
+        "response": response,
+        "timings": {},
+    }
+    har = {"log": {"version": "1.2", "entries": [entry]}}
+    result = handler.lambda_handler(
+        _event("POST", "/api/analyze", json.dumps({"kind": "har", "har": har})), None
+    )
+    assert result["statusCode"] == 200, result["body"]
+    findings: list[dict[str, Any]] = json.loads(result["body"])["findings"]
+    return findings
+
+
+_RATE_LIMIT_HEADERS = {
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1000",
+    "X-RateLimit-Remaining": "5",
+    "X-RateLimit-Reset": "1761399420",
+}
+
+
+class TestAnalyzeUnparseableRateLimitValues:
+    """A rate-limit header no int comes from gives the report of a response
+    without it. These used to be a 400 carrying Python's error message."""
+
+    @pytest.mark.parametrize(
+        "value", ["9" * 4301, "\u00b2"], ids=["4301-digits", "superscript-two"]
+    )
+    @pytest.mark.parametrize("name", list(_RATE_LIMIT_HEADERS))
+    @pytest.mark.parametrize("status", [429, 200])
+    def test_gives_the_findings_without_it(self, status: int, name: str, value: str) -> None:
+        without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
+        with_it = _har_response_findings(status, without | {name: value})
+        assert with_it == _har_response_findings(status, without)
+
+
+# What the parser says about a NUL right after "{", once the body is read as
+# UTF-8.
+_NUL_PARSE_ERROR = "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+
+
+class TestMalformedJsonBodiesPythonCantRead:
+    """JSON-typed bodies get a report: the check reads them as UTF-8 only,
+    parses integers without converting them, and skips nesting past the
+    recursion limit. Bodies json.loads raised on with something other than
+    JSONDecodeError used to be a 400 carrying Python's message or a 500."""
+
+    @pytest.mark.parametrize(
+        "body",
+        ["9" * 4301, "[" * 100_000 + "]" * 100_000],
+        ids=["4301-digit-int", "nested-100000-deep"],
+    )
+    def test_valid_json_past_python_limits_gives_the_findings_of_valid_json(
+        self, body: str
+    ) -> None:
+        with_it = _har_response_findings(200, {"Content-Type": "application/json"}, body)
+        assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
+
+    @pytest.mark.parametrize(
+        ("body", "parse_error"),
+        [
+            ("{\x00}\x00 ", _NUL_PARSE_ERROR),
+            ("{\x00}\x00", _NUL_PARSE_ERROR),
+            ("9" * 4301 + "x", "Extra data: line 1 column 4302 (char 4301)"),
+        ],
+        ids=["odd-length-nul", "utf-16-le-nul", "long-int-then-junk"],
+    )
+    def test_analyze_body_that_fails_to_parse_gets_malformed_json(
+        self, body: str, parse_error: str
+    ) -> None:
+        # A HAR's text reaches the check as UTF-8. NUL bytes used to make
+        # json.loads read it as UTF-16 (the first failing to decode, the
+        # second accepted as "{}"), and int() raised on the long integer
+        # before the parser saw the "x".
+        findings = _har_response_findings(200, {"Content-Type": "application/json"}, body)
+        assert [f["id"] for f in findings] == ["body.malformed_json"]
+        assert findings[0]["evidence"]["parse_error"] == parse_error
+
+    def test_analyze_deep_nesting_is_skipped_even_when_malformed(self) -> None:
+        with_it = _har_response_findings(200, {"Content-Type": "application/json"}, "[" * 100_000)
+        assert with_it == _har_response_findings(200, {"Content-Type": "application/json"}, "[]")
+
+    @pytest.mark.parametrize(
+        "content",
+        [b'{"name": "caf\xe9"}', "{}".encode("utf-16")],
+        ids=["latin-1", "utf-16-with-bom"],
+    )
+    def test_run_body_that_is_not_utf_8_gets_malformed_json(
+        self, monkeypatch: pytest.MonkeyPatch, content: bytes
+    ) -> None:
+        def getaddrinfo(host: str, *a: Any, **kw: Any) -> list[Any]:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        def not_utf_8(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, headers={"Content-Type": "application/json"}, content=content
+            )
+
+        def run_offline(**kwargs: Any) -> CapturedRequest:
+            kwargs.update(transport=httpx.MockTransport(not_utf_8), probe_network=False)
+            return run(**kwargs)
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(handler, "run_request", run_offline)
+        body = json.dumps({"method": "GET", "url": "https://api.example.com/"})
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+        assert result["statusCode"] == 200, result["body"]
+        findings = json.loads(result["body"])["findings"]
+        assert "body.malformed_json" in [f["id"] for f in findings]
+
+
+class TestAnalyzeHarParseErrorQuotingASurrogate:
+    """parse_har's error quotes the entry's URL, unpaired surrogate and all;
+    json.dumps escapes it, so the handler sends that message. api-medic
+    serve can't render it and answers with the unencodable-text message."""
+
+    @pytest.mark.parametrize(
+        ("request_", "detail"),
+        [
+            (
+                {"url": "https://x.com/\ud800"},
+                "HAR entry[0] (https://x.com/\ud800): request.method is missing.",
+            ),
+            (
+                {"method": 1, "url": "https://x.com/\ud800"},
+                "HAR entry[0] (https://x.com/\ud800): request.method must be a string, got int.",
+            ),
+        ],
+        ids=["no-method", "method-int"],
+    )
+    def test_returns_400_with_the_parse_error(self, request_: dict[str, Any], detail: str) -> None:
+        payload = {"kind": "har", "har": {"log": {"entries": [{"request": request_}]}}}
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": detail}
+
+
+class TestAnalyzeRejectsInputThatCantMakeAReport:
+    """analyze() can't make a Report of a URL or method holding an unpaired
+    surrogate (RequestSummary can't validate it); the handler answers 400
+    with the error, which api-medic serve now matches."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {
+                "kind": "har",
+                "har": {
+                    "log": {
+                        "entries": [{"request": {"method": "GET", "url": "https://x.com/\ud800"}}]
+                    }
+                },
+            },
+            {
+                "kind": "har",
+                "har": {
+                    "log": {
+                        "entries": [{"request": {"method": "G\ud800T", "url": "https://x.com/"}}]
+                    }
+                },
+            },
+            {"kind": "curl", "curl": "curl 'https://x.com/\ud800'"},
+        ],
+        ids=["har-url", "har-method", "curl-url"],
+    )
+    def test_returns_400_with_the_error(self, payload: dict[str, Any]) -> None:
+        if payload["kind"] == "har":
+            captured = parse_har(payload["har"])
+        else:
+            captured = parse_curl(payload["curl"])
+        with pytest.raises(ValueError) as e:
+            analyze(captured)
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": str(e.value)}
+
+
+# HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
+# encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
+# message was the 400's detail.
+_UNENCODABLE_BODY_TEXT: list[dict[str, Any]] = [
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "method": "POST",
+                            "url": "https://api.example.com/",
+                            "postData": {"mimeType": "text/plain", "text": "a\ud800"},
+                        }
+                    }
+                ]
+            }
+        },
+    },
+    {
+        "kind": "har",
+        "har": {
+            "log": {
+                "entries": [
+                    {
+                        "request": {"method": "GET", "url": "https://api.example.com/"},
+                        "response": {"status": 200, "content": {"text": "\ud800"}},
+                    }
+                ]
+            }
+        },
+    },
+    {"kind": "curl", "curl": "curl https://api.example.com/ -d 'a\ud800'"},
+]
+_UNENCODABLE_BODY_TEXT_IDS = ["har-post-data", "har-response-content", "curl-data"]
+
+
+class TestAnalyzeUnencodableBodyText:
+    @pytest.mark.parametrize("payload", _UNENCODABLE_BODY_TEXT, ids=_UNENCODABLE_BODY_TEXT_IDS)
+    def test_returns_400(self, payload: dict[str, Any]) -> None:
+        result = handler.lambda_handler(_event("POST", "/api/analyze", json.dumps(payload)), None)
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"]) == {"detail": _UNENCODABLE}
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+class TestAnalyzeApproachingRatioTooLargeForAFloat:
+    """These used to be a 500 "Internal error."."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_gives_the_findings_of_a_ratio_of_one(self, remaining: str) -> None:
+        with_it = _har_response_findings(
+            200, {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": remaining}
+        )
+        assert with_it == _har_response_findings(
+            200, {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": "1"}
+        )
 
 
 class TestAnalyzeRouting:

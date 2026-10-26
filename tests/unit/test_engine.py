@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
+
+import pytest
+from pydantic_core import PydanticSerializationError
 
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
-from api_medic.core.models import TimingBreakdown
+from api_medic.core.models import TimingBreakdown, is_unencodable_text_error
+from api_medic.core.parser import parse_curl
 
 
 def _live(**overrides: Any) -> CapturedRequest:
@@ -73,3 +78,116 @@ class TestAnalyze:
         # No checks fire on a healthy 200/JSON response yet (jwt.expired needs a JWT).
         report = analyze(_live())
         assert report.findings == []
+
+
+def _jwt(payload: bytes) -> str:
+    b64 = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    return f"eyJhbGciOiJIUzI1NiJ9.{b64}.sig"
+
+
+# Payload {"sub":"\ud800","exp":0} as written: JSON's escape for an
+# unpaired surrogate, which json.loads decodes as one.
+_SURROGATE_SUB_JWT = _jwt(b'{"sub":"\\ud800","exp":0}')
+
+
+class TestUnpairedSurrogate:
+    """Input can carry an unpaired surrogate into the Report: a decoded JWT's
+    `sub` copied into evidence, or any header value."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [f"Authorization: Bearer {_SURROGATE_SUB_JWT}", "X-Note: a\ud800b"],
+        ids=["jwt-sub", "header-value"],
+    )
+    def test_report_cannot_be_encoded_as_json(self, header: str) -> None:
+        report = analyze(parse_curl(f"curl https://api.example.com/ -H '{header}'"))
+        with pytest.raises(PydanticSerializationError) as e:
+            report.model_dump_json()
+        assert is_unencodable_text_error(e.value)
+
+
+_RATE_LIMIT_HEADERS = {
+    "Retry-After": "60",
+    "X-RateLimit-Limit": "1000",
+    "X-RateLimit-Remaining": "5",
+    "X-RateLimit-Reset": "1761399420",
+}
+
+
+class TestUnparseableRateLimitValues:
+    """A rate-limit header no int comes from gives the findings of a
+    response without it. These used to make analyze() raise ValueError."""
+
+    @staticmethod
+    def _findings(status: int, headers: dict[str, str]) -> list[Any]:
+        response = CapturedResponse(
+            status_code=status, status_text="", headers=headers, body=b"", protocol="HTTP/2"
+        )
+        return analyze(_live(response=response)).findings
+
+    @pytest.mark.parametrize(
+        "value", ["9" * 4301, "\u00b2"], ids=["4301-digits", "superscript-two"]
+    )
+    @pytest.mark.parametrize("name", list(_RATE_LIMIT_HEADERS))
+    @pytest.mark.parametrize("status", [429, 200])
+    def test_findings_match_a_response_without_it(self, status: int, name: str, value: str) -> None:
+        without = {k: v for k, v in _RATE_LIMIT_HEADERS.items() if k != name}
+        assert self._findings(status, without | {name: value}) == self._findings(status, without)
+
+
+class TestMalformedJsonBodiesPythonCantRead:
+    """JSON-typed bodies are read as UTF-8 only. Bodies json.loads raised on
+    with something other than JSONDecodeError used to make analyze() raise."""
+
+    @staticmethod
+    def _findings(body: bytes) -> list[Any]:
+        response = CapturedResponse(
+            status_code=200,
+            status_text="OK",
+            headers={"Content-Type": "application/json"},
+            body=body,
+            protocol="HTTP/2",
+        )
+        return analyze(_live(response=response)).findings
+
+    @pytest.mark.parametrize(
+        "body",
+        [b'{"name": "caf\xe9"}', "{}".encode("utf-16"), b"{\x00}\x00", b"9" * 4301 + b"x"],
+        ids=["latin-1", "utf-16-with-bom", "utf-16-le-nul", "long-int-then-junk"],
+    )
+    def test_gets_malformed_json(self, body: bytes) -> None:
+        assert [f.id for f in self._findings(body)] == ["body.malformed_json"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [b"9" * 4301, b"[" * 100_000 + b"]" * 100_000],
+        ids=["4301-digit-int", "nested-100000-deep"],
+    )
+    def test_valid_json_past_python_limits_gives_the_findings_of_valid_json(
+        self, body: bytes
+    ) -> None:
+        assert self._findings(body) == self._findings(b"[]")
+
+    def test_deep_nesting_is_skipped_even_when_malformed(self) -> None:
+        assert self._findings(b"[" * 100_000) == self._findings(b"[]")
+
+
+# Remaining with 309+ more digits than Limit: remaining / limit is too large
+# for a float and raised OverflowError, which nothing caught.
+_HUGE_REMAINING = ["1" + "0" * 400, "9" * 4300]
+_HUGE_REMAINING_IDS = ["1e400", "4300-nines"]
+
+
+class TestApproachingRatioTooLargeForAFloat:
+    """These used to make analyze() raise OverflowError."""
+
+    @pytest.mark.parametrize("remaining", _HUGE_REMAINING, ids=_HUGE_REMAINING_IDS)
+    def test_findings_match_a_ratio_of_one(self, remaining: str) -> None:
+        def findings(remaining: str) -> list[Any]:
+            headers = {"X-RateLimit-Limit": "1", "X-RateLimit-Remaining": remaining}
+            response = CapturedResponse(
+                status_code=200, status_text="", headers=headers, body=b"", protocol="HTTP/2"
+            )
+            return analyze(_live(response=response)).findings
+
+        assert findings(remaining) == findings("1")

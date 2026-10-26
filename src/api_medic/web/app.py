@@ -14,13 +14,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BaseModel, Field
+from pydantic_core import PydanticSerializationError
 
 from .. import __version__
 from ..core.engine import analyze
-from ..core.models import Report
+from ..core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
 from ..core.parser import parse_curl, parse_har
 from ..core.runner import run as run_request
 from ..core.runner_safety import InvalidRequestError
@@ -36,6 +38,20 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(PydanticSerializationError)
+@app.exception_handler(UnicodeEncodeError)
+async def _unencodable_report(
+    request: Request, exc: PydanticSerializationError | UnicodeEncodeError
+) -> JSONResponse:
+    # FastAPI serializes the returned Report, and an unpaired surrogate from
+    # the input fails that: in pydantic's dump_json (PydanticSerializationError)
+    # or, in older FastAPI, in JSONResponse's encode (UnicodeEncodeError).
+    # Anything else is a bug and stays a 500.
+    if not is_unencodable_text_error(exc):
+        raise exc
+    return JSONResponse(status_code=400, content={"detail": UNENCODABLE_TEXT})
 
 
 def _non_empty(value: str) -> str:
@@ -99,6 +115,8 @@ async def analyze_endpoint(body: AnalyzeRequest) -> Report:
             captured = parse_har(body.har)
         else:
             captured = parse_curl(body.curl)
+        # analyze() raises ValueError for input it can't make a Report of,
+        # e.g. a URL holding an unpaired surrogate.
+        return analyze(captured)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return analyze(captured)
