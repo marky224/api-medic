@@ -30,9 +30,6 @@ Lambda. DNS is managed by Route 53.
    the `demo` environment (step 5), and only for a job in
    `deploy-demo.yml` on `main`: its `job_workflow_ref` condition is
    `marky224/api-medic/.github/workflows/deploy-demo.yml@refs/heads/main`.
-   Until a follow-up drops it, it also allows
-   `repo:marky224/api-medic:ref:refs/heads/main`, the deploy job's
-   subject before it ran in the environment.
    Its trust and inline policies live in `deploy/iam/` and are applied
    by hand, not by CI; apply the trust policy only after `demo` exists
    with its `main`-only rule. The inline policy's role statements cover only
@@ -57,9 +54,11 @@ Lambda. DNS is managed by Route 53.
    doesn't exist creates it with no rules. In repo Settings →
    Environments → New environment, name it `demo`. Under Deployment
    branches and tags, choose Selected branches and tags and add one
-   rule: Ref type Branch, name pattern `main`. Clear "Allow
-   administrators to bypass configured protection rules". Add no
-   required reviewers, wait timer, secrets or variables.
+   rule: Ref type Branch, name pattern `main`. Don't choose Protected
+   branches only: if no branch in the repo has protection rules, that
+   option lets every branch deploy. Clear "Allow administrators to
+   bypass configured protection rules". Add no required reviewers, wait
+   timer, secrets or variables, then click Save protection rules.
 
 ## Deploying manually (one-shot)
 
@@ -205,19 +204,20 @@ instead.
 The deploy job runs in the GitHub environment `demo`; the build job runs
 in none. A job in an environment gets an OIDC token whose subject names
 the environment, `repo:marky224/api-medic:environment:demo`, instead of
-the branch, and the role's trust policy accepts that subject. GitHub
-checks the environment's one rule, branch `main`, against the run's ref
-before the job starts, so a job that names `demo` on any other branch or
-tag fails before its first step. The trust policy also pins the workflow
-file: its `job_workflow_ref` condition only matches a job in
+the branch, and that is the only subject the role's trust policy
+accepts. Any other job gets a branch, tag, `pull_request` or other
+environment's subject, which the policy rejects. GitHub checks the
+environment's one rule, branch `main`, against the run's ref before the
+job starts, so a job that names `demo` on any other branch or tag fails
+before its first step. The trust policy also pins the workflow file: its
+`job_workflow_ref` condition only matches a job in
 `.github/workflows/deploy-demo.yml` running on `main`, so a job in
 another workflow, or in this one on another branch, can't assume the
 role whatever its subject. Renaming or moving `deploy-demo.yml` means
-changing that condition first. Until a follow-up drops it, the trust policy
-also accepts `repo:marky224/api-medic:ref:refs/heads/main`, the subject
-the deploy job had before it ran in the environment. `demo` has to exist
-with its `main`-only rule before the trust policy is applied (see the
-prerequisites above).
+changing that condition first. `demo` has to exist with its `main`-only
+rule before the trust policy is applied (see the prerequisites above).
+So only a job on `main` that names `demo` can assume the role, and this
+workflow's deploy job is the only one that does.
 
 The environment has no required reviewers, so every merge to `main`
 still deploys without a click; adding them later is a settings change

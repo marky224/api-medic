@@ -138,8 +138,8 @@ jobs:
     # In the demo environment, which only main can deploy to, so its OIDC
     # token's subject is repo:marky224/api-medic:environment:demo rather
     # than the branch. The deploy role's trust policy
-    # (deploy/iam/trust-policy.json) accepts that subject. See
-    # deploy/README.md.
+    # (deploy/iam/trust-policy.json) accepts only that subject, so no job
+    # outside the environment can assume the role. See deploy/README.md.
     environment: demo
     # The only job that can request an OIDC token. Nothing in it installs
     # or runs package code: no npm, pip, setup-node or setup-python, and
