@@ -643,8 +643,8 @@ class TestFromCurl:
     @pytest.mark.parametrize(
         "curl",
         [
-            # One character over parser.MAX_CURL_CHARS (100,000).
-            "curl https://api.example.com/ -d '" + "a" * 99_966 + "'",
+            # One character over parser.MAX_CURL_CHARS (50,000).
+            "curl https://api.example.com/ -d '" + "a" * 49_966 + "'",
             # One argument over parser.MAX_CURL_ARGS (1,000).
             "curl https://api.example.com/" + " -k" * 999,
             # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (4,096).

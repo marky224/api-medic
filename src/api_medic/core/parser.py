@@ -51,11 +51,14 @@ _HTTP_VERSION_NORMALIZATIONS = {
 #
 # A command that passes these checks is read by argparse twice: once to find
 # its Cookie header values, then in uncurl. Of the accepted commands measured
-# locally through the Lambda handler, the slowest were one 100,000-character
-# -kkk...kHX: token ending in an emoji, 3.1 s, and that token shortened to
-# carry a 4,096-character ===... Cookie value ending in an emoji, 3.3 s. The
-# emoji makes Python store the string at 4 bytes a character.
-MAX_CURL_CHARS = 100_000
+# locally through the Lambda handler, the slowest were one 50,000-character
+# -kkk...kHX: token ending in an emoji, 0.8 s, and that token shortened to
+# carry a 4,096-character ===... Cookie value ending in an emoji, 1.2 s. The
+# emoji makes Python store the string at 4 bytes a character. Under a 14.5%
+# CPU quota, a local stand-in for the CPU share of the demo's 256 MB Lambda,
+# they took 8.3 s and 11.5 s, and the token at 100,000 characters 26.9 s,
+# which is why MAX_CURL_CHARS is 50,000.
+MAX_CURL_CHARS = 50_000
 MAX_CURL_ARGS = 1_000
 MAX_CURL_COOKIE_CHARS = 4_096
 

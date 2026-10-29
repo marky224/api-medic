@@ -244,9 +244,9 @@ class TestAnalyzeEndpoint:
         assert report["response"] is None
 
     def test_curl_over_the_limit_returns_400(self, client: TestClient) -> None:
-        # One character over parser.MAX_CURL_CHARS (100,000).
-        curl = "curl https://api.example.com/ -d '" + "a" * 99_966 + "'"
-        assert len(curl) == 100_001
+        # One character over parser.MAX_CURL_CHARS (50,000).
+        curl = "curl https://api.example.com/ -d '" + "a" * 49_966 + "'"
+        assert len(curl) == 50_001
         started = time.perf_counter()
         r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
         elapsed = time.perf_counter() - started

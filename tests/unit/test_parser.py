@@ -379,7 +379,7 @@ class TestParseHar:
 
 
 # Mirror parser.MAX_CURL_CHARS, MAX_CURL_ARGS and MAX_CURL_COOKIE_CHARS.
-_MAX_CURL_CHARS = 100_000
+_MAX_CURL_CHARS = 50_000
 _MAX_CURL_ARGS = 1_000
 _MAX_CURL_COOKIE_CHARS = 4_096
 _CURL_HEAD = "curl https://api.example.com/ -H 'Cookie: session=SECRET-7f3a' -d '"
@@ -486,7 +486,7 @@ class TestParseCurl:
         with pytest.raises(ValueError) as e:
             parse_curl(_curl_of_length(_MAX_CURL_CHARS + 1))
         # Names the limit and quotes none of the command.
-        assert str(e.value) == "Curl command is too long (limit: 100,000 characters)."
+        assert str(e.value) == "Curl command is too long (limit: 50,000 characters)."
 
     def test_command_at_the_argument_limit_parses_quickly(self) -> None:
         started = time.perf_counter()
