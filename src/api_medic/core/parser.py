@@ -15,6 +15,7 @@ import contextlib
 import io
 import json
 import shlex
+from collections.abc import Iterator
 from typing import Any
 
 import uncurl  # type: ignore[import-untyped]
@@ -39,15 +40,16 @@ _HTTP_VERSION_NORMALIZATIONS = {
     "h3": "HTTP/3",
 }
 
-# uncurl splits the command with shlex and reads the arguments with argparse.
-# shlex slows down with the square of a token's length: one token of
-# 1,000,000 characters took over 10 seconds locally. argparse slows down with
-# the square of the number of options: 33,323 -k flags, 100,000 characters,
-# took 21 seconds. The hosted demo's Lambda, with its 30-second timeout, runs
-# slower. Under both limits the slowest command found, one 100,000-character
-# -kkk... token, took 0.6 s locally.
+# uncurl splits the command with shlex, reads the arguments with argparse and
+# reads each Cookie header value with http.cookies.SimpleCookie. Each slows
+# down with a square: shlex with a token's length, argparse with the number
+# of options, SimpleCookie with the value's length. Measured locally, one
+# 1,000,000-character token took over 10 seconds, 33,323 -k flags (100,000
+# characters) 21 seconds and a 40,000-character a=a=... Cookie value 18
+# seconds. The hosted demo's Lambda, with its 30-second timeout, runs slower.
 MAX_CURL_CHARS = 100_000
 MAX_CURL_ARGS = 1_000
+MAX_CURL_COOKIE_CHARS = 8_192
 
 
 def _normalize_http_version(raw: Any) -> str:
@@ -164,17 +166,16 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
-    try:
-        # argparse prints why it rejected the command to stderr, quoting
-        # arguments it didn't recognize (cookie values, bodies). Lambda
-        # sends stderr to CloudWatch, where request data must not go.
-        with contextlib.redirect_stderr(io.StringIO()):
-            ctx = uncurl.parse_context(curl_str)
-    except SystemExit as e:
-        # uncurl uses argparse, which calls sys.exit() on parse failure.
-        raise ValueError("Could not parse curl command (argparse rejected it).") from e
-    except Exception as e:
-        raise ValueError(f"Could not parse curl command: {e}") from e
+    with _uncurl_errors():
+        # The parser uncurl.parse_context reads the arguments with.
+        header_values = uncurl.api.parser.parse_args(args).header
+    if _cookie_chars(header_values) > MAX_CURL_COOKIE_CHARS:
+        raise ValueError(
+            "Curl command's Cookie header is too long "
+            f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
+        )
+    with _uncurl_errors():
+        ctx = uncurl.parse_context(curl_str)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -189,6 +190,34 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         timing=TimingBreakdown(),
         source="curl",
     )
+
+
+@contextlib.contextmanager
+def _uncurl_errors() -> Iterator[None]:
+    """uncurl's and its argparse's errors as ValueError."""
+    try:
+        # argparse prints why it rejected the command to stderr, quoting
+        # arguments it didn't recognize (cookie values, bodies). Lambda
+        # sends stderr to CloudWatch, where request data must not go.
+        with contextlib.redirect_stderr(io.StringIO()):
+            yield
+    except SystemExit as e:
+        # uncurl uses argparse, which calls sys.exit() on parse failure.
+        raise ValueError("Could not parse curl command (argparse rejected it).") from e
+    except Exception as e:
+        raise ValueError(f"Could not parse curl command: {e}") from e
+
+
+def _cookie_chars(headers: list[str]) -> int:
+    """Characters in the values of the headers uncurl reads with
+    SimpleCookie: those whose key, lowercased and stripped of "$", is
+    "cookie"."""
+    total = 0
+    for header in headers:
+        key, _, value = header.partition(":")
+        if key.lower().strip("$") == "cookie":
+            total += len(value)
+    return total
 
 
 def _utf8(text: str) -> bytes:

@@ -224,6 +224,19 @@ class TestAnalyzeCurl:
             parse_curl(curl)
         assert json.loads(result["body"])["detail"] == str(e.value)
 
+    def test_curl_cookie_header_over_the_limit_400(self) -> None:
+        """A Cookie header value over parser.MAX_CURL_COOKIE_CHARS (8,192) is
+        refused before uncurl reads it with SimpleCookie, which slows down with
+        the square of its length; 40,000 characters took 18 seconds."""
+        curl = "curl https://api.example.com/ -H 'Cookie: " + "=" * 8_191 + "\"'"
+        assert len(shlex.split(curl)[3]) == len("Cookie:") + 8_193
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert json.loads(result["body"])["detail"] == str(e.value)
+
 
 def _jwt(payload: bytes) -> str:
     """A JWT whose payload segment is `payload` exactly."""

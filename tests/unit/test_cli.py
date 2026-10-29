@@ -647,10 +647,12 @@ class TestFromCurl:
             "curl https://api.example.com/ -d '" + "a" * 99_966 + "'",
             # One argument over parser.MAX_CURL_ARGS (1,000).
             "curl https://api.example.com/" + " -k" * 999,
+            # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (8,192).
+            "curl https://api.example.com/ -H 'Cookie: " + "=" * 8_191 + "\"'",
             "   ",
             "definitely not a curl command",
         ],
-        ids=["over-the-limit", "too-many-args", "empty", "unparseable"],
+        ids=["over-the-limit", "too-many-args", "cookie-too-long", "empty", "unparseable"],
     )
     def test_command_parse_curl_rejects_exits_2(self, runner, fake_runner, curl):
         # The empty and unparseable ones used to print a traceback and exit 1.

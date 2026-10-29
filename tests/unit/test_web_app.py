@@ -266,6 +266,16 @@ class TestAnalyzeEndpoint:
             parse_curl(curl)
         assert r.json()["detail"] == str(e.value)
 
+    def test_curl_cookie_header_over_the_limit_returns_400(self, client: TestClient) -> None:
+        # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (8,192).
+        curl = "curl https://api.example.com/ -H 'Cookie: " + "=" * 8_191 + "\"'"
+        assert len(shlex.split(curl)[3]) == len("Cookie:") + 8_193
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        assert r.status_code == 400
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert r.json()["detail"] == str(e.value)
+
     def test_invalid_har_returns_400(self, client):
         r = client.post("/api/analyze", json={"kind": "har", "har": {"foo": "bar"}})
         assert r.status_code == 400
