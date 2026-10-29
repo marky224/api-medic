@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import shlex
 import socket
 import ssl
 import sys
@@ -206,6 +207,19 @@ class TestAnalyzeCurl:
         elapsed = time.perf_counter() - started
         assert result["statusCode"] == 400
         assert elapsed < 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert json.loads(result["body"])["detail"] == str(e.value)
+
+    def test_curl_over_the_argument_limit_400(self) -> None:
+        """A command over parser.MAX_CURL_ARGS (1,000) is refused before
+        uncurl's argparse reads it, which slows down with the square of the
+        number of options; 100,000 characters of -k flags took 21 seconds."""
+        curl = "curl https://api.example.com/" + " -k" * 999
+        assert len(shlex.split(curl)) == 1_001
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 400
         with pytest.raises(ValueError) as e:
             parse_curl(curl)
         assert json.loads(result["body"])["detail"] == str(e.value)

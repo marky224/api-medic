@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import pytest
@@ -375,14 +376,20 @@ class TestParseHar:
         assert cap.response.protocol == "QUIC-experimental"
 
 
-# Mirrors parser.MAX_CURL_CHARS.
+# Mirror parser.MAX_CURL_CHARS and parser.MAX_CURL_ARGS.
 _MAX_CURL_CHARS = 100_000
+_MAX_CURL_ARGS = 1_000
 _CURL_HEAD = "curl https://api.example.com/ -H 'Cookie: session=SECRET-7f3a' -d '"
 
 
 def _curl_of_length(n: int) -> str:
     """A curl command exactly `n` characters long, padded with -d data."""
     return _CURL_HEAD + "a" * (n - len(_CURL_HEAD) - 1) + "'"
+
+
+def _curl_of_args(n: int) -> str:
+    """A curl command of exactly `n` arguments: curl, the URL and -k flags."""
+    return "curl https://api.example.com/" + " -k" * (n - 2)
 
 
 class TestParseCurl:
@@ -442,6 +449,32 @@ class TestParseCurl:
             parse_curl(_curl_of_length(_MAX_CURL_CHARS + 1))
         # Names the limit and quotes none of the command.
         assert str(e.value) == "Curl command is too long (limit: 100,000 characters)."
+
+    def test_command_at_the_argument_limit_parses_quickly(self) -> None:
+        started = time.perf_counter()
+        cap = parse_curl(_curl_of_args(_MAX_CURL_ARGS))
+        assert time.perf_counter() - started < 1
+        assert cap.url == "https://api.example.com/"
+
+    def test_command_over_the_argument_limit_raises_before_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # argparse, which uncurl reads the arguments with, slows down with
+        # the square of the number of options: 33,323 -k flags, 100,000
+        # characters, took 21 seconds.
+        def parse_context(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("parsed the command")
+
+        monkeypatch.setattr(uncurl, "parse_context", parse_context)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_of_args(_MAX_CURL_ARGS + 1))
+        # Names the limit and quotes none of the command.
+        assert str(e.value) == "Curl command has too many arguments (limit: 1,000)."
+
+    def test_unclosed_quote_gives_the_parse_error(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -d 'open")
+        assert str(e.value) == "Could not parse curl command: No closing quotation"
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shlex
 from typing import Any
 
 import uncurl  # type: ignore[import-untyped]
@@ -38,10 +39,15 @@ _HTTP_VERSION_NORMALIZATIONS = {
     "h3": "HTTP/3",
 }
 
-# uncurl splits the command with shlex, which slows down quadratically:
-# 1,000,000 characters took over 10 seconds locally, and the hosted demo's
-# Lambda, with its 30-second timeout, runs slower. 100,000 take about 0.1 s.
+# uncurl splits the command with shlex and reads the arguments with argparse.
+# shlex slows down with the square of a token's length: one token of
+# 1,000,000 characters took over 10 seconds locally. argparse slows down with
+# the square of the number of options: 33,323 -k flags, 100,000 characters,
+# took 21 seconds. The hosted demo's Lambda, with its 30-second timeout, runs
+# slower. Under both limits the slowest command found, one 100,000-character
+# -kkk... token, took 0.6 s locally.
 MAX_CURL_CHARS = 100_000
+MAX_CURL_ARGS = 1_000
 
 
 def _normalize_http_version(raw: Any) -> str:
@@ -151,6 +157,13 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
     if not curl_str.strip():
         raise ValueError("Empty curl command.")
+    # uncurl splits the command again, the same way.
+    try:
+        args = shlex.split(curl_str)
+    except ValueError as e:
+        raise ValueError(f"Could not parse curl command: {e}") from e
+    if len(args) > MAX_CURL_ARGS:
+        raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
     try:
         # argparse prints why it rejected the command to stderr, quoting
         # arguments it didn't recognize (cookie values, bodies). Lambda
