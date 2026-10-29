@@ -225,11 +225,12 @@ class TestAnalyzeCurl:
         assert json.loads(result["body"])["detail"] == str(e.value)
 
     def test_curl_cookie_header_over_the_limit_400(self) -> None:
-        """A Cookie header value over parser.MAX_CURL_COOKIE_CHARS (8,192) is
+        """A Cookie header value over parser.MAX_CURL_COOKIE_CHARS (4,096) is
         refused before uncurl reads it with SimpleCookie, which slows down with
-        the square of its length; 40,000 characters took 18 seconds."""
-        curl = "curl https://api.example.com/ -H 'Cookie: " + "=" * 8_191 + "\"'"
-        assert len(shlex.split(curl)[3]) == len("Cookie:") + 8_193
+        the square of its length; a 40,000-character command whose Cookie value
+        is a=a=..." took 18 seconds locally."""
+        curl = "curl https://api.example.com/ -H 'Cookie:" + "=" * 4_096 + "\U0001f600'"
+        assert len(shlex.split(curl)[3]) == len("Cookie:") + 4_097
         body = json.dumps({"kind": "curl", "curl": curl})
         result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
         assert result["statusCode"] == 400

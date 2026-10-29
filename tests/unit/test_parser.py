@@ -381,7 +381,7 @@ class TestParseHar:
 # Mirror parser.MAX_CURL_CHARS, MAX_CURL_ARGS and MAX_CURL_COOKIE_CHARS.
 _MAX_CURL_CHARS = 100_000
 _MAX_CURL_ARGS = 1_000
-_MAX_CURL_COOKIE_CHARS = 8_192
+_MAX_CURL_COOKIE_CHARS = 4_096
 _CURL_HEAD = "curl https://api.example.com/ -H 'Cookie: session=SECRET-7f3a' -d '"
 
 
@@ -395,11 +395,12 @@ def _curl_of_args(n: int) -> str:
     return "curl https://api.example.com/" + " -k" * (n - 2)
 
 
-def _cookie_value(n: int, unit: str = "=") -> str:
+def _cookie_value(n: int) -> str:
     """A Cookie header value exactly `n` characters long, as uncurl splits it
-    from the key: `unit` repeated, then '"'. Of the values tried, SimpleCookie
-    is slowest on "=" repeated."""
-    return (" " + unit * n)[: n - 1] + '"'
+    from the key: "=" repeated, then an emoji, which makes Python store the
+    string at 4 bytes a character. SimpleCookie is slowest on it of the values
+    tried."""
+    return "=" * (n - 1) + "\U0001f600"
 
 
 # The ways argparse reads a -H value, each given that header's value.
@@ -407,12 +408,22 @@ _COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
     "-H": lambda v: ["-H", "Cookie:" + v],
     "-H<value>": lambda v: ["-HCookie:" + v],
     "-kH<value>": lambda v: ["-kHCookie:" + v],
+    "-H=<value>": lambda v: ["-H=Cookie:" + v],
+    "-kH=<value>": lambda v: ["-kH=Cookie:" + v],
     "--header": lambda v: ["--header", "Cookie:" + v],
     "--header=<value>": lambda v: ["--header=Cookie:" + v],
     "--hea": lambda v: ["--hea", "Cookie:" + v],
+    "--hea=<value>": lambda v: ["--hea=Cookie:" + v],
     "$COOKIE$-key": lambda v: ["-H", "$COOKIE$:" + v],
+    "value-starting-with-colon": lambda v: ["-H", "Cookie::" + v[1:]],
     "two-headers": lambda v: ["-H", "Cookie:" + v[:100], "-H", "cookie:" + v[100:]],
 }
+
+# Whether this Python's argparse reads -kH=<value> as <value>, as the local
+# Python 3.12's does.
+_ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS = uncurl.api.parser.parse_args(
+    ["curl", "https://api.example.com/", "-kH=a:b"]
+).header == ["a:b"]
 
 
 def _curl_with_cookie(value: str, form: str = "-H") -> str:
@@ -499,8 +510,11 @@ class TestParseCurl:
         assert str(e.value) == "Curl command has too many arguments (limit: 1,000)."
 
     def test_cookie_header_at_the_limit_parses(self) -> None:
-        # A value SimpleCookie reads quickly.
-        cap = parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS, "a=b; ")))
+        # The slowest value found takes about half a second locally; the
+        # bound leaves room for a slower CI runner.
+        started = time.perf_counter()
+        cap = parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS)))
+        assert time.perf_counter() - started < 3
         assert cap.url == "https://api.example.com/"
 
     @pytest.mark.parametrize("form", list(_COOKIE_HEADER_FORMS))
@@ -508,8 +522,11 @@ class TestParseCurl:
         self, monkeypatch: pytest.MonkeyPatch, form: str
     ) -> None:
         # uncurl reads each Cookie header value with http.cookies.SimpleCookie,
-        # which slows down with the square of its length: 40,000 characters
-        # of a=a=... took 18 seconds.
+        # which slows down with the square of its length: a 40,000-character
+        # command whose Cookie value is a=a=..." took 18 seconds locally.
+        if form == "-kH=<value>" and not _ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS:
+            pytest.skip("this Python's argparse doesn't read -kH=<value> as <value>")
+
         def parse_context(*a: Any, **kw: Any) -> Any:
             raise AssertionError("parsed the command")
 
@@ -518,13 +535,13 @@ class TestParseCurl:
             parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS + 1), form))
         # Names the limit and quotes none of the command.
         assert str(e.value) == (
-            "Curl command's Cookie header is too long (limit: 8,192 characters)."
+            "Curl command's Cookie header is too long (limit: 4,096 characters)."
         )
 
     def test_other_header_over_the_cookie_limit_parses(self) -> None:
         value = _cookie_value(_MAX_CURL_COOKIE_CHARS + 1)
         curl = shlex.join(["curl", "https://api.example.com/", "-H", "X-Cookie:" + value])
-        assert parse_curl(curl).headers["X-Cookie"] == value.strip()
+        assert parse_curl(curl).headers["X-Cookie"] == value
 
     def test_cookie_check_reads_the_arguments_with_uncurls_parser(self) -> None:
         assert uncurl.parse_context.__globals__["parser"] is uncurl.api.parser

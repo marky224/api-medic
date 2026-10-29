@@ -45,11 +45,19 @@ _HTTP_VERSION_NORMALIZATIONS = {
 # down with a square: shlex with a token's length, argparse with the number
 # of options, SimpleCookie with the value's length. Measured locally, one
 # 1,000,000-character token took over 10 seconds, 33,323 -k flags (100,000
-# characters) 21 seconds and a 40,000-character a=a=... Cookie value 18
-# seconds. The hosted demo's Lambda, with its 30-second timeout, runs slower.
+# characters) 21 seconds and a 40,000-character command whose Cookie value is
+# a=a=..." 18 seconds. The hosted demo's Lambda, with its 30-second timeout,
+# runs slower.
+#
+# A command that passes these checks is read by argparse twice: once to find
+# its Cookie header values, then in uncurl. Of the accepted commands measured
+# locally through the Lambda handler, the slowest were one 100,000-character
+# -kkk...kHX: token ending in an emoji, 3.1 s, and that token shortened to
+# carry a 4,096-character ===... Cookie value ending in an emoji, 3.3 s. The
+# emoji makes Python store the string at 4 bytes a character.
 MAX_CURL_CHARS = 100_000
 MAX_CURL_ARGS = 1_000
-MAX_CURL_COOKIE_CHARS = 8_192
+MAX_CURL_COOKIE_CHARS = 4_096
 
 
 def _normalize_http_version(raw: Any) -> str:

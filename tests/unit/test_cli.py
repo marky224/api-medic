@@ -647,8 +647,8 @@ class TestFromCurl:
             "curl https://api.example.com/ -d '" + "a" * 99_966 + "'",
             # One argument over parser.MAX_CURL_ARGS (1,000).
             "curl https://api.example.com/" + " -k" * 999,
-            # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (8,192).
-            "curl https://api.example.com/ -H 'Cookie: " + "=" * 8_191 + "\"'",
+            # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (4,096).
+            "curl https://api.example.com/ -H 'Cookie:" + "=" * 4_096 + "\U0001f600'",
             "   ",
             "definitely not a curl command",
         ],
