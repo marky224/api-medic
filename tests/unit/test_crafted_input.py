@@ -200,7 +200,8 @@ CASES: list[Case] = [
         Body("/api/analyze", '{"kind": "x\\ud800"}'),
         "body",
         "Unknown kind: 'x\\ud800'",
-        # FastAPI's 422 no longer quotes the input.
+        # The 422 leaves out the input; its msg still quotes the kind, which
+        # pydantic writes with replacement characters.
         {"serve": VALIDATION},
     ),
     Case(
@@ -213,9 +214,9 @@ CASES: list[Case] = [
     ),
     # Invalid values nested 1,000 and 3,000 deep: FastAPI's 422 echoed the
     # value and recursed into it, a 500 from api-medic serve. Python 3.12's
-    # json.loads reads about 10,000 levels; 3.10's and 3.11's stop at about
-    # 960, so at these depths both servers answer their 400 for a body they
-    # can't read there.
+    # json.loads reads about 10,000 levels (3,000 on Windows); 3.10's and
+    # 3.11's stop at about 960, so at these depths both servers answer their
+    # 400 for a body they can't read there.
     *[
         Case(
             f"body-{name}-nested-{depth}-deep",
