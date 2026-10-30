@@ -12,6 +12,8 @@ import json
 import re
 import socket
 import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -755,6 +757,134 @@ class TestFromHar:
         assert body["source"] == "har"
         assert body["request"]["method"] == "POST"
         assert body["response"]["status_code"] == 401
+
+
+# --- Files the CLI can't read or write --------------------------------------
+
+
+def _os_reason(action: Callable[[], object]) -> str:
+    """The strerror of the OSError `action` raises."""
+    try:
+        action()
+    except OSError as e:
+        return str(e.strerror)
+    pytest.skip("this platform or user can read or write it")
+
+
+def _unspaced(text: str) -> str:
+    """_flat(text) without any whitespace: Rich folds a long path anywhere."""
+    return "".join(_flat(text).split())
+
+
+def _assert_cant(result: Any, action: str, path: Path, reason: str) -> None:
+    assert result.exit_code == 2, (result.exit_code, repr(result.exception))
+    assert isinstance(result.exception, SystemExit)
+    assert _unspaced(f"Can't {action} {path}: {reason}.") in _unspaced(result.stderr)
+    assert result.stdout == ""
+
+
+def _unreadable(path: Path) -> Path:
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0)
+    return path
+
+
+class TestFilesTheCliCantRead:
+    """A path that doesn't exist or a directory printed a FileNotFoundError
+    or IsADirectoryError traceback and exited 1."""
+
+    @pytest.mark.parametrize("kind", ["missing", "directory"])
+    def test_from_har(self, runner: CliRunner, tmp_path: Path, kind: str) -> None:
+        path = tmp_path / "missing.har" if kind == "missing" else tmp_path
+        reason = _os_reason(lambda: path.read_text(encoding="utf-8"))
+        _assert_cant(runner.invoke(app, ["from-har", str(path)]), "read", path, reason)
+
+    @pytest.mark.parametrize("kind", ["missing", "directory"])
+    def test_run_body_file(
+        self, runner: CliRunner, fake_runner: Any, tmp_path: Path, kind: str
+    ) -> None:
+        path = tmp_path / "missing.json" if kind == "missing" else tmp_path
+        reason = _os_reason(path.read_bytes)
+        result = runner.invoke(app, ["run", "https://api.example.com/", "--body-file", str(path)])
+        _assert_cant(result, "read", path, reason)
+        assert fake_runner == []
+
+    @pytest.mark.parametrize("command", ["from-har", "run"])
+    def test_file_without_read_permission(
+        self, runner: CliRunner, fake_runner: Any, tmp_path: Path, command: str
+    ) -> None:
+        # Typer's Path type checks this before the command runs.
+        path = _unreadable(tmp_path / "in.har")
+        _os_reason(lambda: path.read_text(encoding="utf-8"))
+        args = (
+            ["from-har", str(path)]
+            if command == "from-har"
+            else ["run", "https://api.example.com/", "--body-file", str(path)]
+        )
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _unspaced(f"Path '{path}' is not readable.") in _unspaced(result.stderr)
+        assert fake_runner == []
+
+
+class TestSavePathTheCliCantWrite:
+    """--save to a path in a directory that doesn't exist, to a directory
+    or into a directory without write permission printed a
+    FileNotFoundError, IsADirectoryError or PermissionError traceback and
+    exited 1, for every command that takes it."""
+
+    @pytest.mark.parametrize("kind", ["missing-directory", "directory", "unwritable"])
+    @pytest.mark.parametrize("command", ["run", "from-curl", "from-har"])
+    def test_save(
+        self, runner: CliRunner, fake_runner: Any, tmp_path: Path, kind: str, command: str
+    ) -> None:
+        har = tmp_path / "in.har"
+        har.write_text(
+            json.dumps({"log": {"entries": [{"request": {"method": "GET", "url": "https://x/"}}]}}),
+            encoding="utf-8",
+        )
+        args = {
+            "run": ["run", "https://api.example.com/"],
+            "from-curl": ["from-curl", "curl https://api.example.com/", "--no-execute"],
+            "from-har": ["from-har", str(har)],
+        }[command]
+        if kind == "unwritable":
+            out_dir = tmp_path / "read-only"
+            out_dir.mkdir()
+            out_dir.chmod(0o500)
+        path = {
+            "missing-directory": tmp_path / "no-such-directory" / "report.txt",
+            "directory": tmp_path,
+            "unwritable": tmp_path / "read-only" / "report.txt",
+        }[kind]
+        reason = _os_reason(lambda: path.write_text("x", encoding="utf-8"))
+        result = runner.invoke(app, [*args, "--save", str(path)])
+        _assert_cant(result, "write", path, reason)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="macOS refuses a file name that isn't UTF-8"
+)
+class TestFileNameThatIsNotUtf8:
+    """A name that isn't valid UTF-8 reaches Python holding a surrogate
+    ("\\udcff" for byte 0xff), which stderr can't print. Messages naming
+    it show it escaped."""
+
+    def test_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        path = tmp_path / "\udcff.har"
+        result = runner.invoke(app, ["from-har", str(path)])
+        _assert_cant(result, "read", tmp_path / "\\udcff.har", "No such file or directory")
+
+    def test_save_says_where_it_wrote(self, runner: CliRunner, tmp_path: Path) -> None:
+        # The report was written, then printing "Wrote <path>" raised
+        # UnicodeEncodeError and exited 1.
+        path = tmp_path / "\udcff.json"
+        args = ["from-curl", "curl https://api.example.com/", "--no-execute", "-o", "json"]
+        result = runner.invoke(app, [*args, "--save", str(path)])
+        assert result.exit_code == 0, repr(result.exception)
+        assert json.loads(path.read_text(encoding="utf-8"))["source"] == "curl"
+        assert _unspaced(f"Wrote {tmp_path}/\\udcff.json") in _unspaced(result.stderr)
 
 
 # --- serve ---------------------------------------------------------------
