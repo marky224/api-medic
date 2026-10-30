@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import AfterValidator, BaseModel, Field
@@ -54,10 +56,26 @@ async def _unencodable_report(
     return JSONResponse(status_code=400, content={"detail": UNENCODABLE_TEXT})
 
 
+@app.exception_handler(RequestValidationError)
+async def _invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's own 422 echoes each error's input, and jsonable_encoder
+    # recurses into it: a value nested about 1,000 levels deep raised
+    # RecursionError, a 500. Send the rest of each error without it, and
+    # without a union tag error's ctx, which quotes the tag it found.
+    errors = []
+    for error in exc.errors():
+        out = {key: value for key, value in error.items() if key != "input"}
+        if out["type"] == "union_tag_invalid":
+            out.pop("ctx", None)
+        errors.append(out)
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
 def _non_empty(value: str) -> str:
     # Not Field(min_length=1): pydantic can't measure a str holding a lone
-    # surrogate, and FastAPI's 422 for that echoes it back and fails to
-    # encode (a 500). Let it through; the runner answers 400.
+    # surrogate and would answer a 422 (string_unicode), where the hosted
+    # demo's /api/run answers 400 naming the problem. Let it through; the
+    # runner answers that 400.
     if not value:
         raise ValueError("must not be empty")
     return value

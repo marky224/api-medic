@@ -376,9 +376,6 @@ class TestUnencodableText:
     @pytest.mark.parametrize(
         ("path", "payload"),
         [
-            ("/api/analyze", {"kind": "x\ud800"}),
-            ("/api/analyze", {"kind": "har", "har": "\ud800"}),
-            ("/api/run", {"method": "GET", "url": "https://x.com/", "headers": "\ud800"}),
             (
                 "/api/analyze",
                 {
@@ -398,15 +395,14 @@ class TestUnencodableText:
                 },
             ),
         ],
-        ids=["kind", "har-string", "run-headers", "har-url-no-method", "har-url-method-int"],
+        ids=["har-url-no-method", "har-url-method-int"],
     )
     def test_error_response_that_would_echo_a_surrogate(
         self, client: TestClient, path: str, payload: dict[str, Any]
     ) -> None:
-        """FastAPI's 422 quotes the invalid input, and the 400 for a HAR
-        parse error quotes the entry's URL. Rendering either raises the same
-        UnicodeEncodeError, which the app-level handler answers. The Lambda
-        answers these with its own message instead (see its tests)."""
+        """The 400 for a HAR parse error quotes the entry's URL. Rendering it
+        raises UnicodeEncodeError, which the app-level handler answers. The
+        Lambda answers these with its own message instead (see its tests)."""
         r = _post(client, path, payload)
         assert r.status_code == 400
         assert r.json() == {"detail": _UNENCODABLE}
@@ -437,6 +433,124 @@ _UNREPORTABLE: list[dict[str, Any]] = [
     {"kind": "curl", "curl": "curl 'https://x.com/\ud800'"},
 ]
 _UNREPORTABLE_IDS = ["har-url", "har-method", "curl-url"]
+
+
+class TestValidationErrorsLeaveOutTheInput:
+    """FastAPI's 422 echoed each error's input, and jsonable_encoder
+    recursed into it to build the response: a value nested about 1,000
+    levels deep raised RecursionError, a 500. The 422 keeps each error's
+    type, loc, msg and ctx as before, without the input, and without the
+    ctx of a union tag error, which quotes the tag it found."""
+
+    @pytest.mark.parametrize(
+        ("path", "payload", "detail"),
+        [
+            (
+                "/api/analyze",
+                {"kind": "curl", "curl": 5},
+                [
+                    {
+                        "type": "string_type",
+                        "loc": ["body", "curl", "curl"],
+                        "msg": "Input should be a valid string",
+                    }
+                ],
+            ),
+            (
+                "/api/analyze",
+                {"kind": "x"},
+                [
+                    {
+                        "type": "union_tag_invalid",
+                        "loc": ["body"],
+                        "msg": "Input tag 'x' found using 'kind' does not match any of the "
+                        "expected tags: 'har', 'curl'",
+                    }
+                ],
+            ),
+            (
+                "/api/analyze",
+                {},
+                [
+                    {
+                        "type": "union_tag_not_found",
+                        "loc": ["body"],
+                        "msg": "Unable to extract tag using discriminator 'kind'",
+                        "ctx": {"discriminator": "'kind'"},
+                    }
+                ],
+            ),
+            (
+                "/api/run",
+                {"method": "GET", "url": ""},
+                [
+                    {
+                        "type": "value_error",
+                        "loc": ["body", "url"],
+                        "msg": "Value error, must not be empty",
+                        "ctx": {"error": {}},
+                    }
+                ],
+            ),
+            # These quoted an unpaired surrogate, which made the 422 a 400
+            # "input holds text that can't be encoded as JSON".
+            (
+                "/api/analyze",
+                {"kind": "har", "har": "\ud800"},
+                [
+                    {
+                        "type": "dict_type",
+                        "loc": ["body", "har", "har"],
+                        "msg": "Input should be a valid dictionary",
+                    }
+                ],
+            ),
+            (
+                "/api/run",
+                {"method": "GET", "url": "https://x.com/", "headers": "\ud800"},
+                [
+                    {
+                        "type": "dict_type",
+                        "loc": ["body", "headers"],
+                        "msg": "Input should be a valid dictionary",
+                    }
+                ],
+            ),
+        ],
+        ids=["string-type", "union-tag", "no-tag", "value-error", "har-string", "run-headers"],
+    )
+    def test_422_without_the_input(
+        self, client: TestClient, path: str, payload: Any, detail: list[dict[str, Any]]
+    ) -> None:
+        r = _post(client, path, payload)
+        assert r.status_code == 422
+        assert r.json() == {"detail": detail}
+
+    def test_union_tag_holding_a_surrogate(self, client: TestClient) -> None:
+        # The input and the ctx's tag quoted it, which made the 422 a 400
+        # "input holds text that can't be encoded as JSON"; pydantic's msg
+        # holds replacement characters instead.
+        r = _post(client, "/api/analyze", {"kind": "x\ud800"})
+        assert r.status_code == 422
+        [error] = r.json()["detail"]
+        assert sorted(error) == ["loc", "msg", "type"]
+        assert error["type"] == "union_tag_invalid"
+
+    def test_json_decode_error_keeps_its_ctx(self, client: TestClient) -> None:
+        r = client.post(
+            "/api/analyze", content=b'{"kind": ', headers={"Content-Type": "application/json"}
+        )
+        assert r.status_code == 422
+        assert r.json() == {
+            "detail": [
+                {
+                    "type": "json_invalid",
+                    "loc": ["body", 9],
+                    "msg": "JSON decode error",
+                    "ctx": {"error": "Expecting value"},
+                }
+            ]
+        }
 
 
 class TestAnalyzeRejectsInputThatCantMakeAReport:

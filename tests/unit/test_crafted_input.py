@@ -66,7 +66,7 @@ class Live:
 class Body:
     """A request body for `path` on the two servers."""
 
-    path: Literal["/api/analyze", "/api/run"]
+    path: str
     text: str
 
 
@@ -77,9 +77,11 @@ class Case:
     # (or another JSON value), a live run or a server request body.
     input: Any
     kind: Literal["har", "curl", "run", "body"]
-    # REPORT, VALIDATION, or the message the 400 or exit 2 carries.
-    expect: str
-    differs: dict[str, str] = field(default_factory=dict)
+    # REPORT, VALIDATION, or the message the 400 or exit 2 carries; a tuple
+    # of them where the interpreter decides which, e.g. how deep json.loads
+    # reads.
+    expect: str | tuple[str, ...]
+    differs: dict[str, str | tuple[str, ...]] = field(default_factory=dict)
 
     def entries(self) -> list[str]:
         if self.kind == "har":
@@ -93,7 +95,7 @@ class Case:
             return ["lambda", "serve", "cli", "cli-from-curl"]
         return ["lambda", "serve"]
 
-    def expected(self, entry: str) -> str:
+    def expected(self, entry: str) -> str | tuple[str, ...]:
         return self.differs.get(entry, self.expect)
 
 
@@ -194,15 +196,60 @@ CASES: list[Case] = [
         Body("/api/analyze", '{"kind": "x\\ud800"}'),
         "body",
         "Unknown kind: 'x\\ud800'",
-        {"serve": UNENCODABLE_TEXT},
+        # FastAPI's 422 no longer quotes the input.
+        {"serve": VALIDATION},
     ),
     Case(
         "body-run-headers-surrogate",
         Body("/api/run", '{"method": "GET", "url": "https://x.com/", "headers": "x\\ud800"}'),
         "body",
         "'headers' must be a dict[str, str].",
-        {"serve": UNENCODABLE_TEXT},
+        # FastAPI's 422 no longer quotes the input.
+        {"serve": VALIDATION},
     ),
+    # Invalid values nested 1,000 and 3,000 deep: FastAPI's 422 echoed the
+    # value and recursed into it, a 500 from api-medic serve. Python 3.12's
+    # json.loads reads about 10,000 levels; 3.10's and 3.11's stop near
+    # 1,000, and then both servers answer their 400 for a body they can't
+    # read.
+    *[
+        Case(
+            f"body-{name}-nested-{depth}-deep",
+            Body(path, text.replace("<deep>", "[" * depth + "]" * depth)),
+            "body",
+            (message, UNREADABLE_JSON),
+            {"serve": (VALIDATION, "There was an error parsing the body")},
+        )
+        for depth in (1_000, 3_000)
+        for name, path, text, message in [
+            ("kind", "/api/analyze", '{"kind": <deep>}', "Unknown kind: [[["),
+            ("har", "/api/analyze", '{"kind": "har", "har": <deep>}', "Not a HAR archive"),
+            (
+                "curl",
+                "/api/analyze",
+                '{"kind": "curl", "curl": <deep>}',
+                "'curl' must be a string.",
+            ),
+            (
+                "run-url",
+                "/api/run",
+                '{"method": "GET", "url": <deep>}',
+                "Missing or empty 'url'.",
+            ),
+            (
+                "run-headers",
+                "/api/run",
+                '{"method": "GET", "url": "https://x.com/", "headers": <deep>}',
+                "'headers' must be a dict[str, str].",
+            ),
+            (
+                "run-body",
+                "/api/run",
+                '{"method": "GET", "url": "https://x.com/", "body": <deep>}',
+                "'body' must be a string or null.",
+            ),
+        ]
+    ],
     # #53: rate-limit values no int comes from, and a Remaining/Limit ratio
     # too large for a float.
     Case(
@@ -370,7 +417,7 @@ CASES: list[Case] = [
         '"x\\ud800"',
         "har",
         "Not a HAR archive (missing 'log').",
-        {"lambda": "Expecting value", "serve": UNENCODABLE_TEXT},
+        {"lambda": "Expecting value", "serve": VALIDATION},
     ),
     Case(
         "har-method-missing",
@@ -496,7 +543,9 @@ def _cli(args: list[str]) -> dict[str, str]:
     return endings
 
 
-def _ends_as_expected(got: str, want: str) -> bool:
+def _ends_as_expected(got: str, want: str | tuple[str, ...]) -> bool:
+    if isinstance(want, tuple):
+        return any(_ends_as_expected(got, one) for one in want)
     if want in (REPORT, VALIDATION):
         return got == want
     return got not in (REPORT, VALIDATION) and want in got
@@ -585,6 +634,7 @@ def test_ends_in_a_report_or_an_error_carrying_a_message(
     if isinstance(got, str):
         assert _ends_as_expected(got, want), (got, want)
         return
+    assert isinstance(want, str)
     assert _ends_as_expected(got["json"], _flat(want)), (got["json"], want)
     for fmt in _FORMATS[1:]:
         if want == UNENCODABLE_TEXT and got[fmt] == REPORT:
