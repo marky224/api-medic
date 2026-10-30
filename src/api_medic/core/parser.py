@@ -178,7 +178,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     """Parse a curl command string into a CapturedRequest.
 
     The curl command describes a request only — the resulting CapturedRequest
-    has no `response`. Pair with `core.runner` to actually execute it.
+    has no `response`. Pair with `core.runner` to actually execute it. Its
+    Cookie headers are kept as given, joined with "; " into one.
     """
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
@@ -194,7 +195,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     with _uncurl_errors():
         # The parser uncurl.parse_context reads the arguments with.
         header_values = uncurl.api.parser.parse_args(args).header
-    if _cookie_chars(header_values) > MAX_CURL_COOKIE_CHARS:
+    cookie_values = _cookie_values(header_values)
+    if sum(len(value) for value in cookie_values) > MAX_CURL_COOKIE_CHARS:
         raise ValueError(
             "Curl command's Cookie header is too long "
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
@@ -204,6 +206,12 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
+    # uncurl moves every Cookie header into ctx.cookies, read with
+    # SimpleCookie, which reorders the cookies and drops attributes. Send
+    # them as the command gave them, stripped like uncurl strips the others.
+    cookie = "; ".join(value.strip() for value in cookie_values if value.strip())
+    if cookie:
+        headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""
 
     return CapturedRequest(
@@ -233,16 +241,15 @@ def _uncurl_errors() -> Iterator[None]:
         raise ValueError(f"Could not parse curl command: {e}") from e
 
 
-def _cookie_chars(headers: list[str]) -> int:
-    """Characters in the values of the headers uncurl reads with
-    SimpleCookie: those whose key, lowercased and stripped of "$", is
-    "cookie"."""
-    total = 0
+def _cookie_values(headers: list[str]) -> list[str]:
+    """The values of the headers uncurl reads with SimpleCookie: those whose
+    key, lowercased and stripped of "$", is "cookie"."""
+    values = []
     for header in headers:
         key, _, value = header.partition(":")
         if key.lower().strip("$") == "cookie":
-            total += len(value)
-    return total
+            values.append(value)
+    return values
 
 
 def _utf8(text: str) -> bytes:

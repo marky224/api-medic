@@ -14,6 +14,7 @@ import socket
 import sys
 from typing import Any
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -21,7 +22,7 @@ from api_medic import __version__
 from api_medic.cli import main as cli_main
 from api_medic.cli.main import _rewrite_bare_url, app
 from api_medic.core import runner as core_runner
-from api_medic.core.captured import CapturedRequest, CapturedResponse
+from api_medic.core.captured import CapturedDns, CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
 from api_medic.core.parser import parse_curl, parse_har
@@ -663,6 +664,33 @@ class TestFromCurl:
         body = json.loads(result.stdout)
         assert body["source"] == "curl"
         assert body["response"] is None  # parser-only — no response
+
+    def test_live_run_sends_the_cookie_header(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent: list[httpx.Headers] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request.headers)
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+        def resolve_dns(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
+            return CapturedDns(records=["93.184.216.34"]), 0.0
+
+        def probe_tls(host: str, port: int, *a: Any, **kw: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        monkeypatch.setattr(core_runner, "_resolve_dns", resolve_dns)
+        monkeypatch.setattr(core_runner, "_probe_tls", probe_tls)
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        curl = "curl https://api.example.com/ -H 'Cookie: b=2; a=1' -H 'Cookie: c=3'"
+        result = runner.invoke(app, ["from-curl", curl, "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        assert [h.get_list("Cookie") for h in sent] == [["b=2; a=1; c=3"]]
+        assert json.loads(result.stdout)["request"]["headers"]["Cookie"] == "b=2; a=1; c=3"
 
     @pytest.mark.parametrize(
         "curl",

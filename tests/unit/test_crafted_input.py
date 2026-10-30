@@ -420,6 +420,10 @@ CASES: list[Case] = [
         )
         for name, text in [("number", "5"), ("true", "true"), ("list", "[1]")]
     ],
+    # The Cookie header a curl command carries is kept, and goes through the
+    # same checks as every other header.
+    Case("curl-cookie", f"{_CURL} -H 'Cookie: b=2; a=1; Path=/'", "curl", REPORT),
+    Case("curl-cookie-surrogate", f"{_CURL} -H 'Cookie: a=\ud800'", "curl", UNENCODABLE_TEXT),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

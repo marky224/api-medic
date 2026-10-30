@@ -581,6 +581,49 @@ class TestParseCurl:
             parse_curl("curl https://api.example.com/ -d 'open")
         assert str(e.value) == "Could not parse curl command: No closing quotation"
 
+    @pytest.mark.parametrize(
+        ("args", "cookie"),
+        [
+            (["-H", "Cookie: session=abc; theme=dark"], "session=abc; theme=dark"),
+            # SimpleCookie would sort these and drop the attribute.
+            (["-H", "Cookie: b=2; a=1; Path=/"], "b=2; a=1; Path=/"),
+            (["-H", "Cookie: a=1", "-H", "cookie: b=2"], "a=1; b=2"),
+            (["-HCookie: a=1"], "a=1"),
+            (["--header=Cookie: a=1"], "a=1"),
+            (["-H", "$Cookie:a=1"], "a=1"),
+        ],
+        ids=[
+            "one",
+            "order-and-attributes",
+            "two-headers",
+            "-H<value>",
+            "--header=<value>",
+            "$-key",
+        ],
+    )
+    def test_cookie_header_is_kept_as_given(self, args: list[str], cookie: str) -> None:
+        # uncurl moves Cookie headers into ctx.cookies; the request didn't carry them.
+        cap = parse_curl(shlex.join(["curl", "https://api.example.com/", *args, "-H", "X-A: b"]))
+        assert cap.headers == {"X-A": "b", "Cookie": cookie}
+
+    def test_command_without_a_cookie_header_keeps_uncurls_headers(self) -> None:
+        curl = shlex.join(
+            [
+                "curl",
+                "https://api.example.com/",
+                "-H",
+                "Authorization: Bearer x",
+                "-H",
+                "X-Cookie: a=1",
+                "-H",
+                "Accept :  */*  ",
+                "-H",
+                ":authority: api.example.com",
+            ]
+        )
+        headers = dict(uncurl.parse_context(curl).headers)
+        assert list(parse_curl(curl).headers.items()) == list(headers.items())
+
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
 # encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
