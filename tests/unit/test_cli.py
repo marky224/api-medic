@@ -436,10 +436,12 @@ class TestInputThatCantMakeAReport:
     ) -> None:
         # The real runner refuses these before any lookup or send, with the
         # message the Lambda's and serve's /api/run 400 carry.
-        def getaddrinfo(*a: Any, **kw: Any) -> Any:
-            raise AssertionError("looked up a host")
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
 
-        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
         with pytest.raises(InvalidRequestError) as e:
             validate_request("GET", url, {}, None)
         result = runner.invoke(app, ["from-curl", f"curl '{url}'"])
