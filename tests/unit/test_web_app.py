@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 import socket
+import time
 from typing import Any
 
 import fastapi.routing
@@ -240,6 +242,39 @@ class TestAnalyzeEndpoint:
         assert report["source"] == "curl"
         assert report["request"]["method"] == "GET"
         assert report["response"] is None
+
+    def test_curl_over_the_limit_returns_400(self, client: TestClient) -> None:
+        # One character over parser.MAX_CURL_CHARS (50,000).
+        curl = "curl https://api.example.com/ -d '" + "a" * 49_966 + "'"
+        assert len(curl) == 50_001
+        started = time.perf_counter()
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        elapsed = time.perf_counter() - started
+        assert r.status_code == 400
+        assert elapsed < 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert r.json()["detail"] == str(e.value)
+
+    def test_curl_over_the_argument_limit_returns_400(self, client: TestClient) -> None:
+        # One argument over parser.MAX_CURL_ARGS (1,000).
+        curl = "curl https://api.example.com/" + " -k" * 999
+        assert len(shlex.split(curl)) == 1_001
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        assert r.status_code == 400
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert r.json()["detail"] == str(e.value)
+
+    def test_curl_cookie_header_over_the_limit_returns_400(self, client: TestClient) -> None:
+        # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (4,096).
+        curl = "curl https://api.example.com/ -H 'Cookie:" + "=" * 4_096 + "\U0001f600'"
+        assert len(shlex.split(curl)[3]) == len("Cookie:") + 4_097
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        assert r.status_code == 400
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert r.json()["detail"] == str(e.value)
 
     def test_invalid_har_returns_400(self, client):
         r = client.post("/api/analyze", json={"kind": "har", "har": {"foo": "bar"}})

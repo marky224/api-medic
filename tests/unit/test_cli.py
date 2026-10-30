@@ -640,6 +640,31 @@ class TestFromCurl:
         assert body["source"] == "curl"
         assert body["response"] is None  # parser-only — no response
 
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            # One character over parser.MAX_CURL_CHARS (50,000).
+            "curl https://api.example.com/ -d '" + "a" * 49_966 + "'",
+            # One argument over parser.MAX_CURL_ARGS (1,000).
+            "curl https://api.example.com/" + " -k" * 999,
+            # A Cookie value one character over parser.MAX_CURL_COOKIE_CHARS (4,096).
+            "curl https://api.example.com/ -H 'Cookie:" + "=" * 4_096 + "\U0001f600'",
+            "   ",
+            "definitely not a curl command",
+        ],
+        ids=["over-the-limit", "too-many-args", "cookie-too-long", "empty", "unparseable"],
+    )
+    def test_command_parse_curl_rejects_exits_2(self, runner, fake_runner, curl):
+        # The empty and unparseable ones used to print a traceback and exit 1.
+        result = runner.invoke(app, ["from-curl", curl])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert result.stdout == ""
+        assert fake_runner == []
+
 
 # --- from-har -------------------------------------------------------------
 

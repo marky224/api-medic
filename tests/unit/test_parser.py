@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import sys
+import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
+import uncurl  # type: ignore[import-untyped]
 
 from api_medic.core.models import UNENCODABLE_TEXT
 from api_medic.core.parser import parse_curl, parse_har
@@ -374,6 +379,58 @@ class TestParseHar:
         assert cap.response.protocol == "QUIC-experimental"
 
 
+# Mirror parser.MAX_CURL_CHARS, MAX_CURL_ARGS and MAX_CURL_COOKIE_CHARS.
+_MAX_CURL_CHARS = 50_000
+_MAX_CURL_ARGS = 1_000
+_MAX_CURL_COOKIE_CHARS = 4_096
+_CURL_HEAD = "curl https://api.example.com/ -H 'Cookie: session=SECRET-7f3a' -d '"
+
+
+def _curl_of_length(n: int) -> str:
+    """A curl command exactly `n` characters long, padded with -d data."""
+    return _CURL_HEAD + "a" * (n - len(_CURL_HEAD) - 1) + "'"
+
+
+def _curl_of_args(n: int) -> str:
+    """A curl command of exactly `n` arguments: curl, the URL and -k flags."""
+    return "curl https://api.example.com/" + " -k" * (n - 2)
+
+
+def _cookie_value(n: int) -> str:
+    """A Cookie header value exactly `n` characters long, as uncurl splits it
+    from the key: "=" repeated, then an emoji, which makes Python store the
+    string at 4 bytes a character. SimpleCookie is slowest on it of the values
+    tried."""
+    return "=" * (n - 1) + "\U0001f600"
+
+
+# The ways argparse reads a -H value, each given that header's value.
+_COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
+    "-H": lambda v: ["-H", "Cookie:" + v],
+    "-H<value>": lambda v: ["-HCookie:" + v],
+    "-kH<value>": lambda v: ["-kHCookie:" + v],
+    "-H=<value>": lambda v: ["-H=Cookie:" + v],
+    "-kH=<value>": lambda v: ["-kH=Cookie:" + v],
+    "--header": lambda v: ["--header", "Cookie:" + v],
+    "--header=<value>": lambda v: ["--header=Cookie:" + v],
+    "--hea": lambda v: ["--hea", "Cookie:" + v],
+    "--hea=<value>": lambda v: ["--hea=Cookie:" + v],
+    "$COOKIE$-key": lambda v: ["-H", "$COOKIE$:" + v],
+    "value-starting-with-colon": lambda v: ["-H", "Cookie::" + v[1:]],
+    "two-headers": lambda v: ["-H", "Cookie:" + v[:100], "-H", "cookie:" + v[100:]],
+}
+
+# Whether this Python's argparse reads -kH=<value> as <value>, as the local
+# Python 3.12's does.
+_ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS = uncurl.api.parser.parse_args(
+    ["curl", "https://api.example.com/", "-kH=a:b"]
+).header == ["a:b"]
+
+
+def _curl_with_cookie(value: str, form: str = "-H") -> str:
+    return shlex.join(["curl", "https://api.example.com/", *_COOKIE_HEADER_FORMS[form](value)])
+
+
 class TestParseCurl:
     def test_post_with_data_and_headers(self):
         curl = (
@@ -412,6 +469,93 @@ class TestParseCurl:
         with pytest.raises(ValueError, match="argparse rejected it"):
             parse_curl("curl https://api.example.com/ --cookie 'session=SECRET-7f3a'")
         assert capsys.readouterr().err == ""
+
+    def test_command_at_the_limit_parses(self) -> None:
+        cap = parse_curl(_curl_of_length(_MAX_CURL_CHARS))
+        assert cap.url == "https://api.example.com/"
+        assert cap.body == b"a" * (_MAX_CURL_CHARS - len(_CURL_HEAD) - 1)
+
+    def test_command_over_the_limit_raises_before_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # shlex, which uncurl splits the command with, slows down
+        # quadratically: a 1,000,000-character command took over 10 seconds.
+        def parse_context(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("parsed the command")
+
+        monkeypatch.setattr(uncurl, "parse_context", parse_context)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_of_length(_MAX_CURL_CHARS + 1))
+        # Names the limit and quotes none of the command.
+        assert str(e.value) == "Curl command is too long (limit: 50,000 characters)."
+
+    def test_command_at_the_argument_limit_parses_quickly(self) -> None:
+        started = time.perf_counter()
+        cap = parse_curl(_curl_of_args(_MAX_CURL_ARGS))
+        elapsed = time.perf_counter() - started
+        assert cap.url == "https://api.example.com/"
+        # On Python 3.12+ a trace function, such as coverage's under CI's
+        # --cov, slows uncurl's argparse loop from 0.05 s to about 6 s
+        # locally, so the bound is checked only when nothing is tracing.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_command_over_the_argument_limit_raises_before_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # argparse, which uncurl reads the arguments with, slows down with
+        # the square of the number of options: 33,323 -k flags, 100,000
+        # characters, took 21 seconds.
+        def parse_context(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("parsed the command")
+
+        monkeypatch.setattr(uncurl, "parse_context", parse_context)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_of_args(_MAX_CURL_ARGS + 1))
+        # Names the limit and quotes none of the command.
+        assert str(e.value) == "Curl command has too many arguments (limit: 1,000)."
+
+    def test_cookie_header_at_the_limit_parses(self) -> None:
+        # The slowest value found takes about half a second locally; the
+        # bound leaves room for a slower CI runner.
+        started = time.perf_counter()
+        cap = parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS)))
+        assert time.perf_counter() - started < 3
+        assert cap.url == "https://api.example.com/"
+
+    @pytest.mark.parametrize("form", list(_COOKIE_HEADER_FORMS))
+    def test_cookie_header_over_the_limit_raises_before_parsing(
+        self, monkeypatch: pytest.MonkeyPatch, form: str
+    ) -> None:
+        # uncurl reads each Cookie header value with http.cookies.SimpleCookie,
+        # which slows down with the square of its length: a 40,000-character
+        # command whose Cookie value is a=a=..." took 18 seconds locally.
+        if form == "-kH=<value>" and not _ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS:
+            pytest.skip("this Python's argparse doesn't read -kH=<value> as <value>")
+
+        def parse_context(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("parsed the command")
+
+        monkeypatch.setattr(uncurl, "parse_context", parse_context)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS + 1), form))
+        # Names the limit and quotes none of the command.
+        assert str(e.value) == (
+            "Curl command's Cookie header is too long (limit: 4,096 characters)."
+        )
+
+    def test_other_header_over_the_cookie_limit_parses(self) -> None:
+        value = _cookie_value(_MAX_CURL_COOKIE_CHARS + 1)
+        curl = shlex.join(["curl", "https://api.example.com/", "-H", "X-Cookie:" + value])
+        assert parse_curl(curl).headers["X-Cookie"] == value
+
+    def test_cookie_check_reads_the_arguments_with_uncurls_parser(self) -> None:
+        assert uncurl.parse_context.__globals__["parser"] is uncurl.api.parser
+
+    def test_unclosed_quote_gives_the_parse_error(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -d 'open")
+        assert str(e.value) == "Could not parse curl command: No closing quotation"
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

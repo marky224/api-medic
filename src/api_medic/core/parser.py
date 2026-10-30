@@ -14,6 +14,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shlex
+from collections.abc import Iterator
 from typing import Any
 
 import uncurl  # type: ignore[import-untyped]
@@ -37,6 +39,28 @@ _HTTP_VERSION_NORMALIZATIONS = {
     "http/3.0": "HTTP/3",
     "h3": "HTTP/3",
 }
+
+# uncurl splits the command with shlex, reads the arguments with argparse and
+# reads each Cookie header value with http.cookies.SimpleCookie. Each slows
+# down with a square: shlex with a token's length, argparse with the number
+# of options, SimpleCookie with the value's length. Measured locally, one
+# 1,000,000-character token took over 10 seconds, 33,323 -k flags (100,000
+# characters) 21 seconds and a 40,000-character command whose Cookie value is
+# a=a=..." 18 seconds. The hosted demo's Lambda, with its 30-second timeout,
+# runs slower.
+#
+# A command that passes these checks is read by argparse twice: once to find
+# its Cookie header values, then in uncurl. Of the accepted commands measured
+# locally through the Lambda handler, the slowest were one 50,000-character
+# -kkk...kHX: token ending in an emoji, 0.8 s, and that token shortened to
+# carry a 4,096-character ===... Cookie value ending in an emoji, 1.2 s. The
+# emoji makes Python store the string at 4 bytes a character. Under a 14.5%
+# CPU quota, a local stand-in for the CPU share of the demo's 256 MB Lambda,
+# they took 8.3 s and 11.5 s, and the token at 100,000 characters 26.9 s,
+# which is why MAX_CURL_CHARS is 50,000.
+MAX_CURL_CHARS = 50_000
+MAX_CURL_ARGS = 1_000
+MAX_CURL_COOKIE_CHARS = 4_096
 
 
 def _normalize_http_version(raw: Any) -> str:
@@ -142,19 +166,27 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     The curl command describes a request only — the resulting CapturedRequest
     has no `response`. Pair with `core.runner` to actually execute it.
     """
+    if len(curl_str) > MAX_CURL_CHARS:
+        raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
     if not curl_str.strip():
         raise ValueError("Empty curl command.")
+    # uncurl splits the command again, the same way.
     try:
-        # argparse prints why it rejected the command to stderr, quoting
-        # arguments it didn't recognize (cookie values, bodies). Lambda
-        # sends stderr to CloudWatch, where request data must not go.
-        with contextlib.redirect_stderr(io.StringIO()):
-            ctx = uncurl.parse_context(curl_str)
-    except SystemExit as e:
-        # uncurl uses argparse, which calls sys.exit() on parse failure.
-        raise ValueError("Could not parse curl command (argparse rejected it).") from e
-    except Exception as e:
+        args = shlex.split(curl_str)
+    except ValueError as e:
         raise ValueError(f"Could not parse curl command: {e}") from e
+    if len(args) > MAX_CURL_ARGS:
+        raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
+    with _uncurl_errors():
+        # The parser uncurl.parse_context reads the arguments with.
+        header_values = uncurl.api.parser.parse_args(args).header
+    if _cookie_chars(header_values) > MAX_CURL_COOKIE_CHARS:
+        raise ValueError(
+            "Curl command's Cookie header is too long "
+            f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
+        )
+    with _uncurl_errors():
+        ctx = uncurl.parse_context(curl_str)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -169,6 +201,34 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         timing=TimingBreakdown(),
         source="curl",
     )
+
+
+@contextlib.contextmanager
+def _uncurl_errors() -> Iterator[None]:
+    """uncurl's and its argparse's errors as ValueError."""
+    try:
+        # argparse prints why it rejected the command to stderr, quoting
+        # arguments it didn't recognize (cookie values, bodies). Lambda
+        # sends stderr to CloudWatch, where request data must not go.
+        with contextlib.redirect_stderr(io.StringIO()):
+            yield
+    except SystemExit as e:
+        # uncurl uses argparse, which calls sys.exit() on parse failure.
+        raise ValueError("Could not parse curl command (argparse rejected it).") from e
+    except Exception as e:
+        raise ValueError(f"Could not parse curl command: {e}") from e
+
+
+def _cookie_chars(headers: list[str]) -> int:
+    """Characters in the values of the headers uncurl reads with
+    SimpleCookie: those whose key, lowercased and stripped of "$", is
+    "cookie"."""
+    total = 0
+    for header in headers:
+        key, _, value = header.partition(":")
+        if key.lower().strip("$") == "cookie":
+            total += len(value)
+    return total
 
 
 def _utf8(text: str) -> bytes:
