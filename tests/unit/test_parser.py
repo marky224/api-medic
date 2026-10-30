@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -491,8 +492,13 @@ class TestParseCurl:
     def test_command_at_the_argument_limit_parses_quickly(self) -> None:
         started = time.perf_counter()
         cap = parse_curl(_curl_of_args(_MAX_CURL_ARGS))
-        assert time.perf_counter() - started < 1
+        elapsed = time.perf_counter() - started
         assert cap.url == "https://api.example.com/"
+        # On Python 3.12+ a trace function, such as coverage's under CI's
+        # --cov, slows uncurl's argparse loop from 0.05 s to about 6 s
+        # locally, so the bound is checked only when nothing is tracing.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
 
     def test_command_over_the_argument_limit_raises_before_parsing(
         self, monkeypatch: pytest.MonkeyPatch
