@@ -112,6 +112,14 @@ class TestParseHar:
         assert cap.timing.connect_ms == 22.0
         assert cap.timing.total_ms == pytest.approx(68.0)
 
+    @pytest.mark.parametrize("dns", [float("inf"), 10**400], ids=["infinity", "400-digit-int"])
+    def test_timing_no_finite_float_holds_is_unmeasured(self, dns: float) -> None:
+        # JSON's 1e400 reads as Infinity; float() of the integer overflows.
+        cap = parse_har(_minimal_har(timings={"dns": dns, "connect": 22.0, "wait": 41.0}))
+        assert cap.timing.dns_ms is None
+        assert cap.timing.connect_ms == 22.0
+        assert cap.timing.total_ms == pytest.approx(63.0)
+
     def test_omits_response_when_missing_or_zero_status(self):
         har = _minimal_har()
         cap = parse_har(har)

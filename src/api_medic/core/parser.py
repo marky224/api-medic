@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import shlex
 from collections.abc import Iterator
 from typing import Any
@@ -275,11 +276,18 @@ def _har_headers(raw: Any) -> dict[str, str]:
 
 
 def _timing_from_har(t: dict[str, Any]) -> TimingBreakdown:
-    """HAR timings are in ms; -1 means 'not measured'."""
+    """HAR timings are in ms; -1 means 'not measured', and so does a value
+    no finite float holds: Infinity (JSON's 1e400) or an integer too large
+    for a float."""
 
     def _opt(v: Any) -> float | None:
         if isinstance(v, (int, float)) and v >= 0:
-            return float(v)
+            try:
+                ms = float(v)
+            except OverflowError:
+                return None
+            if math.isfinite(ms):
+                return ms
         return None
 
     dns = _opt(t.get("dns"))

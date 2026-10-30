@@ -330,6 +330,23 @@ CASES: list[Case] = [
         "har",
         "HAR entry's response.status is not an integer: -inf",
     ),
+    # HAR timings no finite float holds: -o html crashed on Infinity, and
+    # parse_har on an integer too large for a float.
+    Case(
+        "har-timing-1e400",
+        _har(timings={"dns": 0, "wait": 5}).replace('"dns": 0', '"dns": 1e400'),
+        "har",
+        REPORT,
+    ),
+    Case(
+        "har-every-timing-1e400",
+        _har(timings=dict.fromkeys(["dns", "connect", "ssl", "wait", "receive"], 0)).replace(
+            ": 0", ": 1e400"
+        ),
+        "har",
+        REPORT,
+    ),
+    Case("har-timing-400-digit-int", _har(timings={"dns": 10**400, "wait": 5}), "har", REPORT),
     # A HAR parse_har rejects, and a request the runner refuses to send:
     # from-har and run printed a traceback.
     Case("har-not-a-har-archive", '{"foo": "bar"}', "har", "Not a HAR archive (missing 'log')."),
