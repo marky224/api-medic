@@ -209,9 +209,9 @@ CASES: list[Case] = [
     ),
     # Invalid values nested 1,000 and 3,000 deep: FastAPI's 422 echoed the
     # value and recursed into it, a 500 from api-medic serve. Python 3.12's
-    # json.loads reads about 10,000 levels; 3.10's and 3.11's stop near
-    # 1,000, and then both servers answer their 400 for a body they can't
-    # read.
+    # json.loads reads about 10,000 levels; 3.10's and 3.11's stop at about
+    # 960, so at these depths both servers answer their 400 for a body they
+    # can't read there.
     *[
         Case(
             f"body-{name}-nested-{depth}-deep",
@@ -248,6 +248,19 @@ CASES: list[Case] = [
                 '{"method": "GET", "url": "https://x.com/", "body": <deep>}',
                 "'body' must be a string or null.",
             ),
+            (
+                "run-method",
+                "/api/run",
+                '{"method": <deep>, "url": "https://x.com/"}',
+                "Missing or empty 'method'.",
+            ),
+            (
+                "analyze-whole",
+                "/api/analyze",
+                "<deep>",
+                "Body must include 'kind' (one of 'har', 'curl').",
+            ),
+            ("run-whole", "/api/run", "<deep>", "Body must be a JSON object."),
         ]
     ],
     # #53: rate-limit values no int comes from, and a Remaining/Limit ratio
