@@ -30,7 +30,6 @@ from ..core.engine import analyze
 from ..core.models import (
     UNENCODABLE_TEXT,
     Report,
-    UnencodableTextError,
     is_unencodable_text_error,
 )
 from ..core.parser import parse_curl, parse_har
@@ -266,8 +265,13 @@ def run(
 
     headers = _parse_headers(header or [])
 
-    captured = runner_run(method, url, headers=headers, body=body_data, timeout=timeout)
-    report = analyze(captured)
+    try:
+        captured = runner_run(method, url, headers=headers, body=body_data, timeout=timeout)
+    except InvalidRequestError as e:
+        # Refused before anything is sent, e.g. a port outside 1-65535; the
+        # hosted demo's /api/run answers 400 with this text.
+        raise typer.BadParameter(str(e)) from e
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)
@@ -325,11 +329,18 @@ def from_har(
     verbose: VerboseOption = False,
 ) -> None:
     """Analyze a captured HAR file (no execution)."""
-    raw = file.read_text(encoding="utf-8")
     try:
-        captured = parse_har(raw)
-    except UnencodableTextError as e:
-        raise typer.BadParameter(str(e)) from e
+        captured = parse_har(file.read_text(encoding="utf-8"))
+    except ValueError as e:
+        # Includes a file that isn't UTF-8 (UnicodeDecodeError). The message
+        # can quote the entry's URL, unpaired surrogate and all, which stderr
+        # can't print; api-medic serve answers that one the same way.
+        message = str(e)
+        try:
+            message.encode("utf-8")
+        except UnicodeEncodeError:
+            message = UNENCODABLE_TEXT
+        raise typer.BadParameter(message) from e
     report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)

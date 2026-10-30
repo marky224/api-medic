@@ -275,6 +275,53 @@ CASES: list[Case] = [
         "curl",
         "Curl command's Cookie header is too long (limit: 4,096 characters).",
     ),
+    # A HAR parse_har rejects, and a request the runner refuses to send:
+    # from-har and run printed a traceback.
+    Case("har-not-a-har-archive", '{"foo": "bar"}', "har", "Not a HAR archive (missing 'log')."),
+    Case("har-no-entries", '{"log": {"entries": []}}', "har", "HAR has no entries."),
+    Case("har-not-json", "nope", "har", "Expecting value", {"serve": VALIDATION}),
+    Case(
+        "har-is-a-string-holding-a-surrogate",
+        '"x\\ud800"',
+        "har",
+        "Not a HAR archive (missing 'log').",
+        {"lambda": "Expecting value", "serve": UNENCODABLE_TEXT},
+    ),
+    Case(
+        "har-method-missing",
+        json.dumps({"log": {"entries": [{"request": {"url": "https://api.example.com/"}}]}}),
+        "har",
+        "HAR entry[0] (https://api.example.com/): request.method is missing.",
+    ),
+    Case(
+        # The message quotes the URL, which stderr can't print.
+        "har-method-missing-url-surrogate",
+        json.dumps({"log": {"entries": [{"request": {"url": "https://x.com/\ud800"}}]}}),
+        "har",
+        "HAR entry[0] (https://x.com/\ud800): request.method is missing.",
+        {"serve": UNENCODABLE_TEXT, "cli": UNENCODABLE_TEXT},
+    ),
+    Case(
+        "har-status-not-an-integer",
+        _har(response={"status": "abc"}),
+        "har",
+        "HAR entry's response.status is not an integer: 'abc'",
+    ),
+    Case("har-status-999", _har_response(999), "har", "1 validation error for CapturedResponse"),
+    Case(
+        "har-not-utf-8",
+        b'{"log": {"entries": [{"request": {"method": "GET", "url": "https://x.com/caf\xe9"}}]}}',
+        "har",
+        "'utf-8' codec can't decode byte 0xe9",
+        # The Lambda decodes the body with errors="replace".
+        {"lambda": REPORT, "serve": "There was an error parsing the body"},
+    ),
+    Case(
+        "run-port-99999",
+        Live(url="https://api.example.com:99999/"),
+        "run",
+        "port must be a whole number from 1 to 65535 (got '99999').",
+    ),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

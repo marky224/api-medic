@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from api_medic import __version__
 from api_medic.cli import main as cli_main
 from api_medic.cli.main import _rewrite_bare_url, app
+from api_medic.core import runner as core_runner
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.engine import analyze
 from api_medic.core.models import TimingBreakdown
@@ -442,6 +443,27 @@ class TestInputThatCantMakeAReport:
         with pytest.raises(InvalidRequestError) as e:
             validate_request("GET", url, {}, None)
         result = runner.invoke(app, ["from-curl", f"curl '{url}'"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+
+    @pytest.mark.parametrize(
+        "url", ["https://x.com/\ud800", "https://x.com:99999/"], ids=["surrogate", "bad-port"]
+    )
+    @pytest.mark.parametrize("bare", [False, True], ids=["run", "bare-url"])
+    def test_run_url_the_runner_rejects(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, url: str, bare: bool
+    ) -> None:
+        # These used to print an InvalidURLError traceback and exit 1.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GET", url, {}, None)
+        result = runner.invoke(app, _rewrite_bare_url([url]) if bare else ["run", url])
         assert result.exit_code == 2
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
