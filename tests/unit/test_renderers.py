@@ -8,8 +8,12 @@ tweak.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 
+import pytest
+
+from api_medic.core.engine import analyze
 from api_medic.core.models import (
     Finding,
     Report,
@@ -17,8 +21,10 @@ from api_medic.core.models import (
     ResponseSummary,
     TimingBreakdown,
 )
+from api_medic.core.parser import parse_har
 from api_medic.core.render import (
     render_html,
+    render_json,
     render_markdown,
     render_terminal,
 )
@@ -181,3 +187,23 @@ class TestRenderTerminal:
         report = report.model_copy(update={"response": None})
         out = render_terminal(report, color=False)
         assert "no response" in out.lower()
+
+
+class TestHarTimingTotalPastTheFloatMaximum:
+    """Each phase of {"dns": 1e308, "wait": 1e308} is finite, but their sum
+    isn't. The total showed as "inf s" and "inf ms" (JSON as null); every
+    format now shows it as it shows a total that wasn't measured."""
+
+    @pytest.mark.parametrize(
+        "render",
+        [render_json, lambda r: render_terminal(r, color=False), render_markdown, render_html],
+        ids=["json", "terminal", "markdown", "html"],
+    )
+    def test_shown_as_not_measured(self, render: Callable[[Report], str]) -> None:
+        entry = {
+            "request": {"method": "GET", "url": "https://api.example.com/"},
+            "timings": {"dns": 1e308, "wait": 1e308},
+        }
+        report = analyze(parse_har({"log": {"entries": [entry]}}))
+        timing = report.timing.model_copy(update={"total_ms": None})
+        assert render(report) == render(report.model_copy(update={"timing": timing}))

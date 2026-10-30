@@ -285,7 +285,8 @@ def _har_headers(raw: Any) -> dict[str, str]:
 def _timing_from_har(t: dict[str, Any]) -> TimingBreakdown:
     """HAR timings are in ms; -1 means 'not measured', and so does a value
     no finite float holds: Infinity (JSON's 1e400) or an integer too large
-    for a float."""
+    for a float. So does the total when the measured phases add up past the
+    float maximum."""
 
     def _opt(v: Any) -> float | None:
         if isinstance(v, (int, float)) and v >= 0:
@@ -305,6 +306,8 @@ def _timing_from_har(t: dict[str, Any]) -> TimingBreakdown:
 
     parts: list[float] = [v for v in (dns, connect, ssl_, wait, receive) if v is not None]
     total: float | None = sum(parts) if parts else None
+    if total is not None and not math.isfinite(total):
+        total = None  # finite phases that add up past the float maximum
 
     return TimingBreakdown(
         dns_ms=dns,

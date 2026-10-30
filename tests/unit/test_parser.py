@@ -120,6 +120,13 @@ class TestParseHar:
         assert cap.timing.connect_ms == 22.0
         assert cap.timing.total_ms == pytest.approx(63.0)
 
+    def test_total_past_the_float_maximum_is_unmeasured(self) -> None:
+        # Each phase is finite; their sum isn't.
+        cap = parse_har(_minimal_har(timings={"dns": 1e308, "wait": 1e308}))
+        assert cap.timing.dns_ms == 1e308
+        assert cap.timing.ttfb_ms == 1e308
+        assert cap.timing.total_ms is None
+
     def test_omits_response_when_missing_or_zero_status(self):
         har = _minimal_har()
         cap = parse_har(har)

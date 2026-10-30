@@ -394,6 +394,13 @@ CASES: list[Case] = [
         REPORT,
     ),
     Case("har-timing-400-digit-int", _har(timings={"dns": 10**400, "wait": 5}), "har", REPORT),
+    # Finite phases whose sum isn't: the total showed as "inf s" / "inf ms".
+    Case(
+        "har-timing-sum-past-the-float-maximum",
+        _har(timings={"dns": 1e308, "wait": 1e308}),
+        "har",
+        REPORT,
+    ),
     # A live status outside 100-599, which h11 accepts: a 500 from both
     # /api/run routes and a traceback from run and from-curl.
     *[
