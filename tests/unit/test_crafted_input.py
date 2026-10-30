@@ -48,6 +48,7 @@ import handler  # sys.path manipulated above
 
 REPORT = "<a report>"
 VALIDATION = "<FastAPI's 422>"
+UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 
 
 @dataclass(frozen=True)
@@ -275,6 +276,28 @@ CASES: list[Case] = [
         "curl",
         "Curl command's Cookie header is too long (limit: 4,096 characters).",
     ),
+    # Request bodies json.loads can't read: the hosted demo answered 500, or
+    # 400 with Python's message for a HAR sent as a string.
+    *[
+        case
+        for name, value in [("4301-digit-int", _NINES), ("nested-100000-deep", _DEEP)]
+        for case in [
+            Case(
+                f"har-{name}",
+                _har()[:-1] + ', "x": ' + value + "}",
+                "har",
+                UNREADABLE_JSON,
+                {"serve": "There was an error parsing the body"},
+            ),
+            Case(
+                f"body-run-{name}",
+                Body("/api/run", '{"method": "GET", "url": "https://x.com/", "x": ' + value + "}"),
+                "body",
+                UNREADABLE_JSON,
+                {"serve": "There was an error parsing the body"},
+            ),
+        ]
+    ],
     # A HAR parse_har rejects, and a request the runner refuses to send:
     # from-har and run printed a traceback.
     Case("har-not-a-har-archive", '{"foo": "bar"}', "har", "Not a HAR archive (missing 'log')."),

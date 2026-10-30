@@ -62,6 +62,12 @@ MAX_CURL_CHARS = 50_000
 MAX_CURL_ARGS = 1_000
 MAX_CURL_COOKIE_CHARS = 4_096
 
+UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
+"""What parse_har raises, and the hosted demo's handler answers for a request
+body, when json.loads can't read valid JSON: an integer over Python's
+4,300-digit conversion limit, or nesting past the recursion limit (about
+10,000 levels on Python 3.12)."""
+
 
 def _normalize_http_version(raw: Any) -> str:
     if not isinstance(raw, str):
@@ -78,7 +84,12 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     Multi-entry HARs are common (a full session capture); for v1 we analyse
     the first entry only.
     """
-    data = json.loads(raw) if isinstance(raw, str) else raw
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        raise
+    except (ValueError, RecursionError) as e:
+        raise ValueError(UNREADABLE_JSON) from e
     if not isinstance(data, dict) or "log" not in data:
         raise ValueError("Not a HAR archive (missing 'log').")
     log = data["log"]

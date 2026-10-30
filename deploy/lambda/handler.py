@@ -48,7 +48,7 @@ from pydantic_core import PydanticSerializationError
 from api_medic import __version__
 from api_medic.core.engine import analyze
 from api_medic.core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
-from api_medic.core.parser import parse_curl, parse_har
+from api_medic.core.parser import UNREADABLE_JSON, parse_curl, parse_har
 from api_medic.core.runner import run as run_request
 from api_medic.core.runner import validate_request
 from api_medic.core.runner_safety import (
@@ -111,6 +111,8 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
         body = json.loads(raw) if raw else {}
     except json.JSONDecodeError as e:
         return _err(400, f"Body is not valid JSON: {e.msg}")
+    except (ValueError, RecursionError):
+        return _err(400, UNREADABLE_JSON)
 
     if not isinstance(body, dict) or "kind" not in body:
         return _err(400, "Body must include 'kind' (one of 'har', 'curl').")
@@ -147,6 +149,8 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
         body = json.loads(raw) if raw else {}
     except json.JSONDecodeError as e:
         return _err(400, f"Body is not valid JSON: {e.msg}")
+    except (ValueError, RecursionError):
+        return _err(400, UNREADABLE_JSON)
 
     if not isinstance(body, dict):
         return _err(400, "Body must be a JSON object.")
