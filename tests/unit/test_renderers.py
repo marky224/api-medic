@@ -207,3 +207,5 @@ class TestHarTimingTotalPastTheFloatMaximum:
         report = analyze(parse_har({"log": {"entries": [entry]}}))
         timing = report.timing.model_copy(update={"total_ms": None})
         assert render(report) == render(report.model_copy(update={"timing": timing}))
+        # render_json wrote the old Infinity total as null too.
+        assert report.timing.total_ms is None

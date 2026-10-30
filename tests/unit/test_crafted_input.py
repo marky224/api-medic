@@ -22,6 +22,7 @@ except that one that doesn't show an unpaired surrogate prints the report.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import re
 import shlex
@@ -82,6 +83,9 @@ class Case:
     # reads.
     expect: str | tuple[str, ...]
     differs: dict[str, str | tuple[str, ...]] = field(default_factory=dict)
+    # A pattern no output may match: a server's response body, or the CLI's
+    # stdout in any format.
+    never_shows: str | None = None
 
     def entries(self) -> list[str]:
         if self.kind == "har":
@@ -407,12 +411,14 @@ CASES: list[Case] = [
         REPORT,
     ),
     Case("har-timing-400-digit-int", _har(timings={"dns": 10**400, "wait": 5}), "har", REPORT),
-    # Finite phases whose sum isn't: the total showed as "inf s" / "inf ms".
+    # Finite phases whose sum isn't: the CLI's terminal, markdown and html
+    # output showed the total as "inf s" / "inf ms" (JSON as null).
     Case(
         "har-timing-sum-past-the-float-maximum",
         _har(timings={"dns": 1e308, "wait": 1e308}),
         "har",
         REPORT,
+        never_shows=r"\binf\b",
     ),
     # A live status outside 100-599, which h11 accepts: a 500 from both
     # /api/run routes and a traceback from run and from-curl.
@@ -509,7 +515,12 @@ def _flat(text: str) -> str:
     return " ".join(re.sub(r"[\u2500-\u257f]", " ", text).split())
 
 
-def _lambda(path: str, body: str | bytes) -> str:
+def _assert_never_shows(output: str, pattern: str | None) -> None:
+    if pattern is not None:
+        assert re.search(pattern, output) is None, (pattern, output[:2000])
+
+
+def _lambda_entry(path: str, body: str | bytes, never_shows: str | None = None) -> str:
     if isinstance(body, bytes):
         event_body, is_base64 = base64.b64encode(body).decode("ascii"), True
     else:
@@ -521,6 +532,7 @@ def _lambda(path: str, body: str | bytes) -> str:
         "isBase64Encoded": is_base64,
     }
     result = handler.lambda_handler(event, None)
+    _assert_never_shows(result["body"], never_shows)
     status, payload = result["statusCode"], json.loads(result["body"])
     if status == 200:
         assert "findings" in payload, payload
@@ -530,9 +542,10 @@ def _lambda(path: str, body: str | bytes) -> str:
     return detail
 
 
-def _serve(path: str, body: str | bytes) -> str:
+def _serve_entry(path: str, body: str | bytes, never_shows: str | None = None) -> str:
     client = TestClient(web_app.app, raise_server_exceptions=False)
     r = client.post(path, content=body, headers={"content-type": "application/json"})
+    _assert_never_shows(r.text, never_shows)
     if r.status_code == 200:
         assert "findings" in r.json(), r.text
         return REPORT
@@ -543,11 +556,12 @@ def _serve(path: str, body: str | bytes) -> str:
     return detail
 
 
-def _cli(args: list[str]) -> dict[str, str]:
+def _cli_entry(args: list[str], never_shows: str | None = None) -> dict[str, str]:
     """How `api-medic <args>` ends in each output format."""
     endings: dict[str, str] = {}
     for fmt in _FORMATS:
         result = CliRunner().invoke(cli_main.app, [*args, "-o", fmt])
+        _assert_never_shows(result.stdout, never_shows)
         if result.exit_code == 0:
             if fmt == "json":
                 assert "findings" in json.loads(result.stdout)
@@ -572,6 +586,9 @@ def _ends_as_expected(got: str, want: str | tuple[str, ...]) -> bool:
 
 
 def _send(case: Case, entry: str, tmp_path: Path) -> str | dict[str, str]:
+    _lambda = functools.partial(_lambda_entry, never_shows=case.never_shows)
+    _serve = functools.partial(_serve_entry, never_shows=case.never_shows)
+    _cli = functools.partial(_cli_entry, never_shows=case.never_shows)
     if case.kind == "har":
         har = case.input
         if entry == "cli":
