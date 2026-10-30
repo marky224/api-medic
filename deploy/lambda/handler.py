@@ -15,7 +15,8 @@ resolves the name once and connects only to an address that passed the
 same check, so a DNS answer that changes after the guard ran can't
 point it somewhere else. A request that can't be sent at all (a
 malformed URL, a non-ASCII header, a non-string body) gets a 400 before
-any DNS lookup.
+any DNS lookup. A response whose status is outside 100-599, which a
+Report can't hold, gets a 400 after the exchange.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -55,6 +56,7 @@ from api_medic.core.runner_safety import (
     InvalidRequestError,
     InvalidURLError,
     UnsafeURLError,
+    UnusableResponseError,
     check_url_safe,
 )
 
@@ -194,7 +196,7 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
             url_guard=_check_redirect_safe,
             pin_connections=True,
         )
-    except UnsafeURLError as e:
+    except (UnsafeURLError, UnusableResponseError) as e:
         return _err(400, str(e))
     report = analyze(captured)
     return _report_response(report)

@@ -35,7 +35,7 @@ from ..core.models import (
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
-from ..core.runner_safety import InvalidRequestError
+from ..core.runner_safety import InvalidRequestError, UnusableResponseError
 
 app = typer.Typer(
     name="api-medic",
@@ -267,9 +267,10 @@ def run(
 
     try:
         captured = runner_run(method, url, headers=headers, body=body_data, timeout=timeout)
-    except InvalidRequestError as e:
-        # Refused before anything is sent, e.g. a port outside 1-65535; the
-        # hosted demo's /api/run answers 400 with this text.
+    except (InvalidRequestError, UnusableResponseError) as e:
+        # A request refused before anything is sent (e.g. a port outside
+        # 1-65535) or a response a Report can't hold (a status outside
+        # 100-599); the hosted demo's /api/run answers 400 with this text.
         raise typer.BadParameter(str(e)) from e
     report = _analyze(captured)
     if verbose:
@@ -310,9 +311,11 @@ def from_curl(
                 headers=captured.headers,
                 body=captured.body if captured.body else None,
             )
-        except InvalidRequestError as e:
-            # Refused before anything is sent, e.g. a URL holding an unpaired
-            # surrogate; the hosted demo's /api/run answers 400 with this text.
+        except (InvalidRequestError, UnusableResponseError) as e:
+            # A request refused before anything is sent (e.g. a URL holding an
+            # unpaired surrogate) or a response a Report can't hold (a status
+            # outside 100-599); the hosted demo's /api/run answers 400 with
+            # this text.
             raise typer.BadParameter(str(e)) from e
     report = _analyze(captured)
     if verbose:

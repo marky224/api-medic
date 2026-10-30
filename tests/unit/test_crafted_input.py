@@ -347,6 +347,19 @@ CASES: list[Case] = [
         REPORT,
     ),
     Case("har-timing-400-digit-int", _har(timings={"dns": 10**400, "wait": 5}), "har", REPORT),
+    # A live status outside 100-599, which h11 accepts: a 500 from both
+    # /api/run routes and a traceback from run and from-curl.
+    *[
+        Case(
+            f"run-status-{status}",
+            Live(status=status),
+            "run",
+            REPORT
+            if status <= 599
+            else f"The server answered with status {status}, outside 100-599.",
+        )
+        for status in (200, 599, 600, 999)
+    ],
     # A HAR parse_har rejects, and a request the runner refuses to send:
     # from-har and run printed a traceback.
     Case("har-not-a-har-archive", '{"foo": "bar"}', "har", "Not a HAR archive (missing 'log')."),

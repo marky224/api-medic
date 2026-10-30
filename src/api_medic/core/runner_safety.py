@@ -45,6 +45,11 @@ class InvalidURLError(InvalidRequestError):
     """Raised by validate_url for a URL that can't be fetched as given."""
 
 
+class UnusableResponseError(ValueError):
+    """Raised by core.runner.run, after the exchange, for a response a Report
+    can't hold (a status outside 100-599); callers answer 400."""
+
+
 # scheme "://" authority; the authority ends at the first "/", "?" or "#".
 _AUTHORITY = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://([^/?#]*)")
 

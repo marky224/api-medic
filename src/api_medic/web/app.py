@@ -25,7 +25,7 @@ from ..core.engine import analyze
 from ..core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
 from ..core.parser import parse_curl, parse_har
 from ..core.runner import run as run_request
-from ..core.runner_safety import InvalidRequestError
+from ..core.runner_safety import InvalidRequestError, UnusableResponseError
 
 app = FastAPI(title="api-medic", version=__version__)
 
@@ -103,7 +103,7 @@ async def run_endpoint(body: RunRequest) -> Report:
             headers=body.headers,
             body=body.body,
         )
-    except InvalidRequestError as e:
+    except (InvalidRequestError, UnusableResponseError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return analyze(captured)
 
