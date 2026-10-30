@@ -298,6 +298,38 @@ CASES: list[Case] = [
             ),
         ]
     ],
+    # HAR fields of the wrong type: AttributeError and OverflowError, a 500
+    # or a traceback.
+    *[
+        Case(
+            f"har-{field_name}-{type_name}",
+            _har({"method": "POST", "postData": value})
+            if field_name == "post-data"
+            else _har_response(content=value)
+            if field_name == "content"
+            else _har(timings=value),
+            "har",
+            f"HAR entry[0] (https://api.example.com/): {message} must be an object.",
+        )
+        for field_name, message in [
+            ("post-data", "request.postData"),
+            ("content", "response.content"),
+            ("timings", "timings"),
+        ]
+        for type_name, value in [("string", "x"), ("list", [1]), ("number", 5)]
+    ],
+    Case(
+        "har-status-1e400",
+        _har_response().replace('"status": 200', '"status": 1e400'),
+        "har",
+        "HAR entry's response.status is not an integer: inf",
+    ),
+    Case(
+        "har-status-minus-1e400",
+        _har_response().replace('"status": 200', '"status": -1e400'),
+        "har",
+        "HAR entry's response.status is not an integer: -inf",
+    ),
     # A HAR parse_har rejects, and a request the runner refuses to send:
     # from-har and run printed a traceback.
     Case("har-not-a-har-archive", '{"foo": "bar"}', "har", "Not a HAR archive (missing 'log')."),

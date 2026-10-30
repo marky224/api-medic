@@ -132,20 +132,22 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
         raise ValueError("HAR entry[0]: request.url is empty.")
 
     request_headers = _har_headers(request.get("headers"))
-    body_text = (request.get("postData") or {}).get("text", "")
+    body_text = _har_object(request.get("postData"), label, "request.postData").get("text", "")
     body = _utf8(body_text) if isinstance(body_text, str) and body_text else b""
 
     captured_response: CapturedResponse | None = None
     response_obj = entry.get("response")
     if isinstance(response_obj, dict) and response_obj.get("status"):
         resp_headers = _har_headers(response_obj.get("headers"))
-        resp_body_text = (response_obj.get("content") or {}).get("text", "")
+        content = _har_object(response_obj.get("content"), label, "response.content")
+        resp_body_text = content.get("text", "")
         resp_body = (
             _utf8(resp_body_text) if isinstance(resp_body_text, str) and resp_body_text else b""
         )
         try:
             status_code = int(response_obj["status"])
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
+            # OverflowError: int() of Infinity, which JSON's 1e400 reads as.
             raise ValueError(
                 f"HAR entry's response.status is not an integer: {response_obj['status']!r}"
             ) from e
@@ -158,7 +160,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
             protocol=_normalize_http_version(response_obj.get("httpVersion")),
         )
 
-    timing = _timing_from_har(entry.get("timings") or {})
+    timing = _timing_from_har(_har_object(entry.get("timings"), label, "timings"))
 
     return CapturedRequest(
         method=method.upper(),
@@ -249,6 +251,17 @@ def _utf8(text: str) -> bytes:
         return text.encode("utf-8")
     except UnicodeEncodeError as e:
         raise UnencodableTextError from e
+
+
+def _har_object(value: Any, label: str, name: str) -> dict[str, Any]:
+    """A HAR field that holds an object: `value`, or {} when it is absent or
+    falsy (null, "", [], 0), as before. Anything else is a ValueError naming
+    the entry and the field."""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: {name} must be an object.")
+    return value
 
 
 def _har_headers(raw: Any) -> dict[str, str]:

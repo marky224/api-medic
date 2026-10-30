@@ -230,6 +230,22 @@ class TestParseHar:
         with pytest.raises(ValueError, match=r"response\.status is not an integer"):
             parse_har(har)
 
+    @pytest.mark.parametrize("value", [None, "", [], 0, False, {}])
+    @pytest.mark.parametrize("field", ["request.postData", "response.content", "timings"])
+    def test_falsy_object_field_parses_as_if_absent(self, field: str, value: Any) -> None:
+        # Only a field of another type that isn't falsy is an error.
+        def har(with_field: bool) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "request": {"method": "POST", "url": "https://x/"},
+                "response": {"status": 200},
+            }
+            if with_field:
+                parent, _, name = field.rpartition(".")
+                (entry[parent] if parent else entry)[name] = value
+            return {"log": {"entries": [entry]}}
+
+        assert parse_har(har(True)) == parse_har(har(False))
+
     def test_chrome_devtools_401_entry_yields_auth_missing(self):
         """Regression: a chrome.devtools.network.Request-shaped 401 entry
         (as the browser extension serializes it) round-trips through the
