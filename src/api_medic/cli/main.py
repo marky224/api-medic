@@ -30,13 +30,12 @@ from ..core.engine import analyze
 from ..core.models import (
     UNENCODABLE_TEXT,
     Report,
-    UnencodableTextError,
     is_unencodable_text_error,
 )
 from ..core.parser import parse_curl, parse_har
 from ..core.render import render_html, render_json, render_markdown, render_terminal
 from ..core.runner import run as runner_run
-from ..core.runner_safety import InvalidRequestError
+from ..core.runner_safety import InvalidRequestError, UnusableResponseError
 
 app = typer.Typer(
     name="api-medic",
@@ -159,10 +158,26 @@ def _emit(
         raise typer.BadParameter(UNENCODABLE_TEXT) from e
 
     if save is not None:
-        save.write_text(text, encoding="utf-8")
-        typer.echo(f"Wrote {save}", err=True)
+        try:
+            save.write_text(text, encoding="utf-8")
+        except OSError as e:
+            raise _file_error("write", save, e) from e
+        typer.echo(_printable(f"Wrote {save}"), err=True)
     else:
         typer.echo(text)
+
+
+def _printable(text: str) -> str:
+    """`text` with any unpaired surrogate escaped. A path that isn't valid
+    UTF-8 reaches Python holding them, and stderr can't print them."""
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _file_error(action: str, path: Path, error: OSError) -> typer.BadParameter:
+    """A usage error (exit 2) for a file the CLI can't read or write, naming
+    it and the OS's reason, e.g. "Can't read x.har: No such file or
+    directory."."""
+    return typer.BadParameter(_printable(f"Can't {action} {path}: {error.strerror or error}."))
 
 
 def _analyze(captured: CapturedRequest) -> Report:
@@ -262,12 +277,23 @@ def run(
     if body is not None and body_file is not None:
         raise typer.BadParameter("--body and --body-file are mutually exclusive.")
 
-    body_data: str | bytes | None = body_file.read_bytes() if body_file is not None else body
+    body_data: str | bytes | None = body
+    if body_file is not None:
+        try:
+            body_data = body_file.read_bytes()
+        except OSError as e:
+            raise _file_error("read", body_file, e) from e
 
     headers = _parse_headers(header or [])
 
-    captured = runner_run(method, url, headers=headers, body=body_data, timeout=timeout)
-    report = analyze(captured)
+    try:
+        captured = runner_run(method, url, headers=headers, body=body_data, timeout=timeout)
+    except (InvalidRequestError, UnusableResponseError) as e:
+        # A request refused before anything is sent (e.g. a port outside
+        # 1-65535) or a response a Report can't hold (a status outside
+        # 100-599); the hosted demo's /api/run answers 400 with this text.
+        raise typer.BadParameter(str(e)) from e
+    report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
     _emit(report, output=output, save=save, no_color=no_color)
@@ -306,9 +332,11 @@ def from_curl(
                 headers=captured.headers,
                 body=captured.body if captured.body else None,
             )
-        except InvalidRequestError as e:
-            # Refused before anything is sent, e.g. a URL holding an unpaired
-            # surrogate; the hosted demo's /api/run answers 400 with this text.
+        except (InvalidRequestError, UnusableResponseError) as e:
+            # A request refused before anything is sent (e.g. a URL holding an
+            # unpaired surrogate) or a response a Report can't hold (a status
+            # outside 100-599); the hosted demo's /api/run answers 400 with
+            # this text.
             raise typer.BadParameter(str(e)) from e
     report = _analyze(captured)
     if verbose:
@@ -325,11 +353,21 @@ def from_har(
     verbose: VerboseOption = False,
 ) -> None:
     """Analyze a captured HAR file (no execution)."""
-    raw = file.read_text(encoding="utf-8")
     try:
-        captured = parse_har(raw)
-    except UnencodableTextError as e:
-        raise typer.BadParameter(str(e)) from e
+        captured = parse_har(file.read_text(encoding="utf-8"))
+    except OSError as e:
+        # A path that doesn't exist, or a directory.
+        raise _file_error("read", file, e) from e
+    except ValueError as e:
+        # Includes a file that isn't UTF-8 (UnicodeDecodeError). The message
+        # can quote the entry's URL, unpaired surrogate and all, which stderr
+        # can't print; api-medic serve answers that one the same way.
+        message = str(e)
+        try:
+            message.encode("utf-8")
+        except UnicodeEncodeError:
+            message = UNENCODABLE_TEXT
+        raise typer.BadParameter(message) from e
     report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)

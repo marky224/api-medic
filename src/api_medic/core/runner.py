@@ -34,6 +34,7 @@ from .runner_safety import (
     InvalidRequestError,
     InvalidURLError,
     PinnedTransport,
+    UnusableResponseError,
     connect_pinned,
     validate_url,
 )
@@ -91,7 +92,9 @@ def run(
     Location httpx can't turn into a request or whose URL validate_url
     rejects (with `url_guard` set, the guard refuses such a hop first).
     Diagnostic checks that need a response no-op for it. A request that can't be sent as given raises
-    InvalidRequestError (see validate_request) before anything is sent.
+    InvalidRequestError (see validate_request) before anything is sent. A
+    final response whose status is outside 100-599, which h11 accepts but a
+    Report can't hold, raises UnusableResponseError after the exchange.
     """
     validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
@@ -151,6 +154,10 @@ def run(
         # front, so these can only come from the response.
         response = None
     total_ms = (time.monotonic() - start) * 1000.0
+    if response is not None and not 100 <= response.status_code <= 599:
+        raise UnusableResponseError(
+            f"The server answered with status {response.status_code}, outside 100-599."
+        )
 
     captured_response: CapturedResponse | None = None
     redirect_chain: list[str] | None = None

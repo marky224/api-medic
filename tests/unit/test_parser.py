@@ -112,6 +112,21 @@ class TestParseHar:
         assert cap.timing.connect_ms == 22.0
         assert cap.timing.total_ms == pytest.approx(68.0)
 
+    @pytest.mark.parametrize("dns", [float("inf"), 10**400], ids=["infinity", "400-digit-int"])
+    def test_timing_no_finite_float_holds_is_unmeasured(self, dns: float) -> None:
+        # JSON's 1e400 reads as Infinity; float() of the integer overflows.
+        cap = parse_har(_minimal_har(timings={"dns": dns, "connect": 22.0, "wait": 41.0}))
+        assert cap.timing.dns_ms is None
+        assert cap.timing.connect_ms == 22.0
+        assert cap.timing.total_ms == pytest.approx(63.0)
+
+    def test_total_past_the_float_maximum_is_unmeasured(self) -> None:
+        # Each phase is finite; their sum isn't.
+        cap = parse_har(_minimal_har(timings={"dns": 1e308, "wait": 1e308}))
+        assert cap.timing.dns_ms == 1e308
+        assert cap.timing.ttfb_ms == 1e308
+        assert cap.timing.total_ms is None
+
     def test_omits_response_when_missing_or_zero_status(self):
         har = _minimal_har()
         cap = parse_har(har)
@@ -229,6 +244,22 @@ class TestParseHar:
         }
         with pytest.raises(ValueError, match=r"response\.status is not an integer"):
             parse_har(har)
+
+    @pytest.mark.parametrize("value", [None, "", [], 0, False, {}])
+    @pytest.mark.parametrize("field", ["request.postData", "response.content", "timings"])
+    def test_falsy_object_field_parses_as_if_absent(self, field: str, value: Any) -> None:
+        # Only a field of another type that isn't falsy is an error.
+        def har(with_field: bool) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "request": {"method": "POST", "url": "https://x/"},
+                "response": {"status": 200},
+            }
+            if with_field:
+                parent, _, name = field.rpartition(".")
+                (entry[parent] if parent else entry)[name] = value
+            return {"log": {"entries": [entry]}}
+
+        assert parse_har(har(True)) == parse_har(har(False))
 
     def test_chrome_devtools_401_entry_yields_auth_missing(self):
         """Regression: a chrome.devtools.network.Request-shaped 401 entry
@@ -556,6 +587,49 @@ class TestParseCurl:
         with pytest.raises(ValueError) as e:
             parse_curl("curl https://api.example.com/ -d 'open")
         assert str(e.value) == "Could not parse curl command: No closing quotation"
+
+    @pytest.mark.parametrize(
+        ("args", "cookie"),
+        [
+            (["-H", "Cookie: session=abc; theme=dark"], "session=abc; theme=dark"),
+            # SimpleCookie would sort these and drop the attribute.
+            (["-H", "Cookie: b=2; a=1; Path=/"], "b=2; a=1; Path=/"),
+            (["-H", "Cookie: a=1", "-H", "cookie: b=2"], "a=1; b=2"),
+            (["-HCookie: a=1"], "a=1"),
+            (["--header=Cookie: a=1"], "a=1"),
+            (["-H", "$Cookie:a=1"], "a=1"),
+        ],
+        ids=[
+            "one",
+            "order-and-attributes",
+            "two-headers",
+            "-H<value>",
+            "--header=<value>",
+            "$-key",
+        ],
+    )
+    def test_cookie_header_is_kept_as_given(self, args: list[str], cookie: str) -> None:
+        # uncurl moves Cookie headers into ctx.cookies; the request didn't carry them.
+        cap = parse_curl(shlex.join(["curl", "https://api.example.com/", *args, "-H", "X-A: b"]))
+        assert cap.headers == {"X-A": "b", "Cookie": cookie}
+
+    def test_command_without_a_cookie_header_keeps_uncurls_headers(self) -> None:
+        curl = shlex.join(
+            [
+                "curl",
+                "https://api.example.com/",
+                "-H",
+                "Authorization: Bearer x",
+                "-H",
+                "X-Cookie: a=1",
+                "-H",
+                "Accept :  */*  ",
+                "-H",
+                ":authority: api.example.com",
+            ]
+        )
+        headers = dict(uncurl.parse_context(curl).headers)
+        assert list(parse_curl(curl).headers.items()) == list(headers.items())
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

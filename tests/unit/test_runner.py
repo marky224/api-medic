@@ -18,6 +18,7 @@ import pytest
 from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedTls
 from api_medic.core.runner import DEFAULT_USER_AGENT, run
+from api_medic.core.runner_safety import UnusableResponseError
 
 
 def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
@@ -169,6 +170,29 @@ class TestRun:
         )
         assert cap.response is not None
         assert cap.response.status_code == 401
+
+    def test_status_599_is_captured_normally(self) -> None:
+        cap = run(
+            "GET",
+            "https://example.com/",
+            transport=_transport(lambda request: httpx.Response(599)),
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert cap.response.status_code == 599
+
+    @pytest.mark.parametrize("status", [600, 999])
+    @pytest.mark.parametrize("redirected", [False, True], ids=["direct", "after-a-redirect"])
+    def test_status_outside_100_599_is_unusable(self, status: int, redirected: bool) -> None:
+        # h11 accepts any three-digit status; a Report can't hold these.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if redirected and request.url.path == "/":
+                return httpx.Response(302, headers={"Location": "/next"})
+            return httpx.Response(status)
+
+        with pytest.raises(UnusableResponseError) as e:
+            run("GET", "https://example.com/", transport=_transport(handler), probe_network=False)
+        assert str(e.value) == f"The server answered with status {status}, outside 100-599."
 
 
 class TestRedirectChain:

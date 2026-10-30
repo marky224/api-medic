@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import math
 import shlex
 from collections.abc import Iterator
 from typing import Any
@@ -62,6 +63,12 @@ MAX_CURL_CHARS = 50_000
 MAX_CURL_ARGS = 1_000
 MAX_CURL_COOKIE_CHARS = 4_096
 
+UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
+"""What parse_har raises, and the hosted demo's handler answers for a request
+body, when json.loads can't read valid JSON: an integer over Python's
+4,300-digit conversion limit, or nesting past the recursion limit (about
+10,000 levels on Python 3.12)."""
+
 
 def _normalize_http_version(raw: Any) -> str:
     if not isinstance(raw, str):
@@ -78,7 +85,12 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     Multi-entry HARs are common (a full session capture); for v1 we analyse
     the first entry only.
     """
-    data = json.loads(raw) if isinstance(raw, str) else raw
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        raise
+    except (ValueError, RecursionError) as e:
+        raise ValueError(UNREADABLE_JSON) from e
     if not isinstance(data, dict) or "log" not in data:
         raise ValueError("Not a HAR archive (missing 'log').")
     log = data["log"]
@@ -121,20 +133,22 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
         raise ValueError("HAR entry[0]: request.url is empty.")
 
     request_headers = _har_headers(request.get("headers"))
-    body_text = (request.get("postData") or {}).get("text", "")
+    body_text = _har_object(request.get("postData"), label, "request.postData").get("text", "")
     body = _utf8(body_text) if isinstance(body_text, str) and body_text else b""
 
     captured_response: CapturedResponse | None = None
     response_obj = entry.get("response")
     if isinstance(response_obj, dict) and response_obj.get("status"):
         resp_headers = _har_headers(response_obj.get("headers"))
-        resp_body_text = (response_obj.get("content") or {}).get("text", "")
+        content = _har_object(response_obj.get("content"), label, "response.content")
+        resp_body_text = content.get("text", "")
         resp_body = (
             _utf8(resp_body_text) if isinstance(resp_body_text, str) and resp_body_text else b""
         )
         try:
             status_code = int(response_obj["status"])
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
+            # OverflowError: int() of Infinity, which JSON's 1e400 reads as.
             raise ValueError(
                 f"HAR entry's response.status is not an integer: {response_obj['status']!r}"
             ) from e
@@ -147,7 +161,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
             protocol=_normalize_http_version(response_obj.get("httpVersion")),
         )
 
-    timing = _timing_from_har(entry.get("timings") or {})
+    timing = _timing_from_har(_har_object(entry.get("timings"), label, "timings"))
 
     return CapturedRequest(
         method=method.upper(),
@@ -164,7 +178,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     """Parse a curl command string into a CapturedRequest.
 
     The curl command describes a request only — the resulting CapturedRequest
-    has no `response`. Pair with `core.runner` to actually execute it.
+    has no `response`. Pair with `core.runner` to actually execute it. Its
+    Cookie headers are kept as given, joined with "; " into one.
     """
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
@@ -180,7 +195,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     with _uncurl_errors():
         # The parser uncurl.parse_context reads the arguments with.
         header_values = uncurl.api.parser.parse_args(args).header
-    if _cookie_chars(header_values) > MAX_CURL_COOKIE_CHARS:
+    cookie_values = _cookie_values(header_values)
+    if sum(len(value) for value in cookie_values) > MAX_CURL_COOKIE_CHARS:
         raise ValueError(
             "Curl command's Cookie header is too long "
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
@@ -190,6 +206,12 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
+    # uncurl moves every Cookie header into ctx.cookies, read with
+    # SimpleCookie, which reorders the cookies and drops attributes. Send
+    # them as the command gave them, stripped like uncurl strips the others.
+    cookie = "; ".join(value.strip() for value in cookie_values if value.strip())
+    if cookie:
+        headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""
 
     return CapturedRequest(
@@ -219,16 +241,15 @@ def _uncurl_errors() -> Iterator[None]:
         raise ValueError(f"Could not parse curl command: {e}") from e
 
 
-def _cookie_chars(headers: list[str]) -> int:
-    """Characters in the values of the headers uncurl reads with
-    SimpleCookie: those whose key, lowercased and stripped of "$", is
-    "cookie"."""
-    total = 0
+def _cookie_values(headers: list[str]) -> list[str]:
+    """The values of the headers uncurl reads with SimpleCookie: those whose
+    key, lowercased and stripped of "$", is "cookie"."""
+    values = []
     for header in headers:
         key, _, value = header.partition(":")
         if key.lower().strip("$") == "cookie":
-            total += len(value)
-    return total
+            values.append(value)
+    return values
 
 
 def _utf8(text: str) -> bytes:
@@ -238,6 +259,17 @@ def _utf8(text: str) -> bytes:
         return text.encode("utf-8")
     except UnicodeEncodeError as e:
         raise UnencodableTextError from e
+
+
+def _har_object(value: Any, label: str, name: str) -> dict[str, Any]:
+    """A HAR field that holds an object: `value`, or {} when it is absent or
+    falsy (null, "", [], 0), as before. Anything else is a ValueError naming
+    the entry and the field."""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: {name} must be an object.")
+    return value
 
 
 def _har_headers(raw: Any) -> dict[str, str]:
@@ -251,11 +283,19 @@ def _har_headers(raw: Any) -> dict[str, str]:
 
 
 def _timing_from_har(t: dict[str, Any]) -> TimingBreakdown:
-    """HAR timings are in ms; -1 means 'not measured'."""
+    """HAR timings are in ms; -1 means 'not measured', and so does a value
+    no finite float holds: Infinity (JSON's 1e400) or an integer too large
+    for a float. So does the total when the measured phases add up past the
+    float maximum."""
 
     def _opt(v: Any) -> float | None:
         if isinstance(v, (int, float)) and v >= 0:
-            return float(v)
+            try:
+                ms = float(v)
+            except OverflowError:
+                return None
+            if math.isfinite(ms):
+                return ms
         return None
 
     dns = _opt(t.get("dns"))
@@ -266,6 +306,8 @@ def _timing_from_har(t: dict[str, Any]) -> TimingBreakdown:
 
     parts: list[float] = [v for v in (dns, connect, ssl_, wait, receive) if v is not None]
     total: float | None = sum(parts) if parts else None
+    if total is not None and not math.isfinite(total):
+        total = None  # finite phases that add up past the float maximum
 
     return TimingBreakdown(
         dns_ms=dns,

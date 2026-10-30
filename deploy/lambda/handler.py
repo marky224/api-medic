@@ -15,7 +15,8 @@ resolves the name once and connects only to an address that passed the
 same check, so a DNS answer that changes after the guard ran can't
 point it somewhere else. A request that can't be sent at all (a
 malformed URL, a non-ASCII header, a non-string body) gets a 400 before
-any DNS lookup.
+any DNS lookup. A response whose status is outside 100-599, which a
+Report can't hold, gets a 400 after the exchange.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
@@ -48,13 +49,14 @@ from pydantic_core import PydanticSerializationError
 from api_medic import __version__
 from api_medic.core.engine import analyze
 from api_medic.core.models import UNENCODABLE_TEXT, Report, is_unencodable_text_error
-from api_medic.core.parser import parse_curl, parse_har
+from api_medic.core.parser import UNREADABLE_JSON, parse_curl, parse_har
 from api_medic.core.runner import run as run_request
 from api_medic.core.runner import validate_request
 from api_medic.core.runner_safety import (
     InvalidRequestError,
     InvalidURLError,
     UnsafeURLError,
+    UnusableResponseError,
     check_url_safe,
 )
 
@@ -111,6 +113,8 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
         body = json.loads(raw) if raw else {}
     except json.JSONDecodeError as e:
         return _err(400, f"Body is not valid JSON: {e.msg}")
+    except (ValueError, RecursionError):
+        return _err(400, UNREADABLE_JSON)
 
     if not isinstance(body, dict) or "kind" not in body:
         return _err(400, "Body must include 'kind' (one of 'har', 'curl').")
@@ -130,6 +134,8 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
             curl = body.get("curl", "")
             if not curl:
                 return _err(400, "Missing 'curl' field for kind=curl.")
+            if not isinstance(curl, str):
+                return _err(400, "'curl' must be a string.")
             captured = parse_curl(curl)
         else:
             return _err(400, f"Unknown kind: {kind!r} (expected 'har' or 'curl').")
@@ -147,6 +153,8 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
         body = json.loads(raw) if raw else {}
     except json.JSONDecodeError as e:
         return _err(400, f"Body is not valid JSON: {e.msg}")
+    except (ValueError, RecursionError):
+        return _err(400, UNREADABLE_JSON)
 
     if not isinstance(body, dict):
         return _err(400, "Body must be a JSON object.")
@@ -190,7 +198,7 @@ def _handle_run(event: dict[str, Any]) -> dict[str, Any]:
             url_guard=_check_redirect_safe,
             pin_connections=True,
         )
-    except UnsafeURLError as e:
+    except (UnsafeURLError, UnusableResponseError) as e:
         return _err(400, str(e))
     report = analyze(captured)
     return _report_response(report)
