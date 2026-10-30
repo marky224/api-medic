@@ -134,6 +134,8 @@ def _handle_analyze(event: dict[str, Any]) -> dict[str, Any]:
             curl = body.get("curl", "")
             if not curl:
                 return _err(400, "Missing 'curl' field for kind=curl.")
+            if not isinstance(curl, str):
+                return _err(400, "'curl' must be a string.")
             captured = parse_curl(curl)
         else:
             return _err(400, f"Unknown kind: {kind!r} (expected 'har' or 'curl').")

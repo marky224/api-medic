@@ -407,6 +407,19 @@ CASES: list[Case] = [
         "run",
         "port must be a whole number from 1 to 65535 (got '99999').",
     ),
+    # A curl value that isn't a string: AttributeError or TypeError in
+    # parse_curl, a 500 from the hosted demo. A har value that is neither a
+    # string nor an object was already a 400.
+    *[
+        Case(f"curl-{name}", value, "curl", "'curl' must be a string.", {"serve": VALIDATION})
+        for name, value in [("number", 5), ("true", True), ("list", [1]), ("object", {"a": 1})]
+    ],
+    *[
+        Case(
+            f"har-{name}", text, "har", "Not a HAR archive (missing 'log').", {"serve": VALIDATION}
+        )
+        for name, text in [("number", "5"), ("true", "true"), ("list", "[1]")]
+    ],
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
