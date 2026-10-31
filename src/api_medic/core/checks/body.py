@@ -74,8 +74,8 @@ def malformed_json(captured: CapturedRequest) -> Finding | None:
         )
     except RecursionError:
         # Nesting deeper than the recursion limit (about 10,000 levels on
-        # Python 3.12) stops the parser before it can tell whether the JSON
-        # is valid, so the body is skipped either way.
+        # Python 3.12, 3,000 on Windows) stops the parser before it can tell
+        # whether the JSON is valid, so the body is skipped either way.
         return None
     return None
 

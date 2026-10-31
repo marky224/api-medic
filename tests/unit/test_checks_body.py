@@ -91,7 +91,7 @@ class TestMalformedJson:
 
 # Valid JSON past Python's limits: integers over int()'s 4,300-digit limit
 # (parsed without converting them), and nesting deeper than the recursion
-# limit (about 10,000 levels on Python 3.12).
+# limit (about 10,000 levels on Python 3.12, 3,000 on Windows).
 _PYTHON_LIMITS = [b"9" * 4301, b'{"n": ' + b"9" * 4301 + b"}", b"[" * 100_000 + b"]" * 100_000]
 _PYTHON_LIMITS_IDS = ["4301-digit-int", "4301-digit-int-in-object", "nested-100000-deep"]
 

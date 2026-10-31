@@ -188,8 +188,8 @@ class TestAnalyzeCurl:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Lambda sends stderr to CloudWatch; argparse would print the
-        unrecognized --cookie and its value there."""
-        curl = "curl https://api.example.com/ --cookie 'session=SECRET-7f3a'"
+        unrecognized --data-urlencode and its value there."""
+        curl = "curl https://api.example.com/ --data-urlencode 'session=SECRET-7f3a'"
         body = json.dumps({"kind": "curl", "curl": curl})
         result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
         assert result["statusCode"] == 400
