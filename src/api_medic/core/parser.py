@@ -89,7 +89,7 @@ UNREADABLE_JSON = "request body has a number too long or nesting too deep to rea
 """What parse_har raises, and the hosted demo's handler answers for a request
 body, when json.loads can't read valid JSON: an integer over Python's
 4,300-digit conversion limit, or nesting past the recursion limit (about
-10,000 levels on Python 3.12)."""
+10,000 levels on Python 3.12, 3,000 on Windows)."""
 
 
 def _normalize_http_version(raw: Any) -> str:
