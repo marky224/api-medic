@@ -50,6 +50,14 @@ import handler  # sys.path manipulated above
 REPORT = "<a report>"
 VALIDATION = "<FastAPI's 422>"
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
+COOKIE_FILE = (
+    "Curl command reads cookies from a file (-b/--cookie with a file name or -); "
+    "api-medic reads no files. Give the cookies as -b 'NAME=VALUE'."
+)
+COOKIE_JAR = (
+    "Curl command writes cookies to a file (-c/--cookie-jar); "
+    "api-medic writes no files. Leave it out."
+)
 
 
 @dataclass(frozen=True)
@@ -498,6 +506,34 @@ CASES: list[Case] = [
     # same checks as every other header.
     Case("curl-cookie", f"{_CURL} -H 'Cookie: b=2; a=1; Path=/'", "curl", REPORT),
     Case("curl-cookie-surrogate", f"{_CURL} -H 'Cookie: a=\ud800'", "curl", UNENCODABLE_TEXT),
+    # uncurl reads -b as --data-binary: the cookie became a POST's body. An
+    # -H Cookie header replaces the -b cookies, as curl sends them.
+    Case(
+        "curl-cookie-option",
+        f"{_CURL} -b 'session=abc; theme=dark'",
+        "curl",
+        REPORT,
+        never_shows=r"\bPOST\b",
+    ),
+    Case(
+        "curl-cookie-option-with-cookie-header",
+        f"{_CURL} -H 'Cookie: a=1' -b 'b=2'",
+        "curl",
+        REPORT,
+        never_shows=r"\bPOST\b",
+    ),
+    Case("curl-cookie-long-option", f"{_CURL} --cookie 'a=1'", "curl", REPORT),
+    # A file to read cookies from or write them to: api-medic touches none.
+    Case("curl-cookie-file", f"{_CURL} -b cookies.txt", "curl", COOKIE_FILE),
+    Case("curl-cookie-stdin", f"{_CURL} -b -", "curl", COOKIE_FILE),
+    Case("curl-cookie-jar", f"{_CURL} -c jar.txt", "curl", COOKIE_JAR),
+    Case(
+        "curl-cookie-option-over-4096-characters",
+        f"{_CURL} -b '" + "=" * 4_096 + "\U0001f600'",
+        "curl",
+        "Curl command's Cookie header is too long (limit: 4,096 characters).",
+    ),
+    Case("curl-cookie-option-surrogate", f"{_CURL} -b 'a=\ud800'", "curl", UNENCODABLE_TEXT),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

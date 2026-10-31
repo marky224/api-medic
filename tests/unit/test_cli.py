@@ -694,6 +694,34 @@ class TestFromCurl:
         assert [h.get_list("Cookie") for h in sent] == [["b=2; a=1; c=3"]]
         assert json.loads(result.stdout)["request"]["headers"]["Cookie"] == "b=2; a=1; c=3"
 
+    def test_live_run_sends_the_cookie_option_as_the_cookie_header(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # uncurl reads -b as --data-binary: from-curl sent a POST whose body
+        # was the cookie.
+        sent: list[tuple[str, list[str], bytes]] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append((request.method, request.headers.get_list("Cookie"), request.content))
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+        def resolve_dns(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
+            return CapturedDns(records=["93.184.216.34"]), 0.0
+
+        def probe_tls(host: str, port: int, *a: Any, **kw: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        monkeypatch.setattr(core_runner, "_resolve_dns", resolve_dns)
+        monkeypatch.setattr(core_runner, "_probe_tls", probe_tls)
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        curl = "curl https://api.example.com/ -b 'b=2; a=1'"
+        result = runner.invoke(app, ["from-curl", curl, "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        assert sent == [("GET", ["b=2; a=1"], b"")]
+
     @pytest.mark.parametrize(
         "curl",
         [
@@ -705,8 +733,22 @@ class TestFromCurl:
             "curl https://api.example.com/ -H 'Cookie:" + "=" * 4_096 + "\U0001f600'",
             "   ",
             "definitely not a curl command",
+            # A -b file to read cookies from, and a -c file to write them to.
+            "curl https://api.example.com/ -b cookies.txt",
+            "curl https://api.example.com/ -c jar.txt",
+            # A -b value one character over parser.MAX_CURL_COOKIE_CHARS.
+            "curl https://api.example.com/ -b '" + "=" * 4_096 + "\U0001f600'",
         ],
-        ids=["over-the-limit", "too-many-args", "cookie-too-long", "empty", "unparseable"],
+        ids=[
+            "over-the-limit",
+            "too-many-args",
+            "cookie-too-long",
+            "empty",
+            "unparseable",
+            "cookie-file",
+            "cookie-jar",
+            "cookie-option-too-long",
+        ],
     )
     def test_command_parse_curl_rejects_exits_2(self, runner, fake_runner, curl):
         # The empty and unparseable ones used to print a traceback and exit 1.

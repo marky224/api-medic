@@ -15,6 +15,7 @@ import contextlib
 import io
 import json
 import math
+import re
 import shlex
 from collections.abc import Iterator
 from typing import Any
@@ -62,6 +63,27 @@ _HTTP_VERSION_NORMALIZATIONS = {
 MAX_CURL_CHARS = 50_000
 MAX_CURL_ARGS = 1_000
 MAX_CURL_COOKIE_CHARS = 4_096
+
+# uncurl reads -b as --data-binary and doesn't know --cookie or -c, so
+# parse_curl takes curl's cookie options out of the command first. curl reads
+# a -b/--cookie value holding "=" as cookies to send, and any other value as
+# a file to read them from ("-" is stdin, and "@" before a name makes it a
+# file); -c/--cookie-jar names a file to write them to. api-medic reads and
+# writes no files.
+COOKIE_FILE = (
+    "Curl command reads cookies from a file (-b/--cookie with a file name or -); "
+    "api-medic reads no files. Give the cookies as -b 'NAME=VALUE'."
+)
+COOKIE_JAR = (
+    "Curl command writes cookies to a file (-c/--cookie-jar); "
+    "api-medic writes no files. Leave it out."
+)
+# The flags uncurl reads without a value: argparse reads -kb as -k and then
+# -b, as curl does. A token like -Lb, which curl also reads as -L and -b,
+# is one uncurl rejects.
+_CURL_FLAGS = "iks"
+_COOKIE_OPTION = re.compile(rf"-([{_CURL_FLAGS}]*)([bc])(.*)", re.DOTALL)
+_LONG_COOKIE_OPTIONS = {"--cookie": "b", "--cookie-jar": "c"}
 
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 """What parse_har raises, and the hosted demo's handler answers for a request
@@ -179,7 +201,9 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     The curl command describes a request only — the resulting CapturedRequest
     has no `response`. Pair with `core.runner` to actually execute it. Its
-    Cookie headers are kept as given, joined with "; " into one.
+    Cookie headers are kept as given, joined with "; " into one. Without
+    one, its -b/--cookie cookies are the Cookie header, as curl sends them;
+    a -b/--cookie file or a -c/--cookie-jar is a ValueError.
     """
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
@@ -192,24 +216,32 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
+    args, cookie_options = _cookie_options(args)
     with _uncurl_errors():
         # The parser uncurl.parse_context reads the arguments with.
         header_values = uncurl.api.parser.parse_args(args).header
     cookie_values = _cookie_values(header_values)
-    if sum(len(value) for value in cookie_values) > MAX_CURL_COOKIE_CHARS:
+    # The -b/--cookie cookies count even when a Cookie header replaces them.
+    if sum(len(value) for value in [*cookie_values, *cookie_options]) > MAX_CURL_COOKIE_CHARS:
         raise ValueError(
             "Curl command's Cookie header is too long "
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
         )
     with _uncurl_errors():
-        ctx = uncurl.parse_context(curl_str)
+        # uncurl splits the command with shlex as well, so it reads the
+        # arguments left once the cookie options are out.
+        ctx = uncurl.parse_context(shlex.join(args) if cookie_options else curl_str)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send
     # them as the command gave them, stripped like uncurl strips the others.
-    cookie = "; ".join(value.strip() for value in cookie_values if value.strip())
+    # curl sends the -b/--cookie cookies only when there is no Cookie
+    # header; an empty one (-H 'Cookie:') sends no cookies at all.
+    cookie = "; ".join(
+        value.strip() for value in (cookie_values or cookie_options) if value.strip()
+    )
     if cookie:
         headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""
@@ -239,6 +271,48 @@ def _uncurl_errors() -> Iterator[None]:
         raise ValueError("Could not parse curl command (argparse rejected it).") from e
     except Exception as e:
         raise ValueError(f"Could not parse curl command: {e}") from e
+
+
+def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
+    """`args` without curl's -b/--cookie options, and those options' values.
+
+    Reads -b VALUE, -bVALUE (whose "=" curl keeps: -b=a=1 is "=a=1"),
+    -kb VALUE and -kbVALUE, --cookie VALUE and --cookie=VALUE, where VALUE
+    is the next argument whatever it starts with, as curl reads it. A -b
+    with no argument after it, and anything after "--", are left for
+    uncurl to reject. A cookie file or a -c/--cookie-jar is a ValueError.
+    """
+    kept: list[str] = []
+    cookies: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":  # argparse reads the rest as positional arguments
+            kept += args[i - 1 :]
+            break
+        name, eq, attached = arg.partition("=")
+        if name in _LONG_COOKIE_OPTIONS:
+            flags, option, value = "", _LONG_COOKIE_OPTIONS[name], attached if eq else None
+        elif match := _COOKIE_OPTION.fullmatch(arg):
+            flags, option, value = match[1], match[2], match[3] or None
+        else:
+            kept.append(arg)
+            continue
+        if value is None:
+            if i == len(args):
+                kept.append(arg)
+                continue
+            value = args[i]
+            i += 1
+        if option == "c":
+            raise ValueError(COOKIE_JAR)
+        if "=" not in value or value.startswith("@"):
+            raise ValueError(COOKIE_FILE)
+        if flags:
+            kept.append("-" + flags)
+        cookies.append(value)
+    return kept, cookies
 
 
 def _cookie_values(headers: list[str]) -> list[str]:

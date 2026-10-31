@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shlex
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 import uncurl  # type: ignore[import-untyped]
 
+from api_medic.core import parser as core_parser
 from api_medic.core.models import UNENCODABLE_TEXT
 from api_medic.core.parser import parse_curl, parse_har
 
@@ -435,7 +439,9 @@ def _cookie_value(n: int) -> str:
     return "=" * (n - 1) + "\U0001f600"
 
 
-# The ways argparse reads a -H value, each given that header's value.
+# The ways a command gives its Cookie header's value, each given that value:
+# the ways argparse reads a -H value, and curl's -b/--cookie, whose values
+# count even when a Cookie header replaces them.
 _COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
     "-H": lambda v: ["-H", "Cookie:" + v],
     "-H<value>": lambda v: ["-HCookie:" + v],
@@ -449,6 +455,13 @@ _COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
     "$COOKIE$-key": lambda v: ["-H", "$COOKIE$:" + v],
     "value-starting-with-colon": lambda v: ["-H", "Cookie::" + v[1:]],
     "two-headers": lambda v: ["-H", "Cookie:" + v[:100], "-H", "cookie:" + v[100:]],
+    "-b": lambda v: ["-b", v],
+    "-b<value>": lambda v: ["-b" + v],
+    "-kb<value>": lambda v: ["-kb" + v],
+    "--cookie": lambda v: ["--cookie", v],
+    "--cookie=<value>": lambda v: ["--cookie=" + v],
+    "two-b": lambda v: ["-b", v[:100], "-b", v[100:]],
+    "header-and-b": lambda v: ["-H", "Cookie:" + v[:100], "-b", v[100:]],
 }
 
 # Whether this Python's argparse reads -kH=<value> as <value>, as the local
@@ -496,9 +509,9 @@ class TestParseCurl:
     def test_rejected_command_writes_nothing_to_stderr(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # argparse would print the unrecognized --cookie and its value.
+        # argparse would print the unrecognized --data-urlencode and its value.
         with pytest.raises(ValueError, match="argparse rejected it"):
-            parse_curl("curl https://api.example.com/ --cookie 'session=SECRET-7f3a'")
+            parse_curl("curl https://api.example.com/ --data-urlencode 'session=SECRET-7f3a'")
         assert capsys.readouterr().err == ""
 
     def test_command_at_the_limit_parses(self) -> None:
@@ -630,6 +643,268 @@ class TestParseCurl:
         )
         headers = dict(uncurl.parse_context(curl).headers)
         assert list(parse_curl(curl).headers.items()) == list(headers.items())
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ \\\n  -H 'X-A: b'",
+            "curl https://api.example.com/ \\\n  -b 'a=1'",
+        ],
+        ids=["header", "cookie-option"],
+    )
+    def test_command_on_several_lines_is_refused_as_before(self, curl: str) -> None:
+        # Neither uncurl nor parse_curl joins a backslash-newline continuation.
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+
+# Mirror parser.COOKIE_FILE and parser.COOKIE_JAR.
+_COOKIE_FILE = (
+    "Curl command reads cookies from a file (-b/--cookie with a file name or -); "
+    "api-medic reads no files. Give the cookies as -b 'NAME=VALUE'."
+)
+_COOKIE_JAR = (
+    "Curl command writes cookies to a file (-c/--cookie-jar); "
+    "api-medic writes no files. Leave it out."
+)
+
+
+def _curl_with_args(*args: str) -> str:
+    return shlex.join(["curl", "https://api.example.com/", *args])
+
+
+class _UnreadableStdin:
+    """A stdin that records, and fails, every read."""
+
+    def __init__(self, reads: list[str]) -> None:
+        self._reads = reads
+
+    def read(self, *a: Any) -> str:
+        self._reads.append("stdin")
+        raise AssertionError("read stdin")
+
+    readline = readlines = read
+
+    def __iter__(self) -> Iterator[str]:
+        return iter([self.read()])
+
+
+@contextlib.contextmanager
+def _no_file_or_stdin() -> Iterator[list[str]]:
+    """Record, and fail, every file open and stdin read in the block."""
+    reads: list[str] = []
+
+    def fail(*a: Any, **kw: Any) -> Any:
+        reads.append(f"open {a[0]!r}")
+        raise AssertionError("opened a file")
+
+    with (
+        mock.patch("builtins.open", fail),
+        mock.patch("io.open", fail),
+        mock.patch("os.open", fail),
+        mock.patch("sys.stdin", _UnreadableStdin(reads)),
+    ):
+        yield reads
+
+
+@pytest.fixture
+def cookie_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A working directory holding the files the tests' options name."""
+    for name in ("cookies.txt", "jar.txt", "x"):
+        (tmp_path / name).write_text("api.example.com\tFALSE\t/\tTRUE\t0\tsession\tabc\n")
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+class TestCurlCookieOptions:
+    """uncurl reads curl's -b as --data-binary, so a cookie became the body,
+    and it doesn't know --cookie or -c."""
+
+    @pytest.mark.parametrize(
+        ("args", "cookie"),
+        [
+            (["-b", "session=abc; theme=dark"], "session=abc; theme=dark"),
+            (["-bsession=abc"], "session=abc"),
+            (["--cookie", "a=1"], "a=1"),
+            (["--cookie=a=1"], "a=1"),
+            (["-kb", "a=1"], "a=1"),
+            (["-kba=1"], "a=1"),
+            (["-sib", "a=1"], "a=1"),
+            # curl keeps the "=" after a short option; argparse would drop it.
+            (["-b=a=1"], "=a=1"),
+            (["-b", "a=1", "--cookie", "b=2"], "a=1; b=2"),
+            (["-b", " a=1 "], "a=1"),
+            # The next argument is the value whatever it starts with, as in curl.
+            (["-b", "-x=1"], "-x=1"),
+        ],
+        ids=[
+            "-b",
+            "-b<value>",
+            "--cookie",
+            "--cookie=<value>",
+            "-kb",
+            "-kb<value>",
+            "-sib",
+            "-b=<value>",
+            "several",
+            "whitespace",
+            "value-starting-with-dash",
+        ],
+    )
+    def test_cookie_option_is_the_cookie_header(self, args: list[str], cookie: str) -> None:
+        cap = parse_curl(_curl_with_args(*args))
+        assert (cap.method, cap.headers, cap.body) == ("GET", {"Cookie": cookie}, b"")
+
+    def test_cookie_option_keeps_the_method_and_body(self) -> None:
+        cap = parse_curl(_curl_with_args("-X", "PUT", "-d", "x", "-b", "a=1"))
+        assert (cap.method, cap.headers, cap.body) == ("PUT", {"Cookie": "a=1"}, b"x")
+
+    @pytest.mark.parametrize("option", ["--data-binary", "--data-raw", "--data-b"])
+    def test_data_binary_and_data_raw_stay_bodies(self, option: str) -> None:
+        cap = parse_curl(_curl_with_args(option, "a=1"))
+        assert (cap.method, cap.headers, cap.body) == ("POST", {}, b"a=1")
+
+    @pytest.mark.parametrize(
+        ("args", "headers"),
+        [
+            (["-H", "Cookie: a=1", "-b", "b=2"], {"Cookie": "a=1"}),
+            (["-b", "b=2", "-H", "Cookie: a=1"], {"Cookie": "a=1"}),
+            (["-H", "Cookie:", "-b", "b=2"], {}),
+        ],
+        ids=["header-first", "option-first", "empty-header"],
+    )
+    def test_cookie_header_replaces_the_cookie_option(
+        self, args: list[str], headers: dict[str, str]
+    ) -> None:
+        # curl 8.5.0 sends only the -H Cookie header, and no Cookie header
+        # at all for an empty one.
+        cap = parse_curl(_curl_with_args(*args))
+        assert (cap.method, cap.headers, cap.body) == ("GET", headers, b"")
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-b", "cookies.txt"],
+            ["-bcookies.txt"],
+            ["-kb", "cookies.txt"],
+            ["--cookie", "cookies.txt"],
+            ["--cookie=cookies.txt"],
+            ["-b", "-"],
+            ["-b", ""],
+            ["-b", "@c=1"],
+            ["-b", "a=1", "-b", "cookies.txt"],
+        ],
+        ids=[
+            "-b",
+            "-b<value>",
+            "-kb",
+            "--cookie",
+            "--cookie=<value>",
+            "stdin",
+            "empty",
+            "@-name",
+            "after-a-cookie",
+        ],
+    )
+    def test_cookie_file_is_refused(self, cookie_files: Path, args: list[str]) -> None:
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        # Names the option and quotes none of the command.
+        assert str(e.value) == _COOKIE_FILE
+        assert reads == []
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-c", "jar.txt"],
+            ["-cjar.txt"],
+            ["-kc", "jar.txt"],
+            ["--cookie-jar", "jar.txt"],
+            ["--cookie-jar=jar.txt"],
+            ["-c", "-"],
+            ["-b", "a=1", "-c", "jar.txt"],
+        ],
+        ids=["-c", "-c<value>", "-kc", "--cookie-jar", "--cookie-jar=<value>", "stdout", "with-b"],
+    )
+    def test_cookie_jar_is_refused(self, cookie_files: Path, args: list[str]) -> None:
+        jar = (cookie_files / "jar.txt").read_text()
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == _COOKIE_JAR
+        assert reads == []
+        assert (cookie_files / "jar.txt").read_text() == jar
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            # argparse reads -ba=1 as an option, so -d has no value.
+            (["-d", "-ba=1"], "Could not parse curl command (argparse rejected it)."),
+            # And -bx as -b naming the file x, which curl would send as -H's value.
+            (["-H", "-bx"], _COOKIE_FILE),
+            (["-X", "-b", "a=1"], "Could not parse curl command (argparse rejected it)."),
+            (["-H", "-c", "x"], _COOKIE_JAR),
+        ],
+        ids=["-d-then-cookie", "-H-then-file", "-X-then-cookie", "-H-then-jar"],
+    )
+    def test_option_value_that_looks_like_a_cookie_option(
+        self, cookie_files: Path, args: list[str], message: str
+    ) -> None:
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == message
+        assert reads == []
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-b"],
+            ["--cookie"],
+            ["-c"],
+            ["--", "-b", "a=1"],
+            ["-j", "-b", "a=1"],
+            ["--junk-session-cookies", "-b", "a=1"],
+        ],
+        ids=["-b-last", "--cookie-last", "-c-last", "after---", "-j", "--junk-session-cookies"],
+    )
+    def test_command_uncurl_rejects_is_refused_as_before(
+        self, cookie_files: Path, args: list[str]
+    ) -> None:
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+        assert reads == []
+
+    def test_cookie_option_at_the_limit_parses(self) -> None:
+        value = _cookie_value(_MAX_CURL_COOKIE_CHARS)
+        cap = parse_curl(_curl_with_cookie(value, "-b"))
+        assert (cap.method, cap.headers, cap.body) == ("GET", {"Cookie": value}, b"")
+
+    def test_command_with_a_cookie_option_at_the_limit_parses_quickly(self) -> None:
+        # uncurl gets the command written again by shlex.join, which writes
+        # each single quote as 5 characters: '"'"'.
+        head = 'curl https://api.example.com/ -b a=1 -d "'
+        curl = head + "'" * (_MAX_CURL_CHARS - len(head) - 1) + '"'
+        started = time.perf_counter()
+        cap = parse_curl(curl)
+        elapsed = time.perf_counter() - started
+        assert cap.body == b"'" * (_MAX_CURL_CHARS - len(head) - 1)
+        assert cap.headers == {"Cookie": "a=1"}
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_cookie_option_flags_are_uncurls_flags(self) -> None:
+        # A flag uncurl reads without a value that isn't here would let a
+        # token like -Lb reach uncurl, which would read its cookies as the body.
+        flags = {
+            option[1]
+            for action in uncurl.api.parser._actions
+            if action.nargs == 0
+            for option in action.option_strings
+            if len(option) == 2 and option != "-h"
+        }
+        assert set(core_parser._CURL_FLAGS) == flags
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
