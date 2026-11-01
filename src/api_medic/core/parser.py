@@ -94,6 +94,21 @@ MANY_URLS = (
 # Chrome's Copy as cURL (bash) writes one before each. uncurl doesn't know
 # -g/--globoff, which turns globbing off.
 _GLOB_ESCAPE = re.compile(r"\\(?=[][{}])")
+# Chrome's Copy as cURL (bash) writes a value holding ', ! or a control
+# character as $'...', bash's ANSI-C quoting, with the escapes \\, \', \n,
+# \r, and \u and 4 hex digits. bash keeps the backslash before a character
+# it reads no escape from. It reads other escapes too, but cuts the value
+# at U+0000 and reads a surrogate by the locale; api-medic reads those
+# five only.
+ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
+)
+_ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.DOTALL)
+_ANSI_C_ESCAPE = re.compile(r"\\(u[0-9A-Fa-f]{4}|.)", re.DOTALL)
+_ANSI_C_ESCAPES = {"\\": "\\", "'": "'", "n": "\n", "r": "\r"}
+# The characters after a backslash that bash reads an escape from.
+_BASH_ESCAPES = frozenset("abeEfnrtv\\'\"?01234567xuUc")
 
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 """What parse_har raises, and the hosted demo's handler answers for a request
@@ -274,12 +289,13 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
 def _normalize_bash(command: str) -> str:
     """`command` as shlex reads it the way bash does: without its line
-    continuations. A backslash before a line break goes with the line
+    continuations, and with each $'...' string as the single-quoted string
+    of its value. A backslash before a line break goes with the line
     break, as bash removes it before splitting the command into words,
     except inside single quotes and when the backslash is itself escaped.
     bash joins a backslash before LF only; this joins one before CRLF too.
     Quotes are tracked as shlex tracks them."""
-    if "\\\n" not in command and "\\\r\n" not in command:
+    if "\\\n" not in command and "\\\r\n" not in command and "$'" not in command:
         return command
     out: list[str] = []
     quote = ""
@@ -303,11 +319,37 @@ def _normalize_bash(command: str) -> str:
             continue
         elif char == '"':
             quote = "" if quote else '"'
+        elif char == "$" and not quote and command.startswith("'", i + 1):
+            match = _ANSI_C_STRING.match(command, i)
+            if not match:
+                raise ValueError("Could not parse curl command: No closing quotation")
+            out.append(shlex.quote(_ansi_c(match[1])))
+            i = match.end()
+            continue
         elif char == "'" and not quote:
             quote = "'"
         out.append(char)
         i += 1
     return "".join(out)
+
+
+def _ansi_c(text: str) -> str:
+    """The value of the $'...' string holding `text`, as bash reads the
+    escapes Chrome writes; another escape bash reads is a ValueError."""
+
+    def unescape(match: re.Match[str]) -> str:
+        escape = match[1]
+        if escape in _ANSI_C_ESCAPES:
+            return _ANSI_C_ESCAPES[escape]
+        if len(escape) == 5:  # u and 4 hex digits
+            code = int(escape[1:], 16)
+            if code and not 0xD800 <= code <= 0xDFFF:
+                return chr(code)
+        elif escape not in _BASH_ESCAPES:
+            return match[0]
+        raise ValueError(ANSI_ESCAPE)
+
+    return _ANSI_C_ESCAPE.sub(unescape, text)
 
 
 @contextlib.contextmanager

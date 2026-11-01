@@ -668,6 +668,19 @@ _CHROME_GET = (
     "  -H 'accept: application/json' \\\n"
     "  -b 'session=abc; theme=dark'"
 )
+# The same generator writes a value holding ', ! or a control character as
+# $'...', escaping \ as \\, ' as \', LF as \n, CR as \r and the others as
+# \u and 4 hex digits.
+_CHROME_POST = (
+    "curl --url 'https://api.example.com/v1/items' \\\n"
+    "  -H 'content-type: application/json' \\\n"
+    '  --data-raw $\'{\\n  "name": "it\\\'s",\\n  "tab": "a\\u0009b\\u0021"\\n}\''
+)
+# Mirror parser.ANSI_ESCAPE.
+_ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
+)
 
 
 def _curl_with_args(*args: str) -> str:
@@ -1087,6 +1100,123 @@ class TestCurlUrlOption:
     def test_other_backslashes_stay_in_the_url(self) -> None:
         url = "https://api.example.com/a\\b"
         assert parse_curl(shlex.join(["curl", url])).url == url
+
+
+class TestCurlAnsiCStrings:
+    """Chrome writes a value holding ', ! or a control character as $'...',
+    bash's ANSI-C quoting. shlex read it as $ and a single-quoted string, so
+    the $ and the escapes stayed in the value, or an escaped ' ended it."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            (
+                "curl https://api.example.com/ -H $'x-a: it\\'s'",
+                ("GET", {"x-a": "it's"}, b""),
+            ),
+            (
+                _CHROME_POST,
+                (
+                    "POST",
+                    {"content-type": "application/json"},
+                    b'{\n  "name": "it\'s",\n  "tab": "a\tb!"\n}',
+                ),
+            ),
+            ("curl https://api.example.com/ -d $'a\\\\b'", ("POST", {}, b"a\\b")),
+            ("curl https://api.example.com/ -d $'a\\r\\nb'", ("POST", {}, b"a\r\nb")),
+            ("curl https://api.example.com/ -d x$'\\n'y", ("POST", {}, b"x\ny")),
+            ("curl https://api.example.com/ -d $'caf\\u00e9'", ("POST", {}, "café".encode())),
+            # bash keeps the backslash before a character it reads no escape
+            # from, a line break included.
+            ("curl https://api.example.com/ -d $'a\\[b\\qc'", ("POST", {}, b"a\\[b\\qc")),
+            ("curl https://api.example.com/ -d $'a\\\nb'", ("POST", {}, b"a\\\nb")),
+            ("curl https://api.example.com/ -b $'a=it\\'s'", ("GET", {"Cookie": "a=it's"}, b"")),
+        ],
+        ids=[
+            "header",
+            "chrome-copy",
+            "backslash",
+            "carriage-return",
+            "inside-a-word",
+            "unicode",
+            "other-escapes-kept",
+            "backslash-newline-kept",
+            "cookie-option",
+        ],
+    )
+    def test_ansi_c_string_is_read_as_bash_reads_it(
+        self, curl: str, expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    def test_ansi_c_url_keeps_the_glob_backslashes_for_the_url(self) -> None:
+        # Chrome adds them after quoting; bash keeps them, and curl drops them.
+        cap = parse_curl("curl --url $'https://api.example.com/?q=it\\'s&a\\[0\\]=1'")
+        assert cap.url == "https://api.example.com/?q=it's&a[0]=1"
+
+    @pytest.mark.parametrize(
+        ("curl", "body"),
+        [
+            ("curl https://api.example.com/ -d \"$'a'\"", b"$'a'"),
+            ("curl https://api.example.com/ -d \\$'a'", b"$a"),
+        ],
+        ids=["in-double-quotes", "escaped-dollar"],
+    )
+    def test_dollar_quote_that_isnt_an_ansi_c_string(self, curl: str, body: bytes) -> None:
+        assert parse_curl(curl).body == body
+
+    @pytest.mark.parametrize(
+        "escape",
+        [
+            "\\t",
+            "\\a",
+            "\\e",
+            "\\?",
+            '\\"',
+            "\\x41",
+            "\\101",
+            "\\U0001F600",
+            "\\cA",
+            "\\u41",
+            "\\u0000",
+            "\\ud800",
+            "\\udfff",
+        ],
+    )
+    def test_ansi_c_escape_chrome_doesnt_write_is_refused(self, escape: str) -> None:
+        # bash reads these too, but cuts a value at \u0000 and reads a
+        # surrogate by the locale.
+        with pytest.raises(ValueError) as e:
+            parse_curl(f"curl https://api.example.com/ -d $'a{escape}z'")
+        # Quotes none of the command.
+        assert str(e.value) == _ANSI_ESCAPE
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -d $'a\\'",
+            "curl https://api.example.com/ -d $'abc",
+        ],
+        ids=["escaped-quote-last", "no-quote"],
+    )
+    def test_unterminated_ansi_c_string_is_refused(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == "Could not parse curl command: No closing quotation"
+
+    def test_ansi_c_string_at_the_limit_is_read_quickly(self) -> None:
+        # Each \' is a ' that shlex.quote writes as 5 characters, '"'"'.
+        head = "curl --url 'https://api.example.com/' \\\n  --data-raw $'"
+        quotes = (_MAX_CURL_CHARS - len(head) - 1) // 2
+        curl = head + "\\'" * quotes + "'"
+        started = time.perf_counter()
+        cap = parse_curl(curl)
+        elapsed = time.perf_counter() - started
+        assert cap.body == b"'" * quotes
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

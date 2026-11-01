@@ -61,6 +61,10 @@ COOKIE_JAR = (
 MANY_URLS = (
     "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
 )
+ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
+)
 
 
 @dataclass(frozen=True)
@@ -565,6 +569,18 @@ CASES: list[Case] = [
         "curl",
         MANY_URLS,
     ),
+    # Chrome writes a value holding ', ! or a control character as $'...',
+    # which shlex read as $ and a single-quoted string.
+    Case(
+        "curl-ansi-c-body",
+        "curl --url 'https://api.example.com/' \\\n  -H 'content-type: application/json' \\\n"
+        '  --data-raw $\'{\\n  "a": "it\\\'s"\\n}\'',
+        "curl",
+        REPORT,
+    ),
+    Case("curl-ansi-c-header-control", f"{_CURL} -H $'X-A: a\\u0001b'", "curl", REPORT),
+    Case("curl-ansi-c-nul", f"{_CURL} -d $'a\\u0000b'", "curl", ANSI_ESCAPE),
+    Case("curl-ansi-c-surrogate-escape", f"{_CURL} -d $'a\\ud800b'", "curl", ANSI_ESCAPE),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
