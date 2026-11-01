@@ -662,10 +662,12 @@ _MANY_URLS = (
 # Shaped like Chrome DevTools' Copy as cURL (bash), from generateCurlCommand
 # in devtools-frontend's front_end/panels/network/NetworkLogView.ts (main,
 # read 2026-11-01): the URL comes as --url, with a backslash before each
-# [ ] { } for curl's URL globbing, and each part goes on a line of its own.
+# [ ] { } for curl's URL globbing, a header with an empty value as
+# -H 'Name;', and each part goes on a line of its own.
 _CHROME_GET = (
     "curl --url 'https://api.example.com/v1/items?page\\[size\\]=10' \\\n"
     "  -H 'accept: application/json' \\\n"
+    "  -H 'x-empty;' \\\n"
     "  -b 'session=abc; theme=dark'"
 )
 # The same generator writes a value holding ', ! or a control character as
@@ -1038,7 +1040,11 @@ class TestCurlUrlOption:
                 _CHROME_GET,
                 (
                     "https://api.example.com/v1/items?page[size]=10",
-                    {"accept": "application/json", "Cookie": "session=abc; theme=dark"},
+                    {
+                        "accept": "application/json",
+                        "x-empty": "",
+                        "Cookie": "session=abc; theme=dark",
+                    },
                 ),
             ),
         ],
