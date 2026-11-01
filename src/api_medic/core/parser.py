@@ -125,6 +125,34 @@ _ANSI_C_ESCAPE = re.compile(r"\\(u[0-9A-Fa-f]{4}|.)", re.DOTALL)
 _ANSI_C_ESCAPES = {"\\": "\\", "'": "'", "n": "\n", "r": "\r"}
 # The characters after a backslash that bash reads an escape from.
 _BASH_ESCAPES = frozenset("abeEfnrtv\\'\"?01234567xuUc")
+# What a command written for another shell has, which parse_curl names when
+# it can't parse the command. It looks for them in the command as given,
+# without tracking quotes: Windows cmd writes a " inside a value as ^\^",
+# which a bash quote tracker misreads. cmd's quotes also leave a ^ before
+# the URL, which no URL starts with.
+CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
+_OTHER_SHELLS = [
+    (re.compile(r"\^\r?\n"), CMD_LINE_END),
+    (re.compile(r'\^"'), CMD_QUOTES),
+    (re.compile(r"`\r?\n"), POWERSHELL_LINE_END),
+    (re.compile(r"\\[ \t]+\r?\n"), SPACE_AFTER_BACKSLASH),
+]
 
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 """What parse_har raises, and the hosted demo's handler answers for a request
@@ -246,7 +274,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     one, its -b/--cookie cookies are the Cookie header, as curl sends them;
     a -b/--cookie file or a -c/--cookie-jar is a ValueError. A command on
     several lines, each but the last ending in a backslash, is read as
-    one, as bash reads it (see _normalize_bash).
+    one, as bash reads it (see _normalize_bash); one written for Windows
+    cmd or PowerShell is a ValueError naming that.
     """
     # The limit counts the command as given; joining its lines only
     # shortens it.
@@ -259,11 +288,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     try:
         args = shlex.split(command)
     except ValueError as e:
-        raise ValueError(f"Could not parse curl command: {e}") from e
+        raise _parse_error(curl_str, f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
     uncurl_args, cookie_options = _curl_options(args)
-    with _uncurl_errors():
+    with _uncurl_errors(curl_str):
         # The parser uncurl.parse_context reads the arguments with.
         parsed = uncurl.api.parser.parse_args(uncurl_args)
     if parsed.user != ():  # uncurl's default
@@ -278,10 +307,13 @@ def parse_curl(curl_str: str) -> CapturedRequest:
             "Curl command's Cookie header is too long "
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
         )
-    with _uncurl_errors():
+    with _uncurl_errors(curl_str):
         # uncurl splits the command with shlex as well, so it gets the
         # arguments written again when _curl_options changed them.
         ctx = uncurl.parse_context(command if uncurl_args == args else shlex.join(uncurl_args))
+    url = _GLOB_ESCAPE.sub("", ctx.url)
+    if url.startswith("^"):
+        raise ValueError(CMD_QUOTES)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -299,7 +331,7 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     return CapturedRequest(
         method=method,
-        url=_GLOB_ESCAPE.sub("", ctx.url),
+        url=url,
         headers=headers,
         body=body,
         response=None,
@@ -373,9 +405,19 @@ def _ansi_c(text: str) -> str:
     return _ANSI_C_ESCAPE.sub(unescape, text)
 
 
+def _parse_error(curl_str: str, message: str) -> ValueError:
+    """The error for `curl_str`, a command as given that can't be parsed:
+    what in it was written for another shell, if anything, or `message`."""
+    for pattern, other_shell in _OTHER_SHELLS:
+        if pattern.search(curl_str):
+            return ValueError(other_shell)
+    return ValueError(message)
+
+
 @contextlib.contextmanager
-def _uncurl_errors() -> Iterator[None]:
-    """uncurl's and its argparse's errors as ValueError."""
+def _uncurl_errors(curl_str: str) -> Iterator[None]:
+    """uncurl's and its argparse's errors as ValueError, naming what
+    `curl_str`, the command as given, has from another shell."""
     try:
         # argparse prints why it rejected the command to stderr, quoting
         # arguments it didn't recognize (cookie values, bodies). Lambda
@@ -384,9 +426,9 @@ def _uncurl_errors() -> Iterator[None]:
             yield
     except SystemExit as e:
         # uncurl uses argparse, which calls sys.exit() on parse failure.
-        raise ValueError("Could not parse curl command (argparse rejected it).") from e
+        raise _parse_error(curl_str, "Could not parse curl command (argparse rejected it).") from e
     except Exception as e:
-        raise ValueError(f"Could not parse curl command: {e}") from e
+        raise _parse_error(curl_str, f"Could not parse curl command: {e}") from e
 
 
 def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:

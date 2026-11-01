@@ -1344,6 +1344,94 @@ class TestCurlUserAndDataFile:
         assert (cap.method, cap.body) == ("POST", b"@mention")
 
 
+# Mirror parser.CMD_LINE_END, CMD_QUOTES, POWERSHELL_LINE_END and
+# SPACE_AFTER_BACKSLASH.
+_CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+_CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+_POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+_SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
+# Shaped like Chrome DevTools' Copy as cURL (cmd), from the generator
+# _CHROME_GET is shaped by: each value goes in ^"...^", a " in it becomes
+# ^\^", and each part goes on a line of its own, ending in ^.
+_CHROME_CMD = (
+    'curl --url ^"https://api.example.com/^" ^\n'
+    '  -H ^"accept: */*^" ^\n'
+    '  -H ^"sec-ch-ua: ^\\^"Chromium^\\^";v=^\\^"130^\\^"^"'
+)
+
+
+class TestCurlOtherShells:
+    """A command written for Windows cmd or PowerShell, or whose line ends
+    in a backslash and spaces, got the generic parse error, or, as one line
+    in cmd's quotes, a URL starting with ^."""
+
+    @pytest.mark.parametrize(
+        ("curl", "message"),
+        [
+            (_CHROME_CMD, _CMD_LINE_END),
+            (_CHROME_CMD.replace("\n", "\r\n"), _CMD_LINE_END),
+            ("curl.exe https://api.example.com/ `\n  -H 'X-A: b'", _POWERSHELL_LINE_END),
+            ("curl.exe https://api.example.com/ `\r\n  -H 'X-A: b'", _POWERSHELL_LINE_END),
+            ("curl https://api.example.com/ \\ \n  -H 'X-A: b'", _SPACE_AFTER_BACKSLASH),
+            ("curl https://api.example.com/ \\\t\r\n  -H 'X-A: b'", _SPACE_AFTER_BACKSLASH),
+            # shlex finds no closing quote in cmd's ^\^"^".
+            ('curl --url ^"https://api.example.com/^" -H ^"x: a^\\^"^"', _CMD_QUOTES),
+        ],
+        ids=[
+            "cmd",
+            "cmd-crlf",
+            "powershell",
+            "powershell-crlf",
+            "space-after-backslash",
+            "tab-after-backslash",
+            "cmd-quotes-shlex-cant-close",
+        ],
+    )
+    def test_unparseable_command_names_the_other_shell(self, curl: str, message: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        # Quotes none of the command.
+        assert str(e.value) == message
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            'curl --url ^"https://api.example.com/^" -H ^"accept: */*^"',
+            'curl ^"https://api.example.com/^"',
+        ],
+        ids=["chrome-copy-on-one-line", "positional-url"],
+    )
+    def test_url_in_cmd_quotes_is_refused(self, curl: str) -> None:
+        # cmd's quotes leave a ^ before the URL, which no URL starts with.
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _CMD_QUOTES
+
+    def test_other_shells_line_endings_in_a_command_that_parses(self) -> None:
+        cap = parse_curl("curl https://api.example.com/ -d 'a ^\nb `\nc'")
+        assert cap.body == b"a ^\nb `\nc"
+
+    def test_uncurls_other_errors_name_the_other_shell(self) -> None:
+        # uncurl fails on the header, and the ^ line ending is in the body's
+        # quotes: what parse_curl looks for, it looks for without quotes.
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -H ':x' -d 'a ^\nb'")
+        assert str(e.value) == _CMD_LINE_END
+
+
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
 # encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
 # message was the 400's detail.

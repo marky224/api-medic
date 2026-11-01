@@ -73,6 +73,23 @@ DATA_FILE = (
     "Curl command reads data from a file (-d/--data/--data-binary with @); "
     "api-medic reads no files. Give the data as --data-raw '...'."
 )
+CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
 
 
 @dataclass(frozen=True)
@@ -596,6 +613,29 @@ CASES: list[Case] = [
     # body; api-medic reads no files.
     Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
     Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
+    # Written for another shell: the generic parse error, or a URL starting
+    # with ^ from cmd's quotes.
+    Case(
+        "curl-windows-cmd",
+        'curl --url ^"https://api.example.com/^" ^\r\n  -H ^"accept: */*^" ^\r\n  -H ^"X-A: b^"',
+        "curl",
+        CMD_LINE_END,
+    ),
+    Case(
+        "curl-windows-cmd-one-line",
+        'curl --url ^"https://api.example.com/^" -H ^"accept: */*^"',
+        "curl",
+        CMD_QUOTES,
+    ),
+    Case(
+        "curl-powershell",
+        "curl.exe https://api.example.com/ `\n  -H 'X-A: b'",
+        "curl",
+        POWERSHELL_LINE_END,
+    ),
+    Case(
+        "curl-space-after-backslash", f"{_CURL} \\ \n  -H 'X-A: b'", "curl", SPACE_AFTER_BACKSLASH
+    ),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
