@@ -1431,6 +1431,24 @@ class TestCurlOtherShells:
             parse_curl("curl https://api.example.com/ -H ':x' -d 'a ^\nb'")
         assert str(e.value) == _CMD_LINE_END
 
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            # cmd writes $ as ^$. After an odd number of ^\^", a bash quote
+            # tracker is outside quotes, so it reads the $' as the start of
+            # a $'...' string, which has no closing quote.
+            'curl ^"https://api.example.com/^" ^\r\n  -H ^"x: y^" ^\r\n'
+            '  --data-raw ^"^{^\\^"a^\\^":^\\^"b^$\'c^\\^"^}^"',
+            # A $'...' escape api-medic doesn't read.
+            "curl https://api.example.com/ ^\n  -d $'a\\tb'",
+        ],
+        ids=["unclosed-ansi-c-string", "ansi-c-escape"],
+    )
+    def test_ansi_c_errors_name_the_other_shell(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _CMD_LINE_END
+
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
 # encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its

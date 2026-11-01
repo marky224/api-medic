@@ -281,7 +281,10 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     # shortens it.
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
-    command = _normalize_bash(curl_str)
+    try:
+        command = _normalize_bash(curl_str)
+    except ValueError as e:
+        raise _parse_error(curl_str, str(e)) from e
     if not command.strip():
         raise ValueError("Empty curl command.")
     # uncurl splits the command again, the same way.

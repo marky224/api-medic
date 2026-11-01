@@ -627,6 +627,15 @@ CASES: list[Case] = [
         "curl",
         CMD_QUOTES,
     ),
+    # cmd writes $ as ^$, which a bash quote tracker can read as the start of
+    # a $'...' string.
+    Case(
+        "curl-windows-cmd-ansi-c",
+        'curl ^"https://api.example.com/^" ^\r\n  -H ^"x: y^" ^\r\n'
+        '  --data-raw ^"^{^\\^"a^\\^":^\\^"b^$\'c^\\^"^}^"',
+        "curl",
+        CMD_LINE_END,
+    ),
     Case(
         "curl-powershell",
         "curl.exe https://api.example.com/ `\n  -H 'X-A: b'",
