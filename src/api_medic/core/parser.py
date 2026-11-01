@@ -203,15 +203,20 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     has no `response`. Pair with `core.runner` to actually execute it. Its
     Cookie headers are kept as given, joined with "; " into one. Without
     one, its -b/--cookie cookies are the Cookie header, as curl sends them;
-    a -b/--cookie file or a -c/--cookie-jar is a ValueError.
+    a -b/--cookie file or a -c/--cookie-jar is a ValueError. A command on
+    several lines, each but the last ending in a backslash, is read as
+    one, as bash reads it (see _normalize_bash).
     """
+    # The limit counts the command as given; joining its lines only
+    # shortens it.
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
-    if not curl_str.strip():
+    command = _normalize_bash(curl_str)
+    if not command.strip():
         raise ValueError("Empty curl command.")
     # uncurl splits the command again, the same way.
     try:
-        args = shlex.split(curl_str)
+        args = shlex.split(command)
     except ValueError as e:
         raise ValueError(f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
@@ -230,7 +235,7 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     with _uncurl_errors():
         # uncurl splits the command with shlex as well, so it reads the
         # arguments left once the cookie options are out.
-        ctx = uncurl.parse_context(shlex.join(args) if cookie_options else curl_str)
+        ctx = uncurl.parse_context(shlex.join(args) if cookie_options else command)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -255,6 +260,44 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         timing=TimingBreakdown(),
         source="curl",
     )
+
+
+def _normalize_bash(command: str) -> str:
+    """`command` as shlex reads it the way bash does: without its line
+    continuations. A backslash before a line break goes with the line
+    break, as bash removes it before splitting the command into words,
+    except inside single quotes and when the backslash is itself escaped.
+    bash joins a backslash before LF only; this joins one before CRLF too.
+    Quotes are tracked as shlex tracks them."""
+    if "\\\n" not in command and "\\\r\n" not in command:
+        return command
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+        elif char == "\\":
+            if command.startswith("\n", i + 1):
+                i += 2
+                continue
+            if command.startswith("\r\n", i + 1):
+                i += 3
+                continue
+            # A backslash escapes the next character, in or out of double
+            # quotes.
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif char == "'" and not quote:
+            quote = "'"
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 @contextlib.contextmanager

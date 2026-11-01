@@ -534,6 +534,20 @@ CASES: list[Case] = [
         "Curl command's Cookie header is too long (limit: 4,096 characters).",
     ),
     Case("curl-cookie-option-surrogate", f"{_CURL} -b 'a=\ud800'", "curl", UNENCODABLE_TEXT),
+    # A command on several lines, each ending in a backslash: the
+    # backslash-newline was an argument of its own, which argparse rejected.
+    Case("curl-on-several-lines", f"{_CURL} \\\n  -H 'X-A: b'", "curl", REPORT),
+    Case("curl-on-several-lines-crlf", f"{_CURL} \\\r\n  -H 'X-A: b'", "curl", REPORT),
+    Case(
+        "curl-on-several-lines-cookie-option",
+        f"{_CURL} \\\n  -b 'a=1'",
+        "curl",
+        REPORT,
+        never_shows=r"\bPOST\b",
+    ),
+    Case(
+        "curl-on-several-lines-surrogate", f"{_CURL} \\\n  -d 'a\ud800'", "curl", UNENCODABLE_TEXT
+    ),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

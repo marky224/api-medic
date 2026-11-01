@@ -644,20 +644,6 @@ class TestParseCurl:
         headers = dict(uncurl.parse_context(curl).headers)
         assert list(parse_curl(curl).headers.items()) == list(headers.items())
 
-    @pytest.mark.parametrize(
-        "curl",
-        [
-            "curl https://api.example.com/ \\\n  -H 'X-A: b'",
-            "curl https://api.example.com/ \\\n  -b 'a=1'",
-        ],
-        ids=["header", "cookie-option"],
-    )
-    def test_command_on_several_lines_is_refused_as_before(self, curl: str) -> None:
-        # Neither uncurl nor parse_curl joins a backslash-newline continuation.
-        with pytest.raises(ValueError) as e:
-            parse_curl(curl)
-        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
-
 
 # Mirror parser.COOKIE_FILE and parser.COOKIE_JAR.
 _COOKIE_FILE = (
@@ -905,6 +891,101 @@ class TestCurlCookieOptions:
             if len(option) == 2 and option != "-h"
         }
         assert set(core_parser._CURL_FLAGS) == flags
+
+
+class TestCurlOnSeveralLines:
+    """A backslash before a line break continues the line, as in bash. shlex
+    kept the line break: as an argument of its own between words, which
+    argparse rejected, and inside a word or double quotes."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            ("curl https://api.example.com/ \\\n  -H 'X-A: b'", ("GET", {"X-A": "b"}, b"")),
+            ("curl https://api.example.com/ \\\r\n  -H 'X-A: b'", ("GET", {"X-A": "b"}, b"")),
+            ("curl https://api.example.com/ \\\n  -b 'a=1'", ("GET", {"Cookie": "a=1"}, b"")),
+            ("curl https://api.example.com/ -b \\\n  'a=1'", ("GET", {"Cookie": "a=1"}, b"")),
+            (
+                "curl https://api.example.com/ \\\n  -H 'Cookie: a=1'",
+                ("GET", {"Cookie": "a=1"}, b""),
+            ),
+            ("curl https://api.example.com/ -d a\\\nb", ("POST", {}, b"ab")),
+            ('curl https://api.example.com/ -d "a\\\nb"', ("POST", {}, b"ab")),
+            # An escaped backslash, then a continuation.
+            ("curl https://api.example.com/ -d a\\\\\\\nb", ("POST", {}, b"a\\b")),
+        ],
+        ids=[
+            "lf",
+            "crlf",
+            "cookie-option",
+            "cookie-value-on-next-line",
+            "cookie-header",
+            "inside-a-word",
+            "inside-double-quotes",
+            "escaped-backslash-then-continuation",
+        ],
+    )
+    def test_command_on_several_lines_is_one_command(
+        self, curl: str, expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    @pytest.mark.parametrize(
+        ("curl", "body"),
+        [
+            ("curl https://api.example.com/ -d 'a\\\nb'", b"a\\\nb"),
+            # An escaped backslash, then a line break.
+            ("curl https://api.example.com/ -d a\\\\\n  -k", b"a\\"),
+            ("curl https://api.example.com/ -d a\\\rb", b"a\rb"),
+        ],
+        ids=["single-quotes", "escaped-backslash", "carriage-return-alone"],
+    )
+    def test_backslash_and_line_break_stay_where_bash_keeps_them(
+        self, curl: str, body: bytes
+    ) -> None:
+        assert parse_curl(curl).body == body
+
+    def test_backslash_at_the_end_is_refused_as_before(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -d a\\")
+        assert str(e.value) == "Could not parse curl command: No escaped character"
+
+    def test_only_line_continuations_is_empty(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(" \\\n \\\r\n ")
+        assert str(e.value) == "Empty curl command."
+
+    def test_argument_limit_counts_the_joined_arguments(self) -> None:
+        # Each -k on a line of its own, indented as a browser writes them.
+        # Unjoined, each backslash-newline was an argument too.
+        curl = "curl https://api.example.com/" + " \\\n  -k" * (_MAX_CURL_ARGS - 2)
+        started = time.perf_counter()
+        cap = parse_curl(curl)
+        elapsed = time.perf_counter() - started
+        assert cap.url == "https://api.example.com/"
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_continuations_at_the_limit_are_read_quickly(self) -> None:
+        started = time.perf_counter()
+        with pytest.raises(ValueError) as e:
+            parse_curl("\\\n" * (_MAX_CURL_CHARS // 2))
+        elapsed = time.perf_counter() - started
+        assert str(e.value) == "Empty curl command."
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_character_limit_counts_the_command_as_given(self) -> None:
+        # One character over the limit; joined, one under it.
+        head = "curl https://api.example.com/ \\\n  -d '"
+        curl = head + "a" * (_MAX_CURL_CHARS - len(head)) + "'"
+        assert len(curl) == _MAX_CURL_CHARS + 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == "Curl command is too long (limit: 50,000 characters)."
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
