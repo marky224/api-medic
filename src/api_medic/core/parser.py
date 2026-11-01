@@ -94,6 +94,18 @@ MANY_URLS = (
 # Chrome's Copy as cURL (bash) writes one before each. uncurl doesn't know
 # -g/--globoff, which turns globbing off.
 _GLOB_ESCAPE = re.compile(r"\\(?=[][{}])")
+# uncurl reads -u/--user as credentials, which parse_curl doesn't send, and
+# a -d/--data or --data-binary value as the body; curl reads one starting
+# with "@" from the file it names ("@-" is stdin), and a --data-raw value as
+# given.
+USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
 # curl sends -H 'Name;' as the header Name with no value, and Chrome's Copy
 # as cURL (bash) writes a header with an empty value that way. uncurl splits
 # each header at its first colon.
@@ -253,8 +265,13 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     uncurl_args, cookie_options = _curl_options(args)
     with _uncurl_errors():
         # The parser uncurl.parse_context reads the arguments with.
-        header_values = uncurl.api.parser.parse_args(uncurl_args).header
-    cookie_values = _cookie_values(header_values)
+        parsed = uncurl.api.parser.parse_args(uncurl_args)
+    if parsed.user != ():  # uncurl's default
+        raise ValueError(USER_OPTION)
+    # The last -d/--data value, the one uncurl reads.
+    if parsed.data and parsed.data.startswith("@"):
+        raise ValueError(DATA_FILE)
+    cookie_values = _cookie_values(parsed.header)
     # The -b/--cookie cookies count even when a Cookie header replaces them.
     if sum(len(value) for value in [*cookie_values, *cookie_options]) > MAX_CURL_COOKIE_CHARS:
         raise ValueError(
@@ -383,8 +400,8 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     is the next argument whatever it starts with, as curl reads it, and
     --url VALUE and --url=VALUE, unless VALUE starts with "-". A -b or
     --url with no argument after it, and anything after "--", are left for
-    uncurl to reject. A cookie file, a -c/--cookie-jar or more than one
-    --url is a ValueError.
+    uncurl to reject. A cookie file, a -c/--cookie-jar, more than one --url
+    or a --data-binary file is a ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
@@ -401,6 +418,12 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
             i += 1
             continue
         name, eq, attached = arg.partition("=")
+        # argparse reads --data-b and the longer abbreviations as
+        # --data-binary, whose value it stores where it stores --data-raw's.
+        if name.startswith("--data-b") and "--data-binary".startswith(name):
+            data = attached if eq else args[i] if i < len(args) else ""
+            if data.startswith("@"):
+                raise ValueError(DATA_FILE)
         if name == "--url":
             url = attached if eq else args[i] if i < len(args) else None
             if url is None or url.startswith("-"):

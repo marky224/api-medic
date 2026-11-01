@@ -1271,6 +1271,79 @@ class TestCurlEmptyHeader:
         assert str(e.value) == "Could not parse curl command (argparse rejected it)."
 
 
+# Mirror parser.USER_OPTION and parser.DATA_FILE.
+_USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+_DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
+
+
+class TestCurlUserAndDataFile:
+    """uncurl reads -u/--user, whose credentials parse_curl never sent, and
+    a -d or --data-binary value starting with @ as the body, where curl
+    reads the data from that file."""
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -u user:secret",
+            "curl https://api.example.com/v1/charges \\\n  -u sk_test_x: \\\n  -d amount=2000",
+            "curl https://api.example.com/ --user user:secret",
+            "curl https://api.example.com/ --user=user:secret",
+            "curl https://api.example.com/ -uuser:secret",
+            "curl https://api.example.com/ -ku user:secret",
+            "curl https://api.example.com/ --us user:secret",
+        ],
+        ids=["-u", "on-several-lines", "--user", "--user=<value>", "-u<value>", "-ku", "--us"],
+    )
+    def test_user_option_is_refused(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        # Names the option and quotes none of the command.
+        assert str(e.value) == _USER_OPTION
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -d @body.json",
+            "curl https://api.example.com/v1/x \\\n"
+            "  -H 'Content-Type: application/json' \\\n"
+            "  -d @body.json",
+            "curl https://api.example.com/ --data @body.json",
+            "curl https://api.example.com/ -d@body.json",
+            "curl https://api.example.com/ -d @-",
+            "curl https://api.example.com/ --data-binary @body.json",
+            "curl https://api.example.com/ --data-binary=@body.json",
+            "curl https://api.example.com/ --data-b @body.json",
+        ],
+        ids=[
+            "-d",
+            "on-several-lines",
+            "--data",
+            "-d<value>",
+            "stdin",
+            "--data-binary",
+            "--data-binary=<value>",
+            "--data-b",
+        ],
+    )
+    def test_data_file_is_refused(self, cookie_files: Path, curl: str) -> None:
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _DATA_FILE
+        assert reads == []
+
+    @pytest.mark.parametrize("option", ["--data-raw", "--data-r"])
+    def test_data_raw_value_starting_with_at_is_the_body(self, option: str) -> None:
+        # curl reads --data-raw's value as given.
+        cap = parse_curl(_curl_with_args(option, "@mention"))
+        assert (cap.method, cap.body) == ("POST", b"@mention")
+
+
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
 # encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
 # message was the 400's detail.

@@ -65,6 +65,14 @@ ANSI_ESCAPE = (
     "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
     "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
 )
+USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
 
 
 @dataclass(frozen=True)
@@ -584,6 +592,10 @@ CASES: list[Case] = [
     # Chrome writes a header with an empty value as -H 'Name;', which curl
     # sends as Name with no value; uncurl split it at a colon it doesn't have.
     Case("curl-empty-header-value", f"{_CURL} \\\n  -H 'x-empty;'", "curl", REPORT),
+    # -u was read and never sent, and -d @file sent the file's name as the
+    # body; api-medic reads no files.
+    Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
+    Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
