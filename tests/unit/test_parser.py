@@ -1255,7 +1255,8 @@ class TestCurlEmptyHeader:
     @pytest.mark.parametrize(
         ("args", "message"),
         [
-            # curl sends neither.
+            # curl doesn't send the first, and sends the second as X-E:, as it
+            # sends -H 'X-E;'; parse_curl reads only the exact -H/--header form.
             (["-H", "X-E;x"], "not enough values to unpack (expected 2, got 1)"),
             (["-HX-E;"], "not enough values to unpack (expected 2, got 1)"),
             # uncurl reads a header starting with ":" up to its second colon.
