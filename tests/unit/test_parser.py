@@ -1219,6 +1219,58 @@ class TestCurlAnsiCStrings:
             assert elapsed < 1
 
 
+class TestCurlEmptyHeader:
+    """curl sends -H 'Name;' as the header Name with no value, and Chrome
+    writes a header with an empty value that way. uncurl splits a header at
+    a colon, which it doesn't have."""
+
+    @pytest.mark.parametrize(
+        ("curl", "headers"),
+        [
+            ("curl https://api.example.com/ -H 'x-empty;'", {"x-empty": ""}),
+            ("curl https://api.example.com/ --header 'x-empty;'", {"x-empty": ""}),
+            # Shaped like Chrome's Copy as cURL (bash); see _CHROME_GET.
+            (
+                "curl --url 'https://api.example.com/' \\\n  -H 'accept: */*' \\\n  -H 'x-empty;'",
+                {"accept": "*/*", "x-empty": ""},
+            ),
+        ],
+        ids=["-H", "--header", "chrome-copy"],
+    )
+    def test_header_ending_in_a_semicolon_is_sent_empty(
+        self, curl: str, headers: dict[str, str]
+    ) -> None:
+        assert parse_curl(curl).headers == headers
+
+    def test_header_with_a_value_ending_in_a_semicolon_keeps_it(self) -> None:
+        cap = parse_curl("curl https://api.example.com/ -H 'X-A: b;'")
+        assert cap.headers == {"X-A": "b;"}
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            # curl sends neither.
+            (["-H", "X-E;x"], "not enough values to unpack (expected 2, got 1)"),
+            (["-HX-E;"], "not enough values to unpack (expected 2, got 1)"),
+            # uncurl reads a header starting with ":" up to its second colon.
+            (["-H", ":x"], "list index out of range"),
+        ],
+        ids=["text-after-the-semicolon", "-H<value>", "leading-colon"],
+    )
+    def test_header_uncurl_cant_split_is_refused_as_before(
+        self, args: list[str], message: str
+    ) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == f"Could not parse curl command: {message}"
+
+    def test_option_after_the_header_option_is_left_to_uncurl(self) -> None:
+        # argparse reads -x; as an option, so -H has no value.
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args("-H", "-x;"))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't
 # encode. parse_har and parse_curl used to raise UnicodeEncodeError, and its
 # message was the 400's detail.

@@ -581,6 +581,9 @@ CASES: list[Case] = [
     Case("curl-ansi-c-header-control", f"{_CURL} -H $'X-A: a\\u0001b'", "curl", REPORT),
     Case("curl-ansi-c-nul", f"{_CURL} -d $'a\\u0000b'", "curl", ANSI_ESCAPE),
     Case("curl-ansi-c-surrogate-escape", f"{_CURL} -d $'a\\ud800b'", "curl", ANSI_ESCAPE),
+    # Chrome writes a header with an empty value as -H 'Name;', which curl
+    # sends as Name with no value; uncurl split it at a colon it doesn't have.
+    Case("curl-empty-header-value", f"{_CURL} \\\n  -H 'x-empty;'", "curl", REPORT),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

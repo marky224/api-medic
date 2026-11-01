@@ -94,6 +94,10 @@ MANY_URLS = (
 # Chrome's Copy as cURL (bash) writes one before each. uncurl doesn't know
 # -g/--globoff, which turns globbing off.
 _GLOB_ESCAPE = re.compile(r"\\(?=[][{}])")
+# curl sends -H 'Name;' as the header Name with no value, and Chrome's Copy
+# as cURL (bash) writes a header with an empty value that way. uncurl splits
+# each header at its first colon.
+_EMPTY_HEADER = re.compile(r"[^-:;][^:;]*;")
 # Chrome's Copy as cURL (bash) writes a value holding ', ! or a control
 # character as $'...', bash's ANSI-C quoting, with the escapes \\, \', \n,
 # \r, and \u and 4 hex digits. bash keeps the backslash before a character
@@ -372,13 +376,15 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     """`args` as uncurl should read them, and their -b/--cookie values.
 
     Takes out curl's -b/--cookie options, and its --url, whose value goes
-    in as the URL uncurl reads. Reads -b VALUE, -bVALUE (whose "=" curl
-    keeps: -b=a=1 is "=a=1"), -kb VALUE and -kbVALUE, --cookie VALUE and
-    --cookie=VALUE, where VALUE is the next argument whatever it starts
-    with, as curl reads it, and --url VALUE and --url=VALUE, unless VALUE
-    starts with "-". A -b or --url with no argument after it, and anything
-    after "--", are left for uncurl to reject. A cookie file, a
-    -c/--cookie-jar or more than one --url is a ValueError.
+    in as the URL uncurl reads, and gives the value of an -H or --header
+    written Name; as Name:, which uncurl reads as Name with no value.
+    Reads -b VALUE, -bVALUE (whose "=" curl keeps: -b=a=1 is "=a=1"),
+    -kb VALUE and -kbVALUE, --cookie VALUE and --cookie=VALUE, where VALUE
+    is the next argument whatever it starts with, as curl reads it, and
+    --url VALUE and --url=VALUE, unless VALUE starts with "-". A -b or
+    --url with no argument after it, and anything after "--", are left for
+    uncurl to reject. A cookie file, a -c/--cookie-jar or more than one
+    --url is a ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
@@ -390,6 +396,10 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
         if arg == "--":  # argparse reads the rest as positional arguments
             kept += args[i - 1 :]
             break
+        if arg in ("-H", "--header") and i < len(args) and _EMPTY_HEADER.fullmatch(args[i]):
+            kept += [arg, args[i][:-1] + ":"]
+            i += 1
+            continue
         name, eq, attached = arg.partition("=")
         if name == "--url":
             url = attached if eq else args[i] if i < len(args) else None
