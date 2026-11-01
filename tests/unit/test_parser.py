@@ -644,20 +644,6 @@ class TestParseCurl:
         headers = dict(uncurl.parse_context(curl).headers)
         assert list(parse_curl(curl).headers.items()) == list(headers.items())
 
-    @pytest.mark.parametrize(
-        "curl",
-        [
-            "curl https://api.example.com/ \\\n  -H 'X-A: b'",
-            "curl https://api.example.com/ \\\n  -b 'a=1'",
-        ],
-        ids=["header", "cookie-option"],
-    )
-    def test_command_on_several_lines_is_refused_as_before(self, curl: str) -> None:
-        # Neither uncurl nor parse_curl joins a backslash-newline continuation.
-        with pytest.raises(ValueError) as e:
-            parse_curl(curl)
-        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
-
 
 # Mirror parser.COOKIE_FILE and parser.COOKIE_JAR.
 _COOKIE_FILE = (
@@ -667,6 +653,35 @@ _COOKIE_FILE = (
 _COOKIE_JAR = (
     "Curl command writes cookies to a file (-c/--cookie-jar); "
     "api-medic writes no files. Leave it out."
+)
+# Mirror parser.MANY_URLS.
+_MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
+
+# Shaped like Chrome DevTools' Copy as cURL (bash), from generateCurlCommand
+# in devtools-frontend's front_end/panels/network/NetworkLogView.ts (main,
+# read 2026-11-01): the URL comes as --url, with a backslash before each
+# [ ] { } for curl's URL globbing, a header with an empty value as
+# -H 'Name;', and each part goes on a line of its own.
+_CHROME_GET = (
+    "curl --url 'https://api.example.com/v1/items?page\\[size\\]=10' \\\n"
+    "  -H 'accept: application/json' \\\n"
+    "  -H 'x-empty;' \\\n"
+    "  -b 'session=abc; theme=dark'"
+)
+# The same generator writes a value holding ', ! or a control character as
+# $'...', escaping \ as \\, ' as \', LF as \n, CR as \r and the others as
+# \u and 4 hex digits.
+_CHROME_POST = (
+    "curl --url 'https://api.example.com/v1/items' \\\n"
+    "  -H 'content-type: application/json' \\\n"
+    '  --data-raw $\'{\\n  "name": "it\\\'s",\\n  "tab": "a\\u0009b\\u0021"\\n}\''
+)
+# Mirror parser.ANSI_ESCAPE.
+_ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
 )
 
 
@@ -905,6 +920,541 @@ class TestCurlCookieOptions:
             if len(option) == 2 and option != "-h"
         }
         assert set(core_parser._CURL_FLAGS) == flags
+
+
+class TestCurlOnSeveralLines:
+    """A backslash before a line break continues the line, as in bash. shlex
+    kept the line break: as an argument of its own between words, which
+    argparse rejected, and inside a word or double quotes."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            ("curl https://api.example.com/ \\\n  -H 'X-A: b'", ("GET", {"X-A": "b"}, b"")),
+            ("curl https://api.example.com/ \\\r\n  -H 'X-A: b'", ("GET", {"X-A": "b"}, b"")),
+            ("curl https://api.example.com/ \\\n  -b 'a=1'", ("GET", {"Cookie": "a=1"}, b"")),
+            ("curl https://api.example.com/ -b \\\n  'a=1'", ("GET", {"Cookie": "a=1"}, b"")),
+            (
+                "curl https://api.example.com/ \\\n  -H 'Cookie: a=1'",
+                ("GET", {"Cookie": "a=1"}, b""),
+            ),
+            ("curl https://api.example.com/ -d a\\\nb", ("POST", {}, b"ab")),
+            ('curl https://api.example.com/ -d "a\\\nb"', ("POST", {}, b"ab")),
+            # An escaped backslash, then a continuation.
+            ("curl https://api.example.com/ -d a\\\\\\\nb", ("POST", {}, b"a\\b")),
+        ],
+        ids=[
+            "lf",
+            "crlf",
+            "cookie-option",
+            "cookie-value-on-next-line",
+            "cookie-header",
+            "inside-a-word",
+            "inside-double-quotes",
+            "escaped-backslash-then-continuation",
+        ],
+    )
+    def test_command_on_several_lines_is_one_command(
+        self, curl: str, expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    @pytest.mark.parametrize(
+        ("curl", "body"),
+        [
+            ("curl https://api.example.com/ -d 'a\\\nb'", b"a\\\nb"),
+            # An escaped backslash, then a line break.
+            ("curl https://api.example.com/ -d a\\\\\n  -k", b"a\\"),
+            ("curl https://api.example.com/ -d a\\\rb", b"a\rb"),
+        ],
+        ids=["single-quotes", "escaped-backslash", "carriage-return-alone"],
+    )
+    def test_backslash_and_line_break_stay_where_bash_keeps_them(
+        self, curl: str, body: bytes
+    ) -> None:
+        assert parse_curl(curl).body == body
+
+    def test_backslash_at_the_end_is_refused_as_before(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -d a\\")
+        assert str(e.value) == "Could not parse curl command: No escaped character"
+
+    def test_only_line_continuations_is_empty(self) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(" \\\n \\\r\n ")
+        assert str(e.value) == "Empty curl command."
+
+    def test_argument_limit_counts_the_joined_arguments(self) -> None:
+        # Each -k on a line of its own, indented as a browser writes them.
+        # Unjoined, each backslash-newline was an argument too.
+        curl = "curl https://api.example.com/" + " \\\n  -k" * (_MAX_CURL_ARGS - 2)
+        started = time.perf_counter()
+        cap = parse_curl(curl)
+        elapsed = time.perf_counter() - started
+        assert cap.url == "https://api.example.com/"
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_continuations_at_the_limit_are_read_quickly(self) -> None:
+        started = time.perf_counter()
+        with pytest.raises(ValueError) as e:
+            parse_curl("\\\n" * (_MAX_CURL_CHARS // 2))
+        elapsed = time.perf_counter() - started
+        assert str(e.value) == "Empty curl command."
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+    def test_character_limit_counts_the_command_as_given(self) -> None:
+        # One character over the limit; joined, one under it.
+        head = "curl https://api.example.com/ \\\n  -d '"
+        curl = head + "a" * (_MAX_CURL_CHARS - len(head)) + "'"
+        assert len(curl) == _MAX_CURL_CHARS + 1
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == "Curl command is too long (limit: 50,000 characters)."
+
+
+class TestCurlUrlOption:
+    """uncurl doesn't know --url, which Chrome writes the URL with, so a
+    command giving its URL that way was refused."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            (
+                "curl --url 'https://api.example.com/' -H 'X-A: b'",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                "curl -H 'X-A: b' --url https://api.example.com/",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                "curl --url=https://api.example.com/ -H 'X-A: b'",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                _CHROME_GET,
+                (
+                    "https://api.example.com/v1/items?page[size]=10",
+                    {
+                        "accept": "application/json",
+                        "x-empty": "",
+                        "Cookie": "session=abc; theme=dark",
+                    },
+                ),
+            ),
+        ],
+        ids=["--url", "--url-last", "--url=<value>", "chrome-copy"],
+    )
+    def test_url_option_is_the_url(self, curl: str, expected: tuple[str, dict[str, str]]) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.url, cap.headers, cap.body) == ("GET", *expected, b"")
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--url", "https://api.example.com/", "--url", "https://api.example.com/x"],
+            ["--url=https://api.example.com/", "--url", "https://api.example.com/x"],
+        ],
+        ids=["two", "two-spellings"],
+    )
+    def test_several_url_options_are_refused(self, args: list[str]) -> None:
+        # curl would fetch each.
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == _MANY_URLS
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--url", "https://api.example.com/", "https://api.example.com/x"],
+            ["https://api.example.com/", "--url"],
+            ["--url", "-x"],
+            ["https://api.example.com/", "--", "--url", "https://api.example.com/x"],
+        ],
+        ids=["and-a-positional-url", "--url-last", "option-after-it", "after---"],
+    )
+    def test_url_option_uncurl_rejects_is_refused_as_before(self, args: list[str]) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @pytest.mark.parametrize("form", ["positional", "--url"])
+    @pytest.mark.parametrize(
+        ("url", "sent"),
+        [
+            ("https://api.example.com/?a\\[0\\]=1", "https://api.example.com/?a[0]=1"),
+            ("https://api.example.com/\\{a,b\\}", "https://api.example.com/{a,b}"),
+            # curl removes the one backslash before each; a doubled one isn't
+            # special to it.
+            ("https://api.example.com/?a\\\\[0\\]=1", "https://api.example.com/?a\\[0]=1"),
+        ],
+        ids=["brackets", "braces", "doubled-backslash"],
+    )
+    def test_glob_backslashes_are_removed_from_the_url(
+        self, url: str, sent: str, form: str
+    ) -> None:
+        # curl's URL globbing reads [ ] { }; a backslash before one makes it
+        # a plain character, and curl drops the backslash.
+        args = [url] if form == "positional" else ["--url", url]
+        assert parse_curl(shlex.join(["curl", *args])).url == sent
+
+    def test_other_backslashes_stay_in_the_url(self) -> None:
+        url = "https://api.example.com/a\\b"
+        assert parse_curl(shlex.join(["curl", url])).url == url
+
+
+class TestCurlAnsiCStrings:
+    """Chrome writes a value holding ', ! or a control character as $'...',
+    bash's ANSI-C quoting. shlex read it as $ and a single-quoted string, so
+    the $ and the escapes stayed in the value, or an escaped ' ended it."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            (
+                "curl https://api.example.com/ -H $'x-a: it\\'s'",
+                ("GET", {"x-a": "it's"}, b""),
+            ),
+            (
+                _CHROME_POST,
+                (
+                    "POST",
+                    {"content-type": "application/json"},
+                    b'{\n  "name": "it\'s",\n  "tab": "a\tb!"\n}',
+                ),
+            ),
+            ("curl https://api.example.com/ -d $'a\\\\b'", ("POST", {}, b"a\\b")),
+            ("curl https://api.example.com/ -d $'a\\r\\nb'", ("POST", {}, b"a\r\nb")),
+            ("curl https://api.example.com/ -d x$'\\n'y", ("POST", {}, b"x\ny")),
+            ("curl https://api.example.com/ -d $'caf\\u00e9'", ("POST", {}, "café".encode())),
+            # bash keeps the backslash before a character it reads no escape
+            # from, a line break included.
+            ("curl https://api.example.com/ -d $'a\\[b\\qc'", ("POST", {}, b"a\\[b\\qc")),
+            ("curl https://api.example.com/ -d $'a\\\nb'", ("POST", {}, b"a\\\nb")),
+            ("curl https://api.example.com/ -b $'a=it\\'s'", ("GET", {"Cookie": "a=it's"}, b"")),
+        ],
+        ids=[
+            "header",
+            "chrome-copy",
+            "backslash",
+            "carriage-return",
+            "inside-a-word",
+            "unicode",
+            "other-escapes-kept",
+            "backslash-newline-kept",
+            "cookie-option",
+        ],
+    )
+    def test_ansi_c_string_is_read_as_bash_reads_it(
+        self, curl: str, expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    def test_ansi_c_url_keeps_the_glob_backslashes_for_the_url(self) -> None:
+        # Chrome adds them after quoting; bash keeps them, and curl drops them.
+        cap = parse_curl("curl --url $'https://api.example.com/?q=it\\'s&a\\[0\\]=1'")
+        assert cap.url == "https://api.example.com/?q=it's&a[0]=1"
+
+    @pytest.mark.parametrize(
+        ("curl", "body"),
+        [
+            ("curl https://api.example.com/ -d \"$'a'\"", b"$'a'"),
+            ("curl https://api.example.com/ -d \\$'a'", b"$a"),
+        ],
+        ids=["in-double-quotes", "escaped-dollar"],
+    )
+    def test_dollar_quote_that_isnt_an_ansi_c_string(self, curl: str, body: bytes) -> None:
+        assert parse_curl(curl).body == body
+
+    @pytest.mark.parametrize(
+        "escape",
+        [
+            "\\t",
+            "\\a",
+            "\\e",
+            "\\?",
+            '\\"',
+            "\\x41",
+            "\\101",
+            "\\U0001F600",
+            "\\cA",
+            "\\u41",
+            "\\u0000",
+            "\\ud800",
+            "\\udfff",
+        ],
+    )
+    def test_ansi_c_escape_chrome_doesnt_write_is_refused(self, escape: str) -> None:
+        # bash reads these too, but cuts a value at \u0000 and reads a
+        # surrogate by the locale.
+        with pytest.raises(ValueError) as e:
+            parse_curl(f"curl https://api.example.com/ -d $'a{escape}z'")
+        # Quotes none of the command.
+        assert str(e.value) == _ANSI_ESCAPE
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -d $'a\\'",
+            "curl https://api.example.com/ -d $'abc",
+        ],
+        ids=["escaped-quote-last", "no-quote"],
+    )
+    def test_unterminated_ansi_c_string_is_refused(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == "Could not parse curl command: No closing quotation"
+
+    def test_ansi_c_string_at_the_limit_is_read_quickly(self) -> None:
+        # Each \' is a ' that shlex.quote writes as 5 characters, '"'"'.
+        head = "curl --url 'https://api.example.com/' \\\n  --data-raw $'"
+        quotes = (_MAX_CURL_CHARS - len(head) - 1) // 2
+        curl = head + "\\'" * quotes + "'"
+        started = time.perf_counter()
+        cap = parse_curl(curl)
+        elapsed = time.perf_counter() - started
+        assert cap.body == b"'" * quotes
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
+
+
+class TestCurlEmptyHeader:
+    """curl sends -H 'Name;' as the header Name with no value, and Chrome
+    writes a header with an empty value that way. uncurl splits a header at
+    a colon, which it doesn't have."""
+
+    @pytest.mark.parametrize(
+        ("curl", "headers"),
+        [
+            ("curl https://api.example.com/ -H 'x-empty;'", {"x-empty": ""}),
+            ("curl https://api.example.com/ --header 'x-empty;'", {"x-empty": ""}),
+            # Shaped like Chrome's Copy as cURL (bash); see _CHROME_GET.
+            (
+                "curl --url 'https://api.example.com/' \\\n  -H 'accept: */*' \\\n  -H 'x-empty;'",
+                {"accept": "*/*", "x-empty": ""},
+            ),
+        ],
+        ids=["-H", "--header", "chrome-copy"],
+    )
+    def test_header_ending_in_a_semicolon_is_sent_empty(
+        self, curl: str, headers: dict[str, str]
+    ) -> None:
+        assert parse_curl(curl).headers == headers
+
+    def test_header_with_a_value_ending_in_a_semicolon_keeps_it(self) -> None:
+        cap = parse_curl("curl https://api.example.com/ -H 'X-A: b;'")
+        assert cap.headers == {"X-A": "b;"}
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            # curl doesn't send the first, and sends the second as X-E:, as it
+            # sends -H 'X-E;'; parse_curl reads only the exact -H/--header form.
+            (["-H", "X-E;x"], "not enough values to unpack (expected 2, got 1)"),
+            (["-HX-E;"], "not enough values to unpack (expected 2, got 1)"),
+            # uncurl reads a header starting with ":" up to its second colon.
+            (["-H", ":x"], "list index out of range"),
+        ],
+        ids=["text-after-the-semicolon", "-H<value>", "leading-colon"],
+    )
+    def test_header_uncurl_cant_split_is_refused_as_before(
+        self, args: list[str], message: str
+    ) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == f"Could not parse curl command: {message}"
+
+    def test_option_after_the_header_option_is_left_to_uncurl(self) -> None:
+        # argparse reads -x; as an option, so -H has no value.
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args("-H", "-x;"))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+
+# Mirror parser.USER_OPTION and parser.DATA_FILE.
+_USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+_DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
+
+
+class TestCurlUserAndDataFile:
+    """uncurl reads -u/--user, whose credentials parse_curl never sent, and
+    a -d or --data-binary value starting with @ as the body, where curl
+    reads the data from that file."""
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -u user:secret",
+            "curl https://api.example.com/v1/charges \\\n  -u sk_test_x: \\\n  -d amount=2000",
+            "curl https://api.example.com/ --user user:secret",
+            "curl https://api.example.com/ --user=user:secret",
+            "curl https://api.example.com/ -uuser:secret",
+            "curl https://api.example.com/ -ku user:secret",
+            "curl https://api.example.com/ --us user:secret",
+        ],
+        ids=["-u", "on-several-lines", "--user", "--user=<value>", "-u<value>", "-ku", "--us"],
+    )
+    def test_user_option_is_refused(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        # Names the option and quotes none of the command.
+        assert str(e.value) == _USER_OPTION
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            "curl https://api.example.com/ -d @body.json",
+            "curl https://api.example.com/v1/x \\\n"
+            "  -H 'Content-Type: application/json' \\\n"
+            "  -d @body.json",
+            "curl https://api.example.com/ --data @body.json",
+            "curl https://api.example.com/ -d@body.json",
+            "curl https://api.example.com/ -d @-",
+            "curl https://api.example.com/ --data-binary @body.json",
+            "curl https://api.example.com/ --data-binary=@body.json",
+            "curl https://api.example.com/ --data-b @body.json",
+        ],
+        ids=[
+            "-d",
+            "on-several-lines",
+            "--data",
+            "-d<value>",
+            "stdin",
+            "--data-binary",
+            "--data-binary=<value>",
+            "--data-b",
+        ],
+    )
+    def test_data_file_is_refused(self, cookie_files: Path, curl: str) -> None:
+        with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _DATA_FILE
+        assert reads == []
+
+    @pytest.mark.parametrize("option", ["--data-raw", "--data-r"])
+    def test_data_raw_value_starting_with_at_is_the_body(self, option: str) -> None:
+        # curl reads --data-raw's value as given.
+        cap = parse_curl(_curl_with_args(option, "@mention"))
+        assert (cap.method, cap.body) == ("POST", b"@mention")
+
+
+# Mirror parser.CMD_LINE_END, CMD_QUOTES, POWERSHELL_LINE_END and
+# SPACE_AFTER_BACKSLASH.
+_CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+_CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+_POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+_SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
+# Shaped like Chrome DevTools' Copy as cURL (cmd), from the generator
+# _CHROME_GET is shaped by: each value goes in ^"...^", a " in it becomes
+# ^\^", and each part goes on a line of its own, ending in ^.
+_CHROME_CMD = (
+    'curl --url ^"https://api.example.com/^" ^\n'
+    '  -H ^"accept: */*^" ^\n'
+    '  -H ^"sec-ch-ua: ^\\^"Chromium^\\^";v=^\\^"130^\\^"^"'
+)
+
+
+class TestCurlOtherShells:
+    """A command written for Windows cmd or PowerShell, or whose line ends
+    in a backslash and spaces, got the generic parse error, or, as one line
+    in cmd's quotes, a URL starting with ^."""
+
+    @pytest.mark.parametrize(
+        ("curl", "message"),
+        [
+            (_CHROME_CMD, _CMD_LINE_END),
+            (_CHROME_CMD.replace("\n", "\r\n"), _CMD_LINE_END),
+            ("curl.exe https://api.example.com/ `\n  -H 'X-A: b'", _POWERSHELL_LINE_END),
+            ("curl.exe https://api.example.com/ `\r\n  -H 'X-A: b'", _POWERSHELL_LINE_END),
+            ("curl https://api.example.com/ \\ \n  -H 'X-A: b'", _SPACE_AFTER_BACKSLASH),
+            ("curl https://api.example.com/ \\\t\r\n  -H 'X-A: b'", _SPACE_AFTER_BACKSLASH),
+            # shlex finds no closing quote in cmd's ^\^"^".
+            ('curl --url ^"https://api.example.com/^" -H ^"x: a^\\^"^"', _CMD_QUOTES),
+        ],
+        ids=[
+            "cmd",
+            "cmd-crlf",
+            "powershell",
+            "powershell-crlf",
+            "space-after-backslash",
+            "tab-after-backslash",
+            "cmd-quotes-shlex-cant-close",
+        ],
+    )
+    def test_unparseable_command_names_the_other_shell(self, curl: str, message: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        # Quotes none of the command.
+        assert str(e.value) == message
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            'curl --url ^"https://api.example.com/^" -H ^"accept: */*^"',
+            'curl ^"https://api.example.com/^"',
+        ],
+        ids=["chrome-copy-on-one-line", "positional-url"],
+    )
+    def test_url_in_cmd_quotes_is_refused(self, curl: str) -> None:
+        # cmd's quotes leave a ^ before the URL, which no URL starts with.
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _CMD_QUOTES
+
+    def test_other_shells_line_endings_in_a_command_that_parses(self) -> None:
+        cap = parse_curl("curl https://api.example.com/ -d 'a ^\nb `\nc'")
+        assert cap.body == b"a ^\nb `\nc"
+
+    def test_uncurls_other_errors_name_the_other_shell(self) -> None:
+        # uncurl fails on the header, and the ^ line ending is in the body's
+        # quotes: what parse_curl looks for, it looks for without quotes.
+        with pytest.raises(ValueError) as e:
+            parse_curl("curl https://api.example.com/ -H ':x' -d 'a ^\nb'")
+        assert str(e.value) == _CMD_LINE_END
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            # cmd writes $ as ^$. After an odd number of ^\^", a bash quote
+            # tracker is outside quotes, so it reads the $' as the start of
+            # a $'...' string, which has no closing quote.
+            'curl ^"https://api.example.com/^" ^\r\n  -H ^"x: y^" ^\r\n'
+            '  --data-raw ^"^{^\\^"a^\\^":^\\^"b^$\'c^\\^"^}^"',
+            # A $'...' escape api-medic doesn't read.
+            "curl https://api.example.com/ ^\n  -d $'a\\tb'",
+        ],
+        ids=["unclosed-ansi-c-string", "ansi-c-escape"],
+    )
+    def test_ansi_c_errors_name_the_other_shell(self, curl: str) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(curl)
+        assert str(e.value) == _CMD_LINE_END
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

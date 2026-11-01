@@ -58,6 +58,38 @@ COOKIE_JAR = (
     "Curl command writes cookies to a file (-c/--cookie-jar); "
     "api-medic writes no files. Leave it out."
 )
+MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
+ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
+)
+USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
+CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
 
 
 @dataclass(frozen=True)
@@ -534,6 +566,85 @@ CASES: list[Case] = [
         "Curl command's Cookie header is too long (limit: 4,096 characters).",
     ),
     Case("curl-cookie-option-surrogate", f"{_CURL} -b 'a=\ud800'", "curl", UNENCODABLE_TEXT),
+    # A command on several lines, each ending in a backslash: the
+    # backslash-newline was an argument of its own, which argparse rejected.
+    Case("curl-on-several-lines", f"{_CURL} \\\n  -H 'X-A: b'", "curl", REPORT),
+    Case("curl-on-several-lines-crlf", f"{_CURL} \\\r\n  -H 'X-A: b'", "curl", REPORT),
+    Case(
+        "curl-on-several-lines-cookie-option",
+        f"{_CURL} \\\n  -b 'a=1'",
+        "curl",
+        REPORT,
+        never_shows=r"\bPOST\b",
+    ),
+    Case(
+        "curl-on-several-lines-surrogate", f"{_CURL} \\\n  -d 'a\ud800'", "curl", UNENCODABLE_TEXT
+    ),
+    # Chrome writes the URL as --url, which uncurl doesn't know, with a
+    # backslash before each [ ] { } for curl's URL globbing.
+    Case(
+        "curl-url-option",
+        "curl --url 'https://api.example.com/?a\\[0\\]=1' \\\n  -H 'X-A: b' \\\n  -b 'a=1'",
+        "curl",
+        REPORT,
+    ),
+    Case(
+        "curl-several-urls",
+        "curl --url https://api.example.com/ --url https://api.example.com/x",
+        "curl",
+        MANY_URLS,
+    ),
+    # Chrome writes a value holding ', ! or a control character as $'...',
+    # which shlex read as $ and a single-quoted string.
+    Case(
+        "curl-ansi-c-body",
+        "curl --url 'https://api.example.com/' \\\n  -H 'content-type: application/json' \\\n"
+        '  --data-raw $\'{\\n  "a": "it\\\'s"\\n}\'',
+        "curl",
+        REPORT,
+    ),
+    Case("curl-ansi-c-header-control", f"{_CURL} -H $'X-A: a\\u0001b'", "curl", REPORT),
+    Case("curl-ansi-c-nul", f"{_CURL} -d $'a\\u0000b'", "curl", ANSI_ESCAPE),
+    Case("curl-ansi-c-surrogate-escape", f"{_CURL} -d $'a\\ud800b'", "curl", ANSI_ESCAPE),
+    # Chrome writes a header with an empty value as -H 'Name;', which curl
+    # sends as Name with no value; uncurl split it at a colon it doesn't have.
+    Case("curl-empty-header-value", f"{_CURL} \\\n  -H 'x-empty;'", "curl", REPORT),
+    # -u was read and never sent, and -d @file sent the file's name as the
+    # body; api-medic reads no files.
+    Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
+    Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
+    # Written for another shell: the generic parse error, or a URL starting
+    # with ^ from cmd's quotes.
+    Case(
+        "curl-windows-cmd",
+        'curl --url ^"https://api.example.com/^" ^\r\n  -H ^"accept: */*^" ^\r\n  -H ^"X-A: b^"',
+        "curl",
+        CMD_LINE_END,
+    ),
+    Case(
+        "curl-windows-cmd-one-line",
+        'curl --url ^"https://api.example.com/^" -H ^"accept: */*^"',
+        "curl",
+        CMD_QUOTES,
+    ),
+    # cmd writes $ as ^$, which a bash quote tracker can read as the start of
+    # a $'...' string.
+    Case(
+        "curl-windows-cmd-ansi-c",
+        'curl ^"https://api.example.com/^" ^\r\n  -H ^"x: y^" ^\r\n'
+        '  --data-raw ^"^{^\\^"a^\\^":^\\^"b^$\'c^\\^"^}^"',
+        "curl",
+        CMD_LINE_END,
+    ),
+    Case(
+        "curl-powershell",
+        "curl.exe https://api.example.com/ `\n  -H 'X-A: b'",
+        "curl",
+        POWERSHELL_LINE_END,
+    ),
+    Case(
+        "curl-space-after-backslash", f"{_CURL} \\ \n  -H 'X-A: b'", "curl", SPACE_AFTER_BACKSLASH
+    ),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"

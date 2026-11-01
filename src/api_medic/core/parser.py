@@ -84,6 +84,75 @@ COOKIE_JAR = (
 _CURL_FLAGS = "iks"
 _COOKIE_OPTION = re.compile(rf"-([{_CURL_FLAGS}]*)([bc])(.*)", re.DOTALL)
 _LONG_COOKIE_OPTIONS = {"--cookie": "b", "--cookie-jar": "c"}
+# curl reads --url VALUE as a URL to fetch, as it reads one given without an
+# option, and fetches every URL it is given; uncurl doesn't know --url.
+MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
+# curl's URL globbing reads [ ] { } in a URL, and a backslash before one
+# makes it a plain character, which curl sends without the backslash.
+# Chrome's Copy as cURL (bash) writes one before each. uncurl doesn't know
+# -g/--globoff, which turns globbing off.
+_GLOB_ESCAPE = re.compile(r"\\(?=[][{}])")
+# uncurl reads -u/--user as credentials, which parse_curl doesn't send, and
+# a -d/--data or --data-binary value as the body; curl reads one starting
+# with "@" from the file it names ("@-" is stdin), and a --data-raw value as
+# given.
+USER_OPTION = (
+    "Curl command sends credentials with -u/--user, which api-medic doesn't read. "
+    "Give them as -H 'Authorization: ...' instead."
+)
+DATA_FILE = (
+    "Curl command reads data from a file (-d/--data/--data-binary with @); "
+    "api-medic reads no files. Give the data as --data-raw '...'."
+)
+# curl sends -H 'Name;' as the header Name with no value, and Chrome's Copy
+# as cURL (bash) writes a header with an empty value that way. uncurl splits
+# each header at its first colon.
+_EMPTY_HEADER = re.compile(r"[^-:;][^:;]*;")
+# Chrome's Copy as cURL (bash) writes a value holding ', ! or a control
+# character as $'...', bash's ANSI-C quoting, with the escapes \\, \', \n,
+# \r, and \u and 4 hex digits. bash keeps the backslash before a character
+# it reads no escape from. It reads other escapes too, but cuts the value
+# at U+0000 and reads a surrogate by the locale; api-medic reads those
+# five only.
+ANSI_ESCAPE = (
+    "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
+    "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
+)
+_ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.DOTALL)
+_ANSI_C_ESCAPE = re.compile(r"\\(u[0-9A-Fa-f]{4}|.)", re.DOTALL)
+_ANSI_C_ESCAPES = {"\\": "\\", "'": "'", "n": "\n", "r": "\r"}
+# The characters after a backslash that bash reads an escape from.
+_BASH_ESCAPES = frozenset("abeEfnrtv\\'\"?01234567xuUc")
+# What a command written for another shell has, which parse_curl names when
+# it can't parse the command. It looks for them in the command as given,
+# without tracking quotes: Windows cmd writes a " inside a value as ^\^",
+# which a bash quote tracker misreads. cmd's quotes also leave a ^ before
+# the URL, which no URL starts with.
+CMD_LINE_END = (
+    "Could not parse curl command: a line ends in ^, as a Windows cmd command continues "
+    "a line. api-medic reads curl commands as bash does: copy the request as cURL (bash) "
+    "instead."
+)
+CMD_QUOTES = (
+    'Could not parse curl command: it uses ^" quotes, as a Windows cmd command does. '
+    "api-medic reads curl commands as bash does: copy the request as cURL (bash) instead."
+)
+POWERSHELL_LINE_END = (
+    "Could not parse curl command: a line ends in `, as a PowerShell command continues a "
+    "line. api-medic reads curl commands as bash does: end each line in \\ instead."
+)
+SPACE_AFTER_BACKSLASH = (
+    "Could not parse curl command: a line ends in a backslash followed by spaces, so the "
+    "line doesn't continue. Remove the spaces after the backslash."
+)
+_OTHER_SHELLS = [
+    (re.compile(r"\^\r?\n"), CMD_LINE_END),
+    (re.compile(r'\^"'), CMD_QUOTES),
+    (re.compile(r"`\r?\n"), POWERSHELL_LINE_END),
+    (re.compile(r"\\[ \t]+\r?\n"), SPACE_AFTER_BACKSLASH),
+]
 
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 """What parse_har raises, and the hosted demo's handler answers for a request
@@ -203,34 +272,51 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     has no `response`. Pair with `core.runner` to actually execute it. Its
     Cookie headers are kept as given, joined with "; " into one. Without
     one, its -b/--cookie cookies are the Cookie header, as curl sends them;
-    a -b/--cookie file or a -c/--cookie-jar is a ValueError.
+    a -b/--cookie file or a -c/--cookie-jar is a ValueError. A command on
+    several lines, each but the last ending in a backslash, is read as
+    one, as bash reads it (see _normalize_bash); one written for Windows
+    cmd or PowerShell is a ValueError naming that.
     """
+    # The limit counts the command as given; joining its lines only
+    # shortens it.
     if len(curl_str) > MAX_CURL_CHARS:
         raise ValueError(f"Curl command is too long (limit: {MAX_CURL_CHARS:,} characters).")
-    if not curl_str.strip():
+    try:
+        command = _normalize_bash(curl_str)
+    except ValueError as e:
+        raise _parse_error(curl_str, str(e)) from e
+    if not command.strip():
         raise ValueError("Empty curl command.")
     # uncurl splits the command again, the same way.
     try:
-        args = shlex.split(curl_str)
+        args = shlex.split(command)
     except ValueError as e:
-        raise ValueError(f"Could not parse curl command: {e}") from e
+        raise _parse_error(curl_str, f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
-    args, cookie_options = _cookie_options(args)
-    with _uncurl_errors():
+    uncurl_args, cookie_options = _curl_options(args)
+    with _uncurl_errors(curl_str):
         # The parser uncurl.parse_context reads the arguments with.
-        header_values = uncurl.api.parser.parse_args(args).header
-    cookie_values = _cookie_values(header_values)
+        parsed = uncurl.api.parser.parse_args(uncurl_args)
+    if parsed.user != ():  # uncurl's default
+        raise ValueError(USER_OPTION)
+    # The last -d/--data value, the one uncurl reads.
+    if parsed.data and parsed.data.startswith("@"):
+        raise ValueError(DATA_FILE)
+    cookie_values = _cookie_values(parsed.header)
     # The -b/--cookie cookies count even when a Cookie header replaces them.
     if sum(len(value) for value in [*cookie_values, *cookie_options]) > MAX_CURL_COOKIE_CHARS:
         raise ValueError(
             "Curl command's Cookie header is too long "
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
         )
-    with _uncurl_errors():
-        # uncurl splits the command with shlex as well, so it reads the
-        # arguments left once the cookie options are out.
-        ctx = uncurl.parse_context(shlex.join(args) if cookie_options else curl_str)
+    with _uncurl_errors(curl_str):
+        # uncurl splits the command with shlex as well, so it gets the
+        # arguments written again when _curl_options changed them.
+        ctx = uncurl.parse_context(command if uncurl_args == args else shlex.join(uncurl_args))
+    url = _GLOB_ESCAPE.sub("", ctx.url)
+    if url.startswith("^"):
+        raise ValueError(CMD_QUOTES)
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -248,7 +334,7 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     return CapturedRequest(
         method=method,
-        url=ctx.url,
+        url=url,
         headers=headers,
         body=body,
         response=None,
@@ -257,9 +343,84 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     )
 
 
+def _normalize_bash(command: str) -> str:
+    """`command` as shlex reads it the way bash does: without its line
+    continuations, and with each $'...' string as the single-quoted string
+    of its value. A backslash before a line break goes with the line
+    break, as bash removes it before splitting the command into words,
+    except inside single quotes and when the backslash is itself escaped.
+    bash joins a backslash before LF only; this joins one before CRLF too.
+    Quotes are tracked as shlex tracks them."""
+    if "\\\n" not in command and "\\\r\n" not in command and "$'" not in command:
+        return command
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+        elif char == "\\":
+            if command.startswith("\n", i + 1):
+                i += 2
+                continue
+            if command.startswith("\r\n", i + 1):
+                i += 3
+                continue
+            # A backslash escapes the next character, in or out of double
+            # quotes.
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif char == '"':
+            quote = "" if quote else '"'
+        elif char == "$" and not quote and command.startswith("'", i + 1):
+            match = _ANSI_C_STRING.match(command, i)
+            if not match:
+                raise ValueError("Could not parse curl command: No closing quotation")
+            out.append(shlex.quote(_ansi_c(match[1])))
+            i = match.end()
+            continue
+        elif char == "'" and not quote:
+            quote = "'"
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _ansi_c(text: str) -> str:
+    """The value of the $'...' string holding `text`, as bash reads the
+    escapes Chrome writes; another escape bash reads is a ValueError."""
+
+    def unescape(match: re.Match[str]) -> str:
+        escape = match[1]
+        if escape in _ANSI_C_ESCAPES:
+            return _ANSI_C_ESCAPES[escape]
+        if len(escape) == 5:  # u and 4 hex digits
+            code = int(escape[1:], 16)
+            if code and not 0xD800 <= code <= 0xDFFF:
+                return chr(code)
+        elif escape not in _BASH_ESCAPES:
+            return match[0]
+        raise ValueError(ANSI_ESCAPE)
+
+    return _ANSI_C_ESCAPE.sub(unescape, text)
+
+
+def _parse_error(curl_str: str, message: str) -> ValueError:
+    """The error for `curl_str`, a command as given that can't be parsed:
+    what in it was written for another shell, if anything, or `message`."""
+    for pattern, other_shell in _OTHER_SHELLS:
+        if pattern.search(curl_str):
+            return ValueError(other_shell)
+    return ValueError(message)
+
+
 @contextlib.contextmanager
-def _uncurl_errors() -> Iterator[None]:
-    """uncurl's and its argparse's errors as ValueError."""
+def _uncurl_errors(curl_str: str) -> Iterator[None]:
+    """uncurl's and its argparse's errors as ValueError, naming what
+    `curl_str`, the command as given, has from another shell."""
     try:
         # argparse prints why it rejected the command to stderr, quoting
         # arguments it didn't recognize (cookie values, bodies). Lambda
@@ -268,22 +429,28 @@ def _uncurl_errors() -> Iterator[None]:
             yield
     except SystemExit as e:
         # uncurl uses argparse, which calls sys.exit() on parse failure.
-        raise ValueError("Could not parse curl command (argparse rejected it).") from e
+        raise _parse_error(curl_str, "Could not parse curl command (argparse rejected it).") from e
     except Exception as e:
-        raise ValueError(f"Could not parse curl command: {e}") from e
+        raise _parse_error(curl_str, f"Could not parse curl command: {e}") from e
 
 
-def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
-    """`args` without curl's -b/--cookie options, and those options' values.
+def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
+    """`args` as uncurl should read them, and their -b/--cookie values.
 
+    Takes out curl's -b/--cookie options, and its --url, whose value goes
+    in as the URL uncurl reads, and gives the value of an -H or --header
+    written Name; as Name:, which uncurl reads as Name with no value.
     Reads -b VALUE, -bVALUE (whose "=" curl keeps: -b=a=1 is "=a=1"),
     -kb VALUE and -kbVALUE, --cookie VALUE and --cookie=VALUE, where VALUE
-    is the next argument whatever it starts with, as curl reads it. A -b
-    with no argument after it, and anything after "--", are left for
-    uncurl to reject. A cookie file or a -c/--cookie-jar is a ValueError.
+    is the next argument whatever it starts with, as curl reads it, and
+    --url VALUE and --url=VALUE, unless VALUE starts with "-". A -b or
+    --url with no argument after it, and anything after "--", are left for
+    uncurl to reject. A cookie file, a -c/--cookie-jar, more than one --url
+    or a --data-binary file is a ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
+    urls: list[str] = []
     i = 0
     while i < len(args):
         arg = args[i]
@@ -291,7 +458,26 @@ def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
         if arg == "--":  # argparse reads the rest as positional arguments
             kept += args[i - 1 :]
             break
+        if arg in ("-H", "--header") and i < len(args) and _EMPTY_HEADER.fullmatch(args[i]):
+            kept += [arg, args[i][:-1] + ":"]
+            i += 1
+            continue
         name, eq, attached = arg.partition("=")
+        # argparse reads --data-b and the longer abbreviations as
+        # --data-binary, whose value it stores where it stores --data-raw's.
+        if name.startswith("--data-b") and "--data-binary".startswith(name):
+            data = attached if eq else args[i] if i < len(args) else ""
+            if data.startswith("@"):
+                raise ValueError(DATA_FILE)
+        if name == "--url":
+            url = attached if eq else args[i] if i < len(args) else None
+            if url is None or url.startswith("-"):
+                kept.append(arg)
+                continue
+            if not eq:
+                i += 1
+            urls.append(url)
+            continue
         if name in _LONG_COOKIE_OPTIONS:
             flags, option, value = "", _LONG_COOKIE_OPTIONS[name], attached if eq else None
         elif match := _COOKIE_OPTION.fullmatch(arg):
@@ -312,6 +498,10 @@ def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
         if flags:
             kept.append("-" + flags)
         cookies.append(value)
+    if len(urls) > 1:
+        raise ValueError(MANY_URLS)
+    # uncurl reads the first argument as the command and the next as the URL.
+    kept[1:1] = urls
     return kept, cookies
 
 
