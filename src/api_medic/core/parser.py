@@ -84,6 +84,16 @@ COOKIE_JAR = (
 _CURL_FLAGS = "iks"
 _COOKIE_OPTION = re.compile(rf"-([{_CURL_FLAGS}]*)([bc])(.*)", re.DOTALL)
 _LONG_COOKIE_OPTIONS = {"--cookie": "b", "--cookie-jar": "c"}
+# curl reads --url VALUE as a URL to fetch, as it reads one given without an
+# option, and fetches every URL it is given; uncurl doesn't know --url.
+MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
+# curl's URL globbing reads [ ] { } in a URL, and a backslash before one
+# makes it a plain character, which curl sends without the backslash.
+# Chrome's Copy as cURL (bash) writes one before each. uncurl doesn't know
+# -g/--globoff, which turns globbing off.
+_GLOB_ESCAPE = re.compile(r"\\(?=[][{}])")
 
 UNREADABLE_JSON = "request body has a number too long or nesting too deep to read"
 """What parse_har raises, and the hosted demo's handler answers for a request
@@ -221,10 +231,10 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Could not parse curl command: {e}") from e
     if len(args) > MAX_CURL_ARGS:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
-    args, cookie_options = _cookie_options(args)
+    uncurl_args, cookie_options = _curl_options(args)
     with _uncurl_errors():
         # The parser uncurl.parse_context reads the arguments with.
-        header_values = uncurl.api.parser.parse_args(args).header
+        header_values = uncurl.api.parser.parse_args(uncurl_args).header
     cookie_values = _cookie_values(header_values)
     # The -b/--cookie cookies count even when a Cookie header replaces them.
     if sum(len(value) for value in [*cookie_values, *cookie_options]) > MAX_CURL_COOKIE_CHARS:
@@ -233,9 +243,9 @@ def parse_curl(curl_str: str) -> CapturedRequest:
             f"(limit: {MAX_CURL_COOKIE_CHARS:,} characters)."
         )
     with _uncurl_errors():
-        # uncurl splits the command with shlex as well, so it reads the
-        # arguments left once the cookie options are out.
-        ctx = uncurl.parse_context(shlex.join(args) if cookie_options else command)
+        # uncurl splits the command with shlex as well, so it gets the
+        # arguments written again when _curl_options changed them.
+        ctx = uncurl.parse_context(command if uncurl_args == args else shlex.join(uncurl_args))
 
     method = (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
@@ -253,7 +263,7 @@ def parse_curl(curl_str: str) -> CapturedRequest:
 
     return CapturedRequest(
         method=method,
-        url=ctx.url,
+        url=_GLOB_ESCAPE.sub("", ctx.url),
         headers=headers,
         body=body,
         response=None,
@@ -316,17 +326,21 @@ def _uncurl_errors() -> Iterator[None]:
         raise ValueError(f"Could not parse curl command: {e}") from e
 
 
-def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
-    """`args` without curl's -b/--cookie options, and those options' values.
+def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
+    """`args` as uncurl should read them, and their -b/--cookie values.
 
-    Reads -b VALUE, -bVALUE (whose "=" curl keeps: -b=a=1 is "=a=1"),
-    -kb VALUE and -kbVALUE, --cookie VALUE and --cookie=VALUE, where VALUE
-    is the next argument whatever it starts with, as curl reads it. A -b
-    with no argument after it, and anything after "--", are left for
-    uncurl to reject. A cookie file or a -c/--cookie-jar is a ValueError.
+    Takes out curl's -b/--cookie options, and its --url, whose value goes
+    in as the URL uncurl reads. Reads -b VALUE, -bVALUE (whose "=" curl
+    keeps: -b=a=1 is "=a=1"), -kb VALUE and -kbVALUE, --cookie VALUE and
+    --cookie=VALUE, where VALUE is the next argument whatever it starts
+    with, as curl reads it, and --url VALUE and --url=VALUE, unless VALUE
+    starts with "-". A -b or --url with no argument after it, and anything
+    after "--", are left for uncurl to reject. A cookie file, a
+    -c/--cookie-jar or more than one --url is a ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
+    urls: list[str] = []
     i = 0
     while i < len(args):
         arg = args[i]
@@ -335,6 +349,15 @@ def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
             kept += args[i - 1 :]
             break
         name, eq, attached = arg.partition("=")
+        if name == "--url":
+            url = attached if eq else args[i] if i < len(args) else None
+            if url is None or url.startswith("-"):
+                kept.append(arg)
+                continue
+            if not eq:
+                i += 1
+            urls.append(url)
+            continue
         if name in _LONG_COOKIE_OPTIONS:
             flags, option, value = "", _LONG_COOKIE_OPTIONS[name], attached if eq else None
         elif match := _COOKIE_OPTION.fullmatch(arg):
@@ -355,6 +378,10 @@ def _cookie_options(args: list[str]) -> tuple[list[str], list[str]]:
         if flags:
             kept.append("-" + flags)
         cookies.append(value)
+    if len(urls) > 1:
+        raise ValueError(MANY_URLS)
+    # uncurl reads the first argument as the command and the next as the URL.
+    kept[1:1] = urls
     return kept, cookies
 
 

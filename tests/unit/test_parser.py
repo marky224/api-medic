@@ -654,6 +654,20 @@ _COOKIE_JAR = (
     "Curl command writes cookies to a file (-c/--cookie-jar); "
     "api-medic writes no files. Leave it out."
 )
+# Mirror parser.MANY_URLS.
+_MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
+
+# Shaped like Chrome DevTools' Copy as cURL (bash), from generateCurlCommand
+# in devtools-frontend's front_end/panels/network/NetworkLogView.ts (main,
+# read 2026-11-01): the URL comes as --url, with a backslash before each
+# [ ] { } for curl's URL globbing, and each part goes on a line of its own.
+_CHROME_GET = (
+    "curl --url 'https://api.example.com/v1/items?page\\[size\\]=10' \\\n"
+    "  -H 'accept: application/json' \\\n"
+    "  -b 'session=abc; theme=dark'"
+)
 
 
 def _curl_with_args(*args: str) -> str:
@@ -986,6 +1000,93 @@ class TestCurlOnSeveralLines:
         with pytest.raises(ValueError) as e:
             parse_curl(curl)
         assert str(e.value) == "Curl command is too long (limit: 50,000 characters)."
+
+
+class TestCurlUrlOption:
+    """uncurl doesn't know --url, which Chrome writes the URL with, so a
+    command giving its URL that way was refused."""
+
+    @pytest.mark.parametrize(
+        ("curl", "expected"),
+        [
+            (
+                "curl --url 'https://api.example.com/' -H 'X-A: b'",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                "curl -H 'X-A: b' --url https://api.example.com/",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                "curl --url=https://api.example.com/ -H 'X-A: b'",
+                ("https://api.example.com/", {"X-A": "b"}),
+            ),
+            (
+                _CHROME_GET,
+                (
+                    "https://api.example.com/v1/items?page[size]=10",
+                    {"accept": "application/json", "Cookie": "session=abc; theme=dark"},
+                ),
+            ),
+        ],
+        ids=["--url", "--url-last", "--url=<value>", "chrome-copy"],
+    )
+    def test_url_option_is_the_url(self, curl: str, expected: tuple[str, dict[str, str]]) -> None:
+        cap = parse_curl(curl)
+        assert (cap.method, cap.url, cap.headers, cap.body) == ("GET", *expected, b"")
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--url", "https://api.example.com/", "--url", "https://api.example.com/x"],
+            ["--url=https://api.example.com/", "--url", "https://api.example.com/x"],
+        ],
+        ids=["two", "two-spellings"],
+    )
+    def test_several_url_options_are_refused(self, args: list[str]) -> None:
+        # curl would fetch each.
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == _MANY_URLS
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--url", "https://api.example.com/", "https://api.example.com/x"],
+            ["https://api.example.com/", "--url"],
+            ["--url", "-x"],
+            ["https://api.example.com/", "--", "--url", "https://api.example.com/x"],
+        ],
+        ids=["and-a-positional-url", "--url-last", "option-after-it", "after---"],
+    )
+    def test_url_option_uncurl_rejects_is_refused_as_before(self, args: list[str]) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @pytest.mark.parametrize("form", ["positional", "--url"])
+    @pytest.mark.parametrize(
+        ("url", "sent"),
+        [
+            ("https://api.example.com/?a\\[0\\]=1", "https://api.example.com/?a[0]=1"),
+            ("https://api.example.com/\\{a,b\\}", "https://api.example.com/{a,b}"),
+            # curl removes the one backslash before each; a doubled one isn't
+            # special to it.
+            ("https://api.example.com/?a\\\\[0\\]=1", "https://api.example.com/?a\\[0]=1"),
+        ],
+        ids=["brackets", "braces", "doubled-backslash"],
+    )
+    def test_glob_backslashes_are_removed_from_the_url(
+        self, url: str, sent: str, form: str
+    ) -> None:
+        # curl's URL globbing reads [ ] { }; a backslash before one makes it
+        # a plain character, and curl drops the backslash.
+        args = [url] if form == "positional" else ["--url", url]
+        assert parse_curl(shlex.join(["curl", *args])).url == sent
+
+    def test_other_backslashes_stay_in_the_url(self) -> None:
+        url = "https://api.example.com/a\\b"
+        assert parse_curl(shlex.join(["curl", url])).url == url
 
 
 # HAR or curl body text holding an unpaired surrogate, which UTF-8 can't

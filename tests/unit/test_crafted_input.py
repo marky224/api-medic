@@ -58,6 +58,9 @@ COOKIE_JAR = (
     "Curl command writes cookies to a file (-c/--cookie-jar); "
     "api-medic writes no files. Leave it out."
 )
+MANY_URLS = (
+    "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
+)
 
 
 @dataclass(frozen=True)
@@ -547,6 +550,20 @@ CASES: list[Case] = [
     ),
     Case(
         "curl-on-several-lines-surrogate", f"{_CURL} \\\n  -d 'a\ud800'", "curl", UNENCODABLE_TEXT
+    ),
+    # Chrome writes the URL as --url, which uncurl doesn't know, with a
+    # backslash before each [ ] { } for curl's URL globbing.
+    Case(
+        "curl-url-option",
+        "curl --url 'https://api.example.com/?a\\[0\\]=1' \\\n  -H 'X-A: b' \\\n  -b 'a=1'",
+        "curl",
+        REPORT,
+    ),
+    Case(
+        "curl-several-urls",
+        "curl --url https://api.example.com/ --url https://api.example.com/x",
+        "curl",
+        MANY_URLS,
     ),
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
