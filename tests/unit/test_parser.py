@@ -851,23 +851,42 @@ class TestCurlCookieOptions:
         assert (cookie_files / "jar.txt").read_text() == jar
 
     @pytest.mark.parametrize(
-        ("args", "message"),
+        "args",
         [
             # argparse reads -ba=1 as an option, so -d has no value.
-            (["-d", "-ba=1"], "Could not parse curl command (argparse rejected it)."),
-            # And -bx as -b naming the file x, which curl would send as -H's value.
-            (["-H", "-bx"], _COOKIE_FILE),
-            (["-X", "-b", "a=1"], "Could not parse curl command (argparse rejected it)."),
-            (["-H", "-c", "x"], _COOKIE_JAR),
+            ["-d", "-ba=1"],
+            # And -bx and -b, and -c, which it doesn't know, where curl reads
+            # each as the value of the option before it.
+            ["-H", "-bx"],
+            ["-X", "-b", "a=1"],
+            ["-H", "-c", "x"],
+            ["-d", "-c", "x"],
+            ["-u", "-c", "x"],
+            ["--use", "-c", "x"],
+            ["--data-b", "-c", "x"],
+            ["--url", "-c", "x"],
+            # And --data-binary, so its @x names no file.
+            ["-d", "--data-binary", "@x"],
         ],
-        ids=["-d-then-cookie", "-H-then-file", "-X-then-cookie", "-H-then-jar"],
+        ids=[
+            "-d-then-cookie",
+            "-H-then-file",
+            "-X-then-cookie",
+            "-H-then-jar",
+            "-d-then-jar",
+            "-u-then-jar",
+            "--use-then-jar",
+            "--data-b-then-jar",
+            "--url-then-jar",
+            "-d-then-data-file",
+        ],
     )
     def test_option_value_that_looks_like_a_cookie_option(
-        self, cookie_files: Path, args: list[str], message: str
+        self, cookie_files: Path, args: list[str]
     ) -> None:
         with _no_file_or_stdin() as reads, pytest.raises(ValueError) as e:
             parse_curl(_curl_with_args(*args))
-        assert str(e.value) == message
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
         assert reads == []
 
     @pytest.mark.parametrize(
@@ -1261,8 +1280,11 @@ class TestCurlEmptyHeader:
             (["-HX-E;"], "not enough values to unpack (expected 2, got 1)"),
             # uncurl reads a header starting with ":" up to its second colon.
             (["-H", ":x"], "list index out of range"),
+            # curl sends these as X-E: too.
+            (["-sH", "X-E;"], "not enough values to unpack (expected 2, got 1)"),
+            (["--heade", "X-E;"], "not enough values to unpack (expected 2, got 1)"),
         ],
-        ids=["text-after-the-semicolon", "-H<value>", "leading-colon"],
+        ids=["text-after-the-semicolon", "-H<value>", "leading-colon", "-sH", "--heade"],
     )
     def test_header_uncurl_cant_split_is_refused_as_before(
         self, args: list[str], message: str
@@ -1349,6 +1371,243 @@ class TestCurlUserAndDataFile:
         # curl reads --data-raw's value as given.
         cap = parse_curl(_curl_with_args(option, "@mention"))
         assert (cap.method, cap.body) == ("POST", b"@mention")
+
+
+_EVIL = "https://evil.example/"
+
+
+class TestCurlOptionValues:
+    """parse_curl's pre-pass didn't know which of uncurl's options take a
+    value, so a value that looked like -b, --cookie, -c, --cookie-jar or
+    --url was read as that option, which then took the next argument as its
+    value. curl reads the value as given."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # curl sends the body -ba=1 and no cookie, and reads {"a":1} as a
+            # second URL.
+            ["-X", "POST", "-d", "-ba=1", '{"a":1}'],
+            ["-d", "-ba=1", "foo"],
+            # curl's method is -b, and a=1 and POST are more URLs.
+            ["-X", "-b", "a=1", "POST"],
+            ["-kd", "-ba=1", "foo"],
+            ["-sX", "-b", "a=1", "POST"],
+            ["--data-raw", "-ba=1", "foo"],
+            ["--data-b", "-ba=1", "foo"],
+            ["--data", "--cookie=a=1", "foo"],
+            ["-H", "-ba=1", "a: b"],
+            ["--header", "-ba=1", "a: b"],
+            ["--heade", "-ba=1", "a: b"],
+            # argparse reads a value holding a space as an option when it
+            # starts with one of argparse's, such as -b.
+            ["-d", "-b x=1", "foo"],
+        ],
+        ids=[
+            "post-body",
+            "-d",
+            "-X",
+            "-kd",
+            "-sX",
+            "--data-raw",
+            "--data-b",
+            "--data-then-cookie",
+            "-H",
+            "--header",
+            "--heade",
+            "value-with-a-space",
+        ],
+    )
+    def test_value_that_looks_like_a_cookie_option_is_refused(self, args: list[str]) -> None:
+        # uncurl doesn't take such a value; curl would make more than one request.
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-H", "--url=" + _EVIL, "a: b"],
+            ["-d", "--url=" + _EVIL, "foo"],
+            ["-X", "--url=" + _EVIL, "POST"],
+            ["-H", "--url", _EVIL, "a: b"],
+            ["-X", "--url", _EVIL, "POST"],
+            ["-sX", "--url=" + _EVIL, "POST"],
+            ["--heade", "--url=" + _EVIL, "a: b"],
+            ["--data-raw", "--url=" + _EVIL, "foo"],
+        ],
+        ids=[
+            "-H",
+            "-d",
+            "-X",
+            "-H-then-separate-url",
+            "-X-then-separate-url",
+            "-sX",
+            "--heade",
+            "--data-raw",
+        ],
+    )
+    def test_value_that_looks_like_the_url_option_isnt_the_url(self, args: list[str]) -> None:
+        # With no other URL. curl sends --url=... as the value, and reads the
+        # argument after it as the URL.
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (["-d", "-c is the jar option"], ("POST", {}, b"-c is the jar option")),
+            (["-kd", "-c is the jar option"], ("POST", {}, b"-c is the jar option")),
+            (["-H", "-c: x"], ("GET", {"-c": "x"}, b"")),
+            (["--heade", "-c: x"], ("GET", {"-c": "x"}, b"")),
+            (["-d", "--cookie=a b"], ("POST", {}, b"--cookie=a b")),
+            (["-d", "--cookie-jar=a b"], ("POST", {}, b"--cookie-jar=a b")),
+            (["-H", "--cookie=x: y"], ("GET", {"--cookie=x": "y"}, b"")),
+            (["-d", "--url=a b"], ("POST", {}, b"--url=a b")),
+            (["-H", "--url=x: y"], ("GET", {"--url=x": "y"}, b"")),
+        ],
+        ids=[
+            "-d-then-jar",
+            "-kd-then-jar",
+            "-H-then-jar",
+            "--heade-then-jar",
+            "-d-then-cookie",
+            "-d-then-jar-long",
+            "-H-then-cookie",
+            "-d-then-url",
+            "-H-then-url",
+        ],
+    )
+    def test_value_holding_a_space_is_the_value(
+        self, args: list[str], expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        # argparse takes one unless it starts with one of its own options,
+        # and curl sends each as given.
+        cap = parse_curl(_curl_with_args(*args))
+        method, headers, body = expected
+        assert (cap.method, cap.url, cap.headers, cap.body) == (
+            method,
+            "https://api.example.com/",
+            headers,
+            body,
+        )
+
+    @pytest.mark.parametrize(
+        "args",
+        [["-d", "-H", "X;"], ["-X", "-H", "X;"], ["-d", "-ba=1"], ["-H", "--url=x"]],
+        ids=["-d-then-empty-header", "-X-then-empty-header", "-d-then-cookie", "-H-then-url"],
+    )
+    def test_value_is_left_as_given(self, args: list[str]) -> None:
+        # For argparse, which reads -H, -ba=1 and --url=x as options and
+        # refuses each command.
+        command = ["curl", "https://api.example.com/", *args]
+        assert core_parser._curl_options(command) == (command, [])
+
+    @pytest.mark.parametrize(
+        "args", [["--head", "a: b"], ["--head", "-ba=1", "a: b"]], ids=["--head", "then-cookie"]
+    )
+    def test_head_option_is_refused(self, args: list[str]) -> None:
+        # curl reads --head as -I, a HEAD request, and a: b as a second URL;
+        # argparse reads it as --header.
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    def test_option_after_head_is_read(self) -> None:
+        # curl writes cookies to the file ": x".
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args("--head", "-c: x"))
+        assert str(e.value) == _COOKIE_JAR
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # An attached value leaves no argument to skip.
+            (["-dV", "-ba=1"], ("POST", {"Cookie": "a=1"}, b"V")),
+            (["-kdV", "-ba=1"], ("POST", {"Cookie": "a=1"}, b"V")),
+            (["--data=V", "-ba=1"], ("POST", {"Cookie": "a=1"}, b"V")),
+            (["-d-ba=1"], ("POST", {}, b"-ba=1")),
+            (["-kd-ba=1"], ("POST", {}, b"-ba=1")),
+            (["--data=-ba=1"], ("POST", {}, b"-ba=1")),
+            (["-X", "PUT", "-ba=1"], ("PUT", {"Cookie": "a=1"}, b"")),
+            (["-H", "a: b", "-ba=1"], ("GET", {"a": "b", "Cookie": "a=1"}, b"")),
+            # argparse takes a negative number as a value.
+            (["-d", "-1"], ("POST", {}, b"-1")),
+            # curl refuses --hea as ambiguous; argparse reads it as --header.
+            (["--hea", "a: b"], ("GET", {"a": "b"}, b"")),
+        ],
+        ids=[
+            "-d<value>-then-cookie",
+            "-kd<value>-then-cookie",
+            "--data=<value>-then-cookie",
+            "-d<value>",
+            "-kd<value>",
+            "--data=<value>",
+            "-X-then-cookie",
+            "-H-then-cookie",
+            "negative-number",
+            "--hea",
+        ],
+    )
+    def test_value_is_read_as_before(
+        self, args: list[str], expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        cap = parse_curl(_curl_with_args(*args))
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    @pytest.mark.parametrize(
+        "args",
+        [["-H", "--url=" + _EVIL, "a: b"], ["-d", "--", "foo"], ["-d", "--", "-ba=1", "foo"]],
+        ids=["url-and-a-url-option", "-d-then-double-dash", "-d-then-double-dash-and-cookie"],
+    )
+    def test_command_uncurl_rejects_is_refused_as_before(self, args: list[str]) -> None:
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    def test_many_flag_clusters_are_read_quickly(self) -> None:
+        # The longest flag clusters that fit the limits; the option pattern
+        # reads each to its end.
+        flags = ["-" + "k" * 47] * (_MAX_CURL_ARGS - 2)
+        args = ["curl", "https://api.example.com/", *flags]
+        started = time.perf_counter()
+        read = core_parser._curl_options(args)
+        elapsed = time.perf_counter() - started
+        assert read == (args, [])
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 0.1
+
+    def test_value_options_are_uncurls_value_options(self) -> None:
+        # One uncurl reads that isn't here would let its value be read as
+        # -b, -c, --cookie, --cookie-jar or --url.
+        parser = uncurl.api.parser
+        short = {
+            option[1]
+            for action in parser._actions
+            if action.option_strings and action.nargs is None
+            for option in action.option_strings
+            if len(option) == 2
+        }
+        # -b is curl's cookie option, which parse_curl reads itself.
+        assert set(core_parser._CURL_VALUE_FLAGS) == short - {"b"}
+
+        def takes_a_value(spelling: str) -> bool:
+            try:
+                parser.parse_args(["curl", "https://api.example.com/", spelling + "=V"])
+            except SystemExit:  # an abbreviation of two options, or one without a value
+                return False
+            return True
+
+        # argparse reads an abbreviation no other option starts with.
+        spellings = {
+            option[:n]
+            for option in parser._option_string_actions
+            if option.startswith("--")
+            for n in range(3, len(option) + 1)
+        }
+        assert {s for s in spellings if takes_a_value(s)} == core_parser._LONG_VALUE_OPTIONS
 
 
 # Mirror parser.CMD_LINE_END, CMD_QUOTES, POWERSHELL_LINE_END and
