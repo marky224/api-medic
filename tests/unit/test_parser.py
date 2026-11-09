@@ -1530,11 +1530,14 @@ class TestCurlOptionValues:
         assert core_parser._curl_options(command) == (command, [])
 
     @pytest.mark.parametrize(
-        "args", [["--head", "a: b"], ["--head", "-ba=1", "a: b"]], ids=["--head", "then-cookie"]
+        "args",
+        [["--head", "a: b"], ["--head", "-ba=1", "a: b"], ["--head=a: b"], ["--head="]],
+        ids=["--head", "then-cookie", "--head=<value>", "--head=<empty>"],
     )
     def test_head_option_is_refused(self, args: list[str]) -> None:
-        # curl reads --head as -I, a HEAD request, and a: b as a second URL;
-        # argparse reads it as --header.
+        # curl reads --head as -I, a HEAD request, and a: b as a second URL,
+        # and refuses --head=VALUE, as -I takes no value; argparse reads it
+        # as --header.
         with pytest.raises(ValueError) as e:
             parse_curl(_curl_with_args(*args))
         assert str(e.value) == "Could not parse curl command (argparse rejected it)."

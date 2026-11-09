@@ -473,11 +473,12 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     option; none is read as one of these options. A short one's value
     attached after "=", as in -d=x or -kH=a: b, goes to uncurl as the
     argument after it (-d =x), so argparse keeps the "=", as curl does,
-    where it would drop it. --head, which curl reads
-    as -I and argparse as --header, goes to uncurl as -I, which it doesn't
-    know. An option with no argument after it, and anything after "--",
-    are left for uncurl to reject. A cookie file, a -c/--cookie-jar, more
-    than one --url or a --data-binary file is a ValueError.
+    where it would drop it. --head, which curl reads as -I and argparse as
+    --header, goes to uncurl as -I, which it doesn't know, and so does
+    --head=VALUE, which curl refuses. An option with no argument after it,
+    and anything after "--", are left for uncurl to reject. A cookie file,
+    a -c/--cookie-jar, more than one --url or a --data-binary file is a
+    ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
@@ -507,7 +508,8 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
                     i += 1
                 urls.append(url)
                 continue
-        if arg == "--head":  # curl's -I, which uncurl rejects
+        # curl's -I, which takes no value and which uncurl rejects.
+        if name == "--head":
             kept.append("-I")
             continue
         if name in _LONG_COOKIE_OPTIONS:

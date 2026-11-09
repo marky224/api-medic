@@ -647,6 +647,7 @@ CASES: list[Case] = [
     Case("curl-header-value-holding-a-space", f"{_CURL} -H '-c: x'", "curl", REPORT),
     # curl reads --head as -I, a HEAD request, and uncurl as --header.
     Case("curl-head-option", f"{_CURL} --head 'a: b'", "curl", ARGPARSE_REJECTED),
+    Case("curl-head-option-with-a-value", f"{_CURL} '--head=a: b'", "curl", ARGPARSE_REJECTED),
     # argparse reads the second "--" as the URL "--", or on older Pythons
     # as the URL [].
     Case("curl-two-double-dashes", "curl -- --", "curl", ARGPARSE_REJECTED),
