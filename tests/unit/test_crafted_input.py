@@ -654,6 +654,10 @@ CASES: list[Case] = [
     # argparse reads the second "--" as the URL "--", or on older Pythons
     # as the URL [].
     Case("curl-two-double-dashes", "curl -- --", "curl", ARGPARSE_REJECTED),
+    # And -1, curl's --tlsv1, or an argument holding a space, as the URL
+    # when none comes before it.
+    Case("curl-tlsv1-as-the-url", "curl -k -1", "curl", ARGPARSE_REJECTED),
+    Case("curl-option-with-a-space-as-the-url", "curl -k '-o out'", "curl", ARGPARSE_REJECTED),
     # argparse printed uncurl's help to stdout before exiting.
     Case("curl-help-option", "curl -h", "curl", ARGPARSE_REJECTED, never_shows=r"\[-d DATA\]"),
     # Written for another shell: the generic parse error, or a URL starting

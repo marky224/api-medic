@@ -1602,6 +1602,8 @@ class TestCurlOptionValues:
             (["--hea", "a: b"], ("GET", {"a": "b"}, b"")),
             # curl and argparse read a long option's value after its "=".
             (["--data==x"], ("POST", {}, b"=x")),
+            # And a negative number as a value, as with -d.
+            (["-X", "-1"], ("-1", {}, b"")),
         ],
         ids=[
             "-d<value>-then-cookie",
@@ -1615,6 +1617,7 @@ class TestCurlOptionValues:
             "negative-number",
             "--hea",
             "--data==<value>",
+            "-X-negative-number",
         ],
     )
     def test_value_is_read_as_before(
@@ -1673,6 +1676,56 @@ class TestCurlOptionValues:
     def test_command_uncurl_rejects_is_refused_as_before(self, args: list[str]) -> None:
         with pytest.raises(ValueError) as e:
             parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # curl reads -1 as --tlsv1, and answers "no URL specified".
+            ["-1"],
+            ["-k", "-1"],
+            ["-1", "-k"],
+            ["-d", "x", "-1"],
+            ["-X", "PUT", "-1"],
+            ["-0"],
+            ["-k", "-46"],
+            # curl refuses these as options it doesn't know; argparse reads
+            # a non-ASCII digit as a digit.
+            ["-k", "-1.5"],
+            ["-k", "-.5"],
+            ["-k", "-"],
+            ["-k", "-\u0661"],
+            # curl reads -o with the value " out".
+            ["-k", "-o out"],
+            # curl fetches these.
+            ["--", "-1"],
+            ["--", "-x"],
+            # argparse refuses this on Python 3.11 and 3.12, and newer ones,
+            # such as 3.14, read it as the URL.
+            ["-k", "-1e5"],
+        ],
+        ids=[
+            "-1",
+            "-k-then-1",
+            "-1-then-k",
+            "-d-then-1",
+            "-X-then-1",
+            "-0",
+            "-46",
+            "-1.5",
+            "-.5",
+            "lone-dash",
+            "non-ascii-digit",
+            "with-a-space",
+            "after-double-dash",
+            "option-after-double-dash",
+            "-1e5",
+        ],
+    )
+    def test_option_argparse_reads_as_the_url_is_refused(self, args: list[str]) -> None:
+        # With no URL before it, argparse reads it as the URL.
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
         assert str(e.value) == "Could not parse curl command (argparse rejected it)."
 
     def test_many_flag_clusters_are_read_quickly(self) -> None:

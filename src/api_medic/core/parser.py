@@ -322,9 +322,12 @@ def parse_curl(curl_str: str) -> CapturedRequest:
             uncurl.api.parser.error("a flag with a value")
         # The parser uncurl.parse_context reads the arguments with.
         parsed = uncurl.api.parser.parse_args(uncurl_args)
-        # In curl -- --, argparse reads the second "--" as the URL "--", or
-        # on older Pythons, such as 3.11 and 3.12.3, as the URL [].
-        if parsed.url in ("--", []):
+        # argparse takes an argument starting with "-" as the URL when it is
+        # a negative number, such as -1 (curl's --tlsv1), holds a space, is
+        # "-" or comes after "--"; curl reads most as options. In curl -- --
+        # it takes the second "--" as the URL "--", or on older Pythons, such
+        # as 3.11 and 3.12.3, as the URL [].
+        if parsed.url == [] or parsed.url.startswith("-"):
             uncurl.api.parser.error("no URL")
     if parsed.user != ():  # uncurl's default
         raise ValueError(USER_OPTION)
