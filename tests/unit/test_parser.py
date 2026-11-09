@@ -514,6 +514,21 @@ class TestParseCurl:
             parse_curl("curl https://api.example.com/ --data-urlencode 'session=SECRET-7f3a'")
         assert capsys.readouterr().err == ""
 
+    @pytest.mark.parametrize(
+        "args",
+        [["-h"], ["--help"], ["--hel"], ["-kh"], ["-hk"], ["https://api.example.com/", "-h"]],
+        ids=["-h", "--help", "--hel", "-kh", "-hk", "after-the-url"],
+    )
+    def test_help_option_prints_nothing(
+        self, capsys: pytest.CaptureFixture[str], args: list[str]
+    ) -> None:
+        # argparse would print uncurl's help to stdout before exiting.
+        with pytest.raises(ValueError) as e:
+            parse_curl(shlex.join(["curl", *args]))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err) == ("", "")
+
     def test_command_at_the_limit_parses(self) -> None:
         cap = parse_curl(_curl_of_length(_MAX_CURL_CHARS))
         assert cap.url == "https://api.example.com/"

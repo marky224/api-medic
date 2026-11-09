@@ -445,9 +445,10 @@ def _uncurl_errors(curl_str: str) -> Iterator[None]:
     `curl_str`, the command as given, has from another shell."""
     try:
         # argparse prints why it rejected the command to stderr, quoting
-        # arguments it didn't recognize (cookie values, bodies). Lambda
-        # sends stderr to CloudWatch, where request data must not go.
-        with contextlib.redirect_stderr(io.StringIO()):
+        # arguments it didn't recognize (cookie values, bodies), and its help,
+        # for -h or --help, to stdout. Lambda sends both to CloudWatch, where
+        # request data must not go, and from-curl would print the help.
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             yield
     except SystemExit as e:
         # uncurl uses argparse, which calls sys.exit() on parse failure.

@@ -124,8 +124,8 @@ class Case:
     # reads.
     expect: str | tuple[str, ...]
     differs: dict[str, str | tuple[str, ...]] = field(default_factory=dict)
-    # A pattern no output may match: a server's response body, or the CLI's
-    # stdout in any format.
+    # A pattern no output may match: a server's response body or what it
+    # prints, or the CLI's stdout in any format.
     never_shows: str | None = None
 
     def entries(self) -> list[str]:
@@ -647,6 +647,8 @@ CASES: list[Case] = [
     # argparse reads the second "--" as the URL "--", or on older Pythons
     # as the URL [].
     Case("curl-two-double-dashes", "curl -- --", "curl", ARGPARSE_REJECTED),
+    # argparse printed uncurl's help to stdout before exiting.
+    Case("curl-help-option", "curl -h", "curl", ARGPARSE_REJECTED, never_shows=r"\[-d DATA\]"),
     # Written for another shell: the generic parse error, or a URL starting
     # with ^ from cmd's quotes.
     Case(
@@ -844,12 +846,14 @@ def stub_runner(monkeypatch: pytest.MonkeyPatch) -> Any:
     ],
 )
 def test_ends_in_a_report_or_an_error_carrying_a_message(
-    case: Case, entry: str, tmp_path: Path, stub_runner: Any
+    case: Case, entry: str, tmp_path: Path, stub_runner: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     if isinstance(case.input, Live):
         stub_runner(case.input)
     want = case.expected(entry)
     got = _send(case, entry, tmp_path)
+    # What the servers print; the CLI's goes to its stdout.
+    _assert_never_shows(capsys.readouterr().out, case.never_shows)
     if isinstance(got, str):
         assert _ends_as_expected(got, want), (got, want)
         return
