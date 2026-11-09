@@ -124,8 +124,8 @@ class Case:
     # reads.
     expect: str | tuple[str, ...]
     differs: dict[str, str | tuple[str, ...]] = field(default_factory=dict)
-    # A pattern no output may match: a server's response body, or the CLI's
-    # stdout in any format.
+    # A pattern no output may match: a server's response body or what it
+    # prints, or the CLI's stdout in any format.
     never_shows: str | None = None
 
     def entries(self) -> list[str]:
@@ -614,6 +614,9 @@ CASES: list[Case] = [
     # body; api-medic reads no files.
     Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
     Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
+    # curl keeps the "=" after a short option, which argparse dropped; the
+    # body =@body.json names no file.
+    Case("curl-data-attached-after-equals", f"{_CURL} -d=@body.json", "curl", REPORT),
     # An option's value that looked like -b, -c or --url was read as that
     # option, which took the next argument as its value. curl sends the
     # value as given and reads the next argument as another URL.
@@ -644,9 +647,19 @@ CASES: list[Case] = [
     Case("curl-header-value-holding-a-space", f"{_CURL} -H '-c: x'", "curl", REPORT),
     # curl reads --head as -I, a HEAD request, and uncurl as --header.
     Case("curl-head-option", f"{_CURL} --head 'a: b'", "curl", ARGPARSE_REJECTED),
+    Case("curl-head-option-with-a-value", f"{_CURL} '--head=a: b'", "curl", ARGPARSE_REJECTED),
+    # A flag that takes no value, given one: curl refuses it, and argparse
+    # from Python 3.11 on.
+    Case("curl-flag-with-a-value", f"{_CURL} -k=b x", "curl", ARGPARSE_REJECTED),
     # argparse reads the second "--" as the URL "--", or on older Pythons
     # as the URL [].
     Case("curl-two-double-dashes", "curl -- --", "curl", ARGPARSE_REJECTED),
+    # And -1, curl's --tlsv1, or an argument holding a space, as the URL
+    # when none comes before it.
+    Case("curl-tlsv1-as-the-url", "curl -k -1", "curl", ARGPARSE_REJECTED),
+    Case("curl-option-with-a-space-as-the-url", "curl -k '-o out'", "curl", ARGPARSE_REJECTED),
+    # argparse printed uncurl's help to stdout before exiting.
+    Case("curl-help-option", "curl -h", "curl", ARGPARSE_REJECTED, never_shows=r"\[-d DATA\]"),
     # Written for another shell: the generic parse error, or a URL starting
     # with ^ from cmd's quotes.
     Case(
@@ -844,12 +857,14 @@ def stub_runner(monkeypatch: pytest.MonkeyPatch) -> Any:
     ],
 )
 def test_ends_in_a_report_or_an_error_carrying_a_message(
-    case: Case, entry: str, tmp_path: Path, stub_runner: Any
+    case: Case, entry: str, tmp_path: Path, stub_runner: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     if isinstance(case.input, Live):
         stub_runner(case.input)
     want = case.expected(entry)
     got = _send(case, entry, tmp_path)
+    # What the servers print; the CLI's goes to its stdout.
+    _assert_never_shows(capsys.readouterr().out, case.never_shows)
     if isinstance(got, str):
         assert _ends_as_expected(got, want), (got, want)
         return

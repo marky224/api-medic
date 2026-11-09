@@ -82,6 +82,10 @@ COOKIE_JAR = (
 # -b, as curl does. A token like -Lb, which curl also reads as -L and -b,
 # is one uncurl rejects.
 _CURL_FLAGS = "iks"
+# curl refuses one given a value after "=", as in -k=d x, and so does
+# argparse from Python 3.11 on; parse_curl refuses it before argparse reads
+# it, so every Python does.
+_FLAG_WITH_A_VALUE = re.compile(rf"-[{_CURL_FLAGS}]+=")
 # The options uncurl reads with a value, -b aside: the short ones, and each
 # long one in every spelling argparse reads, as it takes an abbreviation no
 # other option starts with (--hea is --header, --data-b is --data-binary,
@@ -289,11 +293,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     The curl command describes a request only — the resulting CapturedRequest
     has no `response`. Pair with `core.runner` to actually execute it. Its
     Cookie headers are kept as given, joined with "; " into one. Without
-    one, its -b/--cookie cookies are the Cookie header, as curl sends them;
-    a -b/--cookie file or a -c/--cookie-jar is a ValueError. A command on
-    several lines, each but the last ending in a backslash, is read as
-    one, as bash reads it (see _normalize_bash); one written for Windows
-    cmd or PowerShell is a ValueError naming that.
+    one, its -b/--cookie cookies are the Cookie header, joined with ";", as
+    curl sends them; a -b/--cookie file or a -c/--cookie-jar is a
+    ValueError. A command on several lines, each but the last ending in a
+    backslash, is read as one, as bash reads it (see _normalize_bash); one
+    written for Windows cmd or PowerShell is a ValueError naming that.
     """
     # The limit counts the command as given; joining its lines only
     # shortens it.
@@ -314,11 +318,16 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
     uncurl_args, cookie_options = _curl_options(args)
     with _uncurl_errors(curl_str):
+        if any(_FLAG_WITH_A_VALUE.match(arg) for arg in uncurl_args):
+            uncurl.api.parser.error("a flag with a value")
         # The parser uncurl.parse_context reads the arguments with.
         parsed = uncurl.api.parser.parse_args(uncurl_args)
-        # In curl -- --, argparse reads the second "--" as the URL "--", or
-        # on older Pythons, such as 3.11 and 3.12.3, as the URL [].
-        if parsed.url in ("--", []):
+        # argparse takes an argument starting with "-" as the URL when it is
+        # a negative number, such as -1 (curl's --tlsv1), holds a space, is
+        # "-" or comes after "--"; curl reads most as options. In curl -- --
+        # it takes the second "--" as the URL "--", or on older Pythons, such
+        # as 3.11 and 3.12.3, as the URL [].
+        if parsed.url == [] or parsed.url.startswith("-"):
             uncurl.api.parser.error("no URL")
     if parsed.user != ():  # uncurl's default
         raise ValueError(USER_OPTION)
@@ -345,11 +354,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send
     # them as the command gave them, stripped like uncurl strips the others.
-    # curl sends the -b/--cookie cookies only when there is no Cookie
-    # header; an empty one (-H 'Cookie:') sends no cookies at all.
-    cookie = "; ".join(
-        value.strip() for value in (cookie_values or cookie_options) if value.strip()
-    )
+    # curl sends the -b/--cookie cookies, joined with ";", only when there
+    # is no Cookie header; an empty one (-H 'Cookie:') sends no cookies at
+    # all.
+    values, sep = (cookie_values, "; ") if cookie_values else (cookie_options, ";")
+    cookie = sep.join(value.strip() for value in values if value.strip())
     if cookie:
         headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""
@@ -445,9 +454,10 @@ def _uncurl_errors(curl_str: str) -> Iterator[None]:
     `curl_str`, the command as given, has from another shell."""
     try:
         # argparse prints why it rejected the command to stderr, quoting
-        # arguments it didn't recognize (cookie values, bodies). Lambda
-        # sends stderr to CloudWatch, where request data must not go.
-        with contextlib.redirect_stderr(io.StringIO()):
+        # arguments it didn't recognize (cookie values, bodies), and its help,
+        # for -h or --help, to stdout. Lambda sends both to CloudWatch, where
+        # request data must not go, and from-curl would print the help.
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             yield
     except SystemExit as e:
         # uncurl uses argparse, which calls sys.exit() on parse failure.
@@ -469,11 +479,15 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     each other option uncurl reads with one, as in -d VALUE, -kd VALUE,
     --data-b VALUE or --heade VALUE, and a --url value starting with "-",
     are left as given for uncurl, which rejects one that looks like an
-    option; none is read as one of these options. --head, which curl reads
-    as -I and argparse as --header, goes to uncurl as -I, which it doesn't
-    know. An option with no argument after it, and anything after "--",
-    are left for uncurl to reject. A cookie file, a -c/--cookie-jar, more
-    than one --url or a --data-binary file is a ValueError.
+    option; none is read as one of these options. A short one's value
+    attached after "=", as in -d=x or -kH=a: b, goes to uncurl as the
+    argument after it (-d =x), so argparse keeps the "=", as curl does,
+    where it would drop it. --head, which curl reads as -I and argparse as
+    --header, goes to uncurl as -I, which it doesn't know, and so does
+    --head=VALUE, which curl refuses. An option with no argument after it,
+    and anything after "--", are left for uncurl to reject. A cookie file,
+    a -c/--cookie-jar, more than one --url or a --data-binary file is a
+    ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
@@ -503,7 +517,8 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
                     i += 1
                 urls.append(url)
                 continue
-        if arg == "--head":  # curl's -I, which uncurl rejects
+        # curl's -I, which takes no value and which uncurl rejects.
+        if name == "--head":
             kept.append("-I")
             continue
         if name in _LONG_COOKIE_OPTIONS:
@@ -516,7 +531,11 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
             kept.append(arg)
             continue
         if option not in ("b", "c"):
-            kept.append(arg)
+            if option and value and value.startswith("="):
+                # argparse would drop the "=", which curl keeps.
+                kept += ["-" + flags + option, value]
+            else:
+                kept.append(arg)
             if value is None and i < len(args) and args[i] != "--":
                 kept.append(args[i])
                 i += 1
