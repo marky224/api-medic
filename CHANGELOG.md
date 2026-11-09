@@ -52,6 +52,7 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 - A curl command with `-h` or `--help` (or `--hel`, or `-h` among flags, as in `-kh`) still gets the 400 "Could not parse curl command (argparse rejected it).", but no longer prints the help of uncurl's argument parser (`usage: … [-d DATA] …`) to standard output. In 1.1.1 the hosted demo and `api-medic serve` wrote it to their logs, and `api-medic from-curl` printed it before the error, even with `-o json`.
 - A short curl option's value attached after `=` keeps the `=`, as curl reads it: `-d=x` is the body `=x`, `-X=PUT` the method `=PUT`, `-H=a: b` the header `=a` with the value `b`, also after flags, as in `-kd=x`. In 1.1.1, `curl https://api.example.com/ -d=x` gave a report of a POST with the body `x`. `-d=@body.json` is the body `=@body.json`, which curl sends as given, and `-H=Cookie: a=1` a header named `=Cookie`. `--data=x` is still the body `x`.
 - `--head=VALUE` gets the same 400 as `--head`, as curl refuses it, since its `--head` takes no value. In 1.1.1, `curl https://api.example.com/ '--head=a: b'` gave a report of a GET with the header `a: b`, and `--head=` the 400 "Could not parse curl command: not enough values to unpack (expected 2, got 1).".
+- A curl flag that takes no value (`-i`, `-k` or `-s`) given one after `=`, as in `-k=d x`, `-k=b x` or `-ks=d x`, is refused on every Python, as curl refuses it, with the 400 "Could not parse curl command (argparse rejected it)."; Python 3.11's and 3.12's argparse already refused it.
 
 ### Security
 

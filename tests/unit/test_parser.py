@@ -1548,6 +1548,39 @@ class TestCurlOptionValues:
             parse_curl(_curl_with_args("--head", "-c: x"))
         assert str(e.value) == _COOKIE_JAR
 
+    _FLAGS_WITH_A_VALUE = pytest.mark.parametrize(
+        "args",
+        [
+            ["-k=d", "x"],
+            ["-k=b", "x"],
+            ["-k="],
+            ["-ks=d", "x"],
+            ["-k=H", "a: b"],
+            ["-i=X", "PUT"],
+        ],
+        ids=["-k=d", "-k=b", "-k=", "-ks=d", "-k=H", "-i=X"],
+    )
+
+    @_FLAGS_WITH_A_VALUE
+    def test_flag_with_a_value_is_refused(self, args: list[str]) -> None:
+        # curl refuses each; argparse refuses them from Python 3.11 on.
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
+    @_FLAGS_WITH_A_VALUE
+    def test_flag_with_a_value_is_refused_before_argparse_reads_it(
+        self, monkeypatch: pytest.MonkeyPatch, args: list[str]
+    ) -> None:
+        # So every Python refuses them, whatever its argparse reads.
+        def parse_args(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("read the arguments")
+
+        monkeypatch.setattr(uncurl.api.parser, "parse_args", parse_args)
+        with pytest.raises(ValueError) as e:
+            parse_curl(_curl_with_args(*args))
+        assert str(e.value) == "Could not parse curl command (argparse rejected it)."
+
     @pytest.mark.parametrize(
         ("args", "expected"),
         [

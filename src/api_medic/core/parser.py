@@ -82,6 +82,10 @@ COOKIE_JAR = (
 # -b, as curl does. A token like -Lb, which curl also reads as -L and -b,
 # is one uncurl rejects.
 _CURL_FLAGS = "iks"
+# curl refuses one given a value after "=", as in -k=d x, and so does
+# argparse from Python 3.11 on; parse_curl refuses it before argparse reads
+# it, so every Python does.
+_FLAG_WITH_A_VALUE = re.compile(rf"-[{_CURL_FLAGS}]+=")
 # The options uncurl reads with a value, -b aside: the short ones, and each
 # long one in every spelling argparse reads, as it takes an abbreviation no
 # other option starts with (--hea is --header, --data-b is --data-binary,
@@ -314,6 +318,8 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(f"Curl command has too many arguments (limit: {MAX_CURL_ARGS:,}).")
     uncurl_args, cookie_options = _curl_options(args)
     with _uncurl_errors(curl_str):
+        if any(_FLAG_WITH_A_VALUE.match(arg) for arg in uncurl_args):
+            uncurl.api.parser.error("a flag with a value")
         # The parser uncurl.parse_context reads the arguments with.
         parsed = uncurl.api.parser.parse_args(uncurl_args)
         # In curl -- --, argparse reads the second "--" as the URL "--", or
