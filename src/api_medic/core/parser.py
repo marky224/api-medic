@@ -82,7 +82,25 @@ COOKIE_JAR = (
 # -b, as curl does. A token like -Lb, which curl also reads as -L and -b,
 # is one uncurl rejects.
 _CURL_FLAGS = "iks"
-_COOKIE_OPTION = re.compile(rf"-([{_CURL_FLAGS}]*)([bc])(.*)", re.DOTALL)
+# The options uncurl reads with a value, -b aside: the short ones, and each
+# long one in every spelling argparse reads, as it takes an abbreviation no
+# other option starts with (--hea is --header, --data-b is --data-binary,
+# but --dat is refused). curl reads the argument after one as its value
+# whatever it looks like, so parse_curl reads no option there.
+_CURL_VALUE_FLAGS = "dHuX"
+_SHORT_OPTION = re.compile(rf"-([{_CURL_FLAGS}]*)([bc{_CURL_VALUE_FLAGS}])(.*)", re.DOTALL)
+_LONG_VALUE_OPTIONS = frozenset(
+    full[:n]
+    # Each option, and the length of its shortest spelling.
+    for full, shortest in [
+        ("--data", 6),
+        ("--data-binary", 8),
+        ("--data-raw", 8),
+        ("--header", 5),
+        ("--user", 3),
+    ]
+    for n in range(shortest, len(full) + 1)
+)
 _LONG_COOKIE_OPTIONS = {"--cookie": "b", "--cookie-jar": "c"}
 # curl reads --url VALUE as a URL to fetch, as it reads one given without an
 # option, and fetches every URL it is given; uncurl doesn't know --url.
@@ -298,6 +316,10 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     with _uncurl_errors(curl_str):
         # The parser uncurl.parse_context reads the arguments with.
         parsed = uncurl.api.parser.parse_args(uncurl_args)
+        # In curl -- --, argparse reads the second "--" as the URL "--", or
+        # on older Pythons, such as 3.11 and 3.12.3, as the URL [].
+        if parsed.url in ("--", []):
+            uncurl.api.parser.error("no URL")
     if parsed.user != ():  # uncurl's default
         raise ValueError(USER_OPTION)
     # The last -d/--data value, the one uncurl reads.
@@ -443,10 +465,15 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     Reads -b VALUE, -bVALUE (whose "=" curl keeps: -b=a=1 is "=a=1"),
     -kb VALUE and -kbVALUE, --cookie VALUE and --cookie=VALUE, where VALUE
     is the next argument whatever it starts with, as curl reads it, and
-    --url VALUE and --url=VALUE, unless VALUE starts with "-". A -b or
-    --url with no argument after it, and anything after "--", are left for
-    uncurl to reject. A cookie file, a -c/--cookie-jar, more than one --url
-    or a --data-binary file is a ValueError.
+    --url VALUE and --url=VALUE, unless VALUE starts with "-". The value of
+    each other option uncurl reads with one, as in -d VALUE, -kd VALUE,
+    --data-b VALUE or --heade VALUE, and a --url value starting with "-",
+    are left as given for uncurl, which rejects one that looks like an
+    option; none is read as one of these options. --head, which curl reads
+    as -I and argparse as --header, goes to uncurl as -I, which it doesn't
+    know. An option with no argument after it, and anything after "--",
+    are left for uncurl to reject. A cookie file, a -c/--cookie-jar, more
+    than one --url or a --data-binary file is a ValueError.
     """
     kept: list[str] = []
     cookies: list[str] = []
@@ -471,19 +498,28 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
                 raise ValueError(DATA_FILE)
         if name == "--url":
             url = attached if eq else args[i] if i < len(args) else None
-            if url is None or url.startswith("-"):
-                kept.append(arg)
+            if url is not None and not url.startswith("-"):
+                if not eq:
+                    i += 1
+                urls.append(url)
                 continue
-            if not eq:
-                i += 1
-            urls.append(url)
+        if arg == "--head":  # curl's -I, which uncurl rejects
+            kept.append("-I")
             continue
         if name in _LONG_COOKIE_OPTIONS:
             flags, option, value = "", _LONG_COOKIE_OPTIONS[name], attached if eq else None
-        elif match := _COOKIE_OPTION.fullmatch(arg):
+        elif name in _LONG_VALUE_OPTIONS or name == "--url":
+            flags, option, value = "", "", attached if eq else None
+        elif match := _SHORT_OPTION.fullmatch(arg):
             flags, option, value = match[1], match[2], match[3] or None
         else:
             kept.append(arg)
+            continue
+        if option not in ("b", "c"):
+            kept.append(arg)
+            if value is None and i < len(args) and args[i] != "--":
+                kept.append(args[i])
+                i += 1
             continue
         if value is None:
             if i == len(args):

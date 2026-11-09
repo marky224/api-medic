@@ -61,6 +61,7 @@ COOKIE_JAR = (
 MANY_URLS = (
     "Curl command gives more than one URL (--url); api-medic analyzes one request. Leave one URL."
 )
+ARGPARSE_REJECTED = "Could not parse curl command (argparse rejected it)."
 ANSI_ESCAPE = (
     "Could not parse curl command: a $'...' string uses an escape api-medic doesn't read. "
     "It reads \\\\, \\', \\n, \\r and \\u with 4 hex digits (not \\u0000 or \\ud800-\\udfff)."
@@ -613,6 +614,39 @@ CASES: list[Case] = [
     # body; api-medic reads no files.
     Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
     Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
+    # An option's value that looked like -b, -c or --url was read as that
+    # option, which took the next argument as its value. curl sends the
+    # value as given and reads the next argument as another URL.
+    Case(
+        "curl-post-data-value-like-a-cookie",
+        _CURL + " -X POST -d -ba=1 '{\"a\":1}'",
+        "curl",
+        ARGPARSE_REJECTED,
+    ),
+    Case("curl-data-value-like-a-cookie", f"{_CURL} -d -ba=1 foo", "curl", ARGPARSE_REJECTED),
+    Case("curl-method-value-like-a-cookie", f"{_CURL} -X -b a=1 POST", "curl", ARGPARSE_REJECTED),
+    Case(
+        "curl-header-value-like-the-url",
+        "curl -H --url=https://evil.example/ 'a: b'",
+        "curl",
+        ARGPARSE_REJECTED,
+        never_shows=r"evil\.example",
+    ),
+    Case(
+        "curl-header-value-like-a-second-url",
+        f"{_CURL} -H --url=https://evil.example/ 'a: b'",
+        "curl",
+        ARGPARSE_REJECTED,
+        never_shows=r"evil\.example",
+    ),
+    # One holding a space, which uncurl takes, was refused.
+    Case("curl-data-value-holding-a-space", f"{_CURL} -d '-c is the jar option'", "curl", REPORT),
+    Case("curl-header-value-holding-a-space", f"{_CURL} -H '-c: x'", "curl", REPORT),
+    # curl reads --head as -I, a HEAD request, and uncurl as --header.
+    Case("curl-head-option", f"{_CURL} --head 'a: b'", "curl", ARGPARSE_REJECTED),
+    # argparse reads the second "--" as the URL "--", or on older Pythons
+    # as the URL [].
+    Case("curl-two-double-dashes", "curl -- --", "curl", ARGPARSE_REJECTED),
     # Written for another shell: the generic parse error, or a URL starting
     # with ^ from cmd's quotes.
     Case(

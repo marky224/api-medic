@@ -454,7 +454,7 @@ The build order is **fixtures first, UI against fixtures, then engine.** This pr
 **Phase 3 — Core engine + parser**
 
 - Implement `runner.py` with `httpx` and full timing capture
-- Implement `parser.py` for HAR files and curl commands (use a battle-tested library like `uncurl`, don't write the curl parser from scratch)
+- Implement `parser.py` for HAR files and curl commands (use a battle-tested library like `uncurl`, don't write the curl parser from scratch; `parser.py` runs a small pre-pass first, for the curl options `uncurl` misreads or doesn't know)
 - Implement all 20 checks
 - Implement all four renderers (terminal, JSON, Markdown, HTML)
 - Goal: the engine produces real `Report` objects byte-equivalent in shape to the fixtures
