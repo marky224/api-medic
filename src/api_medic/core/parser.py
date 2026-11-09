@@ -470,7 +470,10 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
     each other option uncurl reads with one, as in -d VALUE, -kd VALUE,
     --data-b VALUE or --heade VALUE, and a --url value starting with "-",
     are left as given for uncurl, which rejects one that looks like an
-    option; none is read as one of these options. --head, which curl reads
+    option; none is read as one of these options. A short one's value
+    attached after "=", as in -d=x or -kH=a: b, goes to uncurl as the
+    argument after it (-d =x), so argparse keeps the "=", as curl does,
+    where it would drop it. --head, which curl reads
     as -I and argparse as --header, goes to uncurl as -I, which it doesn't
     know. An option with no argument after it, and anything after "--",
     are left for uncurl to reject. A cookie file, a -c/--cookie-jar, more
@@ -517,7 +520,11 @@ def _curl_options(args: list[str]) -> tuple[list[str], list[str]]:
             kept.append(arg)
             continue
         if option not in ("b", "c"):
-            kept.append(arg)
+            if option and value and value.startswith("="):
+                # argparse would drop the "=", which curl keeps.
+                kept += ["-" + flags + option, value]
+            else:
+                kept.append(arg)
             if value is None and i < len(args) and args[i] != "--":
                 kept.append(args[i])
                 i += 1

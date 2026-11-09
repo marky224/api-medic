@@ -446,8 +446,6 @@ _COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
     "-H": lambda v: ["-H", "Cookie:" + v],
     "-H<value>": lambda v: ["-HCookie:" + v],
     "-kH<value>": lambda v: ["-kHCookie:" + v],
-    "-H=<value>": lambda v: ["-H=Cookie:" + v],
-    "-kH=<value>": lambda v: ["-kH=Cookie:" + v],
     "--header": lambda v: ["--header", "Cookie:" + v],
     "--header=<value>": lambda v: ["--header=Cookie:" + v],
     "--hea": lambda v: ["--hea", "Cookie:" + v],
@@ -463,12 +461,6 @@ _COOKIE_HEADER_FORMS: dict[str, Callable[[str], list[str]]] = {
     "two-b": lambda v: ["-b", v[:100], "-b", v[100:]],
     "header-and-b": lambda v: ["-H", "Cookie:" + v[:100], "-b", v[100:]],
 }
-
-# Whether this Python's argparse reads -kH=<value> as <value>, as the local
-# Python 3.12's does.
-_ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS = uncurl.api.parser.parse_args(
-    ["curl", "https://api.example.com/", "-kH=a:b"]
-).header == ["a:b"]
 
 
 def _curl_with_cookie(value: str, form: str = "-H") -> str:
@@ -589,9 +581,6 @@ class TestParseCurl:
         # uncurl reads each Cookie header value with http.cookies.SimpleCookie,
         # which slows down with the square of its length: a 40,000-character
         # command whose Cookie value is a=a=..." took 18 seconds locally.
-        if form == "-kH=<value>" and not _ARGPARSE_DROPS_THE_EQUALS_AFTER_FLAGS:
-            pytest.skip("this Python's argparse doesn't read -kH=<value> as <value>")
-
         def parse_context(*a: Any, **kw: Any) -> Any:
             raise AssertionError("parsed the command")
 
@@ -603,10 +592,19 @@ class TestParseCurl:
             "Curl command's Cookie header is too long (limit: 4,096 characters)."
         )
 
-    def test_other_header_over_the_cookie_limit_parses(self) -> None:
+    @pytest.mark.parametrize(
+        ("args", "name"),
+        [
+            (["-H", "X-Cookie:"], "X-Cookie"),
+            # curl keeps the "=" after -H: this is a header named =Cookie.
+            (["-H=Cookie:"], "=Cookie"),
+        ],
+        ids=["other-name", "-H=<value>"],
+    )
+    def test_other_header_over_the_cookie_limit_parses(self, args: list[str], name: str) -> None:
         value = _cookie_value(_MAX_CURL_COOKIE_CHARS + 1)
-        curl = shlex.join(["curl", "https://api.example.com/", "-H", "X-Cookie:" + value])
-        assert parse_curl(curl).headers["X-Cookie"] == value
+        curl = shlex.join(["curl", "https://api.example.com/", *args[:-1], args[-1] + value])
+        assert parse_curl(curl).headers[name] == value
 
     def test_cookie_check_reads_the_arguments_with_uncurls_parser(self) -> None:
         assert uncurl.parse_context.__globals__["parser"] is uncurl.api.parser
@@ -1298,8 +1296,10 @@ class TestCurlEmptyHeader:
             # curl sends these as X-E: too.
             (["-sH", "X-E;"], "not enough values to unpack (expected 2, got 1)"),
             (["--heade", "X-E;"], "not enough values to unpack (expected 2, got 1)"),
+            # And this as =X-E:, as it keeps the "=".
+            (["-H=X-E;"], "not enough values to unpack (expected 2, got 1)"),
         ],
-        ids=["text-after-the-semicolon", "-H<value>", "leading-colon", "-sH", "--heade"],
+        ids=["text-after-the-semicolon", "-H<value>", "leading-colon", "-sH", "--heade", "-H="],
     )
     def test_header_uncurl_cant_split_is_refused_as_before(
         self, args: list[str], message: str
@@ -1341,8 +1341,18 @@ class TestCurlUserAndDataFile:
             "curl https://api.example.com/ -uuser:secret",
             "curl https://api.example.com/ -ku user:secret",
             "curl https://api.example.com/ --us user:secret",
+            "curl https://api.example.com/ -u=user:secret",
         ],
-        ids=["-u", "on-several-lines", "--user", "--user=<value>", "-u<value>", "-ku", "--us"],
+        ids=[
+            "-u",
+            "on-several-lines",
+            "--user",
+            "--user=<value>",
+            "-u<value>",
+            "-ku",
+            "--us",
+            "-u=<value>",
+        ],
     )
     def test_user_option_is_refused(self, curl: str) -> None:
         with pytest.raises(ValueError) as e:
@@ -1551,6 +1561,8 @@ class TestCurlOptionValues:
             (["-d", "-1"], ("POST", {}, b"-1")),
             # curl refuses --hea as ambiguous; argparse reads it as --header.
             (["--hea", "a: b"], ("GET", {"a": "b"}, b"")),
+            # curl and argparse read a long option's value after its "=".
+            (["--data==x"], ("POST", {}, b"=x")),
         ],
         ids=[
             "-d<value>-then-cookie",
@@ -1563,11 +1575,54 @@ class TestCurlOptionValues:
             "-H-then-cookie",
             "negative-number",
             "--hea",
+            "--data==<value>",
         ],
     )
     def test_value_is_read_as_before(
         self, args: list[str], expected: tuple[str, dict[str, str], bytes]
     ) -> None:
+        cap = parse_curl(_curl_with_args(*args))
+        assert (cap.method, cap.headers, cap.body) == expected
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            (["-d=x"], ("POST", {}, b"=x")),
+            (["-kd=x"], ("POST", {}, b"=x")),
+            (["-X=PUT"], ("=PUT", {}, b"")),
+            (["-kX=PUT"], ("=PUT", {}, b"")),
+            (["-H=a: b"], ("GET", {"=a": "b"}, b"")),
+            (["-kH=a: b"], ("GET", {"=a": "b"}, b"")),
+            (["-d="], ("POST", {}, b"=")),
+            (["-X="], ("=", {}, b"")),
+            # curl sends this as given: "@" names a file only at the start.
+            (["-d=@body.json"], ("POST", {}, b"=@body.json")),
+            (["-d=-ba=1"], ("POST", {}, b"=-ba=1")),
+            # Headers named =Cookie and =Authorization, which no check reads as
+            # the Cookie or Authorization header, as curl sends them.
+            (["-H=Cookie: a=1", "-b", "c=2"], ("GET", {"=Cookie": "a=1", "Cookie": "c=2"}, b"")),
+            (["-H=Authorization: Bearer x"], ("GET", {"=Authorization": "Bearer x"}, b"")),
+        ],
+        ids=[
+            "-d",
+            "-kd",
+            "-X",
+            "-kX",
+            "-H",
+            "-kH",
+            "-d-empty",
+            "-X-empty",
+            "-d-at",
+            "-d-cookie-option",
+            "-H-cookie",
+            "-H-authorization",
+        ],
+    )
+    def test_value_attached_after_equals_keeps_it(
+        self, args: list[str], expected: tuple[str, dict[str, str], bytes]
+    ) -> None:
+        # argparse drops the "=" after a short option, or after flags on
+        # Pythons from 3.11; curl keeps it.
         cap = parse_curl(_curl_with_args(*args))
         assert (cap.method, cap.headers, cap.body) == expected
 

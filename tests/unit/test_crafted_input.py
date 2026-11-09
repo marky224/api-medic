@@ -614,6 +614,9 @@ CASES: list[Case] = [
     # body; api-medic reads no files.
     Case("curl-user-option", f"{_CURL} -u user:secret", "curl", USER_OPTION),
     Case("curl-data-file", f"{_CURL} -d @body.json", "curl", DATA_FILE),
+    # curl keeps the "=" after a short option, which argparse dropped; the
+    # body =@body.json names no file.
+    Case("curl-data-attached-after-equals", f"{_CURL} -d=@body.json", "curl", REPORT),
     # An option's value that looked like -b, -c or --url was read as that
     # option, which took the next argument as its value. curl sends the
     # value as given and reads the next argument as another URL.
