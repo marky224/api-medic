@@ -293,11 +293,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     The curl command describes a request only — the resulting CapturedRequest
     has no `response`. Pair with `core.runner` to actually execute it. Its
     Cookie headers are kept as given, joined with "; " into one. Without
-    one, its -b/--cookie cookies are the Cookie header, as curl sends them;
-    a -b/--cookie file or a -c/--cookie-jar is a ValueError. A command on
-    several lines, each but the last ending in a backslash, is read as
-    one, as bash reads it (see _normalize_bash); one written for Windows
-    cmd or PowerShell is a ValueError naming that.
+    one, its -b/--cookie cookies are the Cookie header, joined with ";", as
+    curl sends them; a -b/--cookie file or a -c/--cookie-jar is a
+    ValueError. A command on several lines, each but the last ending in a
+    backslash, is read as one, as bash reads it (see _normalize_bash); one
+    written for Windows cmd or PowerShell is a ValueError naming that.
     """
     # The limit counts the command as given; joining its lines only
     # shortens it.
@@ -351,11 +351,11 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send
     # them as the command gave them, stripped like uncurl strips the others.
-    # curl sends the -b/--cookie cookies only when there is no Cookie
-    # header; an empty one (-H 'Cookie:') sends no cookies at all.
-    cookie = "; ".join(
-        value.strip() for value in (cookie_values or cookie_options) if value.strip()
-    )
+    # curl sends the -b/--cookie cookies, joined with ";", only when there
+    # is no Cookie header; an empty one (-H 'Cookie:') sends no cookies at
+    # all.
+    values, sep = (cookie_values, "; ") if cookie_values else (cookie_options, ";")
+    cookie = sep.join(value.strip() for value in values if value.strip())
     if cookie:
         headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""

@@ -761,7 +761,9 @@ class TestCurlCookieOptions:
             (["-sib", "a=1"], "a=1"),
             # curl keeps the "=" after a short option; argparse would drop it.
             (["-b=a=1"], "=a=1"),
-            (["-b", "a=1", "--cookie", "b=2"], "a=1; b=2"),
+            # curl joins them with ";".
+            (["-b", "a=1", "--cookie", "b=2"], "a=1;b=2"),
+            (["-b", "a=1;", "-b", "c=2"], "a=1;;c=2"),
             (["-b", " a=1 "], "a=1"),
             # The next argument is the value whatever it starts with, as in curl.
             (["-b", "-x=1"], "-x=1"),
@@ -776,6 +778,7 @@ class TestCurlCookieOptions:
             "-sib",
             "-b=<value>",
             "several",
+            "several-ending-in-a-semicolon",
             "whitespace",
             "value-starting-with-dash",
         ],
