@@ -866,7 +866,9 @@ class TestFilesTheCliCantRead:
         result = runner.invoke(app, args)
         assert result.exit_code == 2
         assert isinstance(result.exception, SystemExit)
-        assert _unspaced(f"Path '{path}' is not readable.") in _unspaced(result.stderr)
+        # Typer 0.29 lowercases "Path" in "Path '...' is not readable.",
+        # so match the part 0.28 and 0.29 both print.
+        assert _unspaced(f"'{path}' is not readable.") in _unspaced(result.stderr)
         assert fake_runner == []
 
 
