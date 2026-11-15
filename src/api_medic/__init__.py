@@ -4,4 +4,4 @@
 # ([tool.hatch.version]); the CLI, web app, Lambda and runner import it.
 # The hosted-demo Lambda copies this source without installing the
 # package, so importlib.metadata would find no version there.
-__version__ = "1.1.1"
+__version__ = "1.2.0"

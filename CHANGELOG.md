@@ -4,6 +4,8 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-15
+
 ### Added
 
 - `README.md` and `extension/README.md` link the extension's Chrome Web Store and Firefox Add-ons listings.
@@ -161,5 +163,8 @@ First public release. Three input surfaces (CLI, local web UI, hosted demo) shar
 - **No FastAPI / uvicorn on Lambda.** The Lambda dispatches routes inline via `lambda_handler` to keep cold-start budget intact even with the runner deps (httpx, dnspython, cryptography).
 - **Same `Report` shape from every surface** — the contract that makes the future browser extension a thin capture layer rather than a parallel implementation.
 
-[Unreleased]: https://github.com/marky224/api-medic/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/marky224/api-medic/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/marky224/api-medic/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/marky224/api-medic/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/marky224/api-medic/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/marky224/api-medic/releases/tag/v1.0.0
