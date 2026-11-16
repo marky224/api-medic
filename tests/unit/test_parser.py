@@ -1615,7 +1615,8 @@ class TestCurlOptionValues:
 
     @_FLAGS_WITH_A_VALUE
     def test_flag_with_a_value_is_refused(self, args: list[str]) -> None:
-        # curl refuses each; argparse refuses them from Python 3.11 on.
+        # curl refuses each, and so does argparse on the Pythons checked:
+        # 3.11.15, 3.12.3, 3.12.13 and 3.14.6.
         with pytest.raises(ValueError) as e:
             parse_curl(_curl_with_args(*args))
         assert str(e.value) == "Could not parse curl command (argparse rejected it)."
@@ -1649,7 +1650,8 @@ class TestCurlOptionValues:
             (["-d", "-1"], ("POST", {}, b"-1")),
             # curl refuses --hea as ambiguous; argparse reads it as --header.
             (["--hea", "a: b"], ("GET", {"a": "b"}, b"")),
-            # curl and argparse read a long option's value after its "=".
+            # argparse reads a long option's value after its first "="; curl
+            # refuses this, as it refuses every --long=value.
             (["--data==x"], ("POST", {}, b"=x")),
             # And a negative number as a value, as with -d.
             (["-X", "-1"], ("-1", {}, b"")),
@@ -1712,8 +1714,8 @@ class TestCurlOptionValues:
     def test_value_attached_after_equals_keeps_it(
         self, args: list[str], expected: tuple[str, dict[str, str], bytes]
     ) -> None:
-        # argparse drops the "=" after a short option, or after flags on
-        # Pythons from 3.11; curl keeps it.
+        # On the Pythons checked (3.11.15, 3.12.3 and 3.12.13) argparse drops
+        # the "=" after a short option, alone or after flags; curl keeps it.
         cap = parse_curl(_curl_with_args(*args))
         assert (cap.method, cap.headers, cap.body) == expected
 

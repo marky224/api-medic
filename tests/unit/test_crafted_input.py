@@ -648,8 +648,8 @@ CASES: list[Case] = [
     # curl reads --head as -I, a HEAD request, and uncurl as --header.
     Case("curl-head-option", f"{_CURL} --head 'a: b'", "curl", ARGPARSE_REJECTED),
     Case("curl-head-option-with-a-value", f"{_CURL} '--head=a: b'", "curl", ARGPARSE_REJECTED),
-    # A flag that takes no value, given one: curl refuses it, and argparse
-    # from Python 3.11 on.
+    # A flag that takes no value, given one: curl refuses it, and so does
+    # argparse on the Pythons checked (3.11.15, 3.12.3, 3.12.13 and 3.14.6).
     Case("curl-flag-with-a-value", f"{_CURL} -k=b x", "curl", ARGPARSE_REJECTED),
     # argparse reads the second "--" as the URL "--", or on older Pythons
     # as the URL [].

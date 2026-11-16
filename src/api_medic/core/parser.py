@@ -83,8 +83,8 @@ COOKIE_JAR = (
 # is one uncurl rejects.
 _CURL_FLAGS = "iks"
 # curl refuses one given a value after "=", as in -k=d x, and so does
-# argparse from Python 3.11 on; parse_curl refuses it before argparse reads
-# it, so every Python does.
+# argparse on the Pythons checked: 3.11.15, 3.12.3, 3.12.13 and 3.14.6.
+# parse_curl refuses it before argparse reads it, so every Python does.
 _FLAG_WITH_A_VALUE = re.compile(rf"-[{_CURL_FLAGS}]+=")
 # The options uncurl reads with a value, -b aside: the short ones, and each
 # long one in every spelling argparse reads, as it takes an abbreviation no
