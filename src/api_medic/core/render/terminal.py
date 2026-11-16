@@ -83,7 +83,9 @@ def _metrics_table(report: Report) -> Table:
         "Body",
         _fmt_bytes(report.response.body_size_bytes) if report.response else "—",
     )
-    t.add_row("Protocol", report.response.protocol if report.response else "—")
+    # Text, not a str: Rich reads a str cell as markup, which a HAR's
+    # httpVersion can hold.
+    t.add_row("Protocol", Text(report.response.protocol) if report.response else "—")
     t.add_row("Findings", _fmt_findings_count(report.findings))
     return t
 

@@ -19,9 +19,10 @@ import contextlib
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+from pydantic import BaseModel
 from pydantic_core import PydanticSerializationError
 
 from .. import __version__
@@ -128,25 +129,26 @@ def _emit(
     save: Path | None,
     no_color: bool,
 ) -> None:
-    """Render `report` and write it to stdout (or `save` if given)."""
+    """Render `report` and write it to stdout (or `save` if given), with the
+    control characters from the input escaped (see _CONTROL_ESCAPES)."""
     if output is OutputFormat.terminal:
         # Colour when stdout is a terminal AND user didn't suppress. When
         # writing to a file we still emit colour — modern terminals can `cat`
         # ANSI files happily — except when --no-color is set.
         color = not no_color and (save is not None or sys.stdout.isatty())
-        text = render_terminal(report, color=color)
+        text = render_terminal(_escaped(report), color=color)
     elif output is OutputFormat.json:
         try:
-            text = render_json(report)
+            text = render_json(report).translate(_JSON_CONTROL_ESCAPES)
         except PydanticSerializationError as e:
             # An unpaired surrogate from the input; anything else is a bug.
             if not is_unencodable_text_error(e):
                 raise
             raise typer.BadParameter(UNENCODABLE_TEXT) from e
     elif output is OutputFormat.markdown:
-        text = render_markdown(report)
+        text = render_markdown(_escaped(report))
     elif output is OutputFormat.html:
-        text = render_html(report)
+        text = render_html(_escaped(report))
     else:  # pragma: no cover — Enum exhausts above
         raise typer.BadParameter(f"Unknown output format: {output}")
 
@@ -167,10 +169,44 @@ def _emit(
         typer.echo(text)
 
 
+# Each control character but tab and line feed (C0, DEL and C1), as Python
+# writes it in a string: \x1b, \r, \x9b. A HAR file, a curl command, a file
+# name or a server can hold them, and a terminal reads ESC and C1 as
+# commands: clear the screen, move the cursor, retitle the window, make a
+# link. Tabs and line breaks only lay text out.
+_CONTROL_ESCAPES = {
+    code: repr(chr(code))[1:-1] for code in (*range(0x09), *range(0x0B, 0x20), *range(0x7F, 0xA0))
+}
+# -o json: JSON writes C0 as \u001b already; DEL and C1 the same way.
+_JSON_CONTROL_ESCAPES = {code: f"\\u{code:04x}" for code in range(0x7F, 0xA0)}
+
+
+def _escaped(value: Any) -> Any:
+    """`value`, a Report or a part of one, with the control characters in
+    its strings escaped (see _CONTROL_ESCAPES). The terminal, markdown and
+    html output render this copy. A dict's keys are escaped too. A list or
+    dict inside a dict, such as one in a finding's evidence, is left as it
+    is: they print it as JSON, whose escapes already cover these
+    characters."""
+    if isinstance(value, str):
+        return value.translate(_CONTROL_ESCAPES)
+    if isinstance(value, BaseModel):
+        return value.model_copy(
+            update={name: _escaped(getattr(value, name)) for name in type(value).model_fields}
+        )
+    if isinstance(value, list):
+        return [_escaped(v) for v in value]
+    if isinstance(value, dict):
+        return {_escaped(k): _escaped(v) if isinstance(v, str) else v for k, v in value.items()}
+    return value
+
+
 def _printable(text: str) -> str:
-    """`text` with any unpaired surrogate escaped. A path that isn't valid
-    UTF-8 reaches Python holding them, and stderr can't print them."""
-    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    """`text`, which holds text from the input, with its control characters
+    (see _CONTROL_ESCAPES) and any unpaired surrogate escaped. A path that
+    isn't valid UTF-8 reaches Python holding surrogates, which stderr can't
+    print."""
+    return text.translate(_CONTROL_ESCAPES).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _file_error(action: str, path: Path, error: OSError) -> typer.BadParameter:
@@ -190,7 +226,7 @@ def _analyze(captured: CapturedRequest) -> Report:
     try:
         return analyze(captured)
     except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
+        raise typer.BadParameter(_printable(str(e))) from e
 
 
 def _emit_findings_summary(report: Report) -> None:
@@ -213,7 +249,7 @@ def _parse_headers(items: list[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw in items:
         if ":" not in raw:
-            raise typer.BadParameter(f"Header must be 'Name: value' — got {raw!r}.")
+            raise typer.BadParameter(_printable(f"Header must be 'Name: value' — got {raw!r}."))
         name, value = raw.split(":", 1)
         out[name.strip()] = value.strip()
     return out
@@ -292,7 +328,7 @@ def run(
         # A request refused before anything is sent (e.g. a port outside
         # 1-65535) or a response a Report can't hold (a status outside
         # 100-599); the hosted demo's /api/run answers 400 with this text.
-        raise typer.BadParameter(str(e)) from e
+        raise typer.BadParameter(_printable(str(e))) from e
     report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
@@ -321,7 +357,7 @@ def from_curl(
     try:
         captured = parse_curl(curl)
     except ValueError as e:
-        raise typer.BadParameter(str(e)) from e
+        raise typer.BadParameter(_printable(str(e))) from e
     if not no_execute:
         # Re-issue the parsed request through the live Runner so we get a real
         # response, timing, and DNS/TLS data.
@@ -337,7 +373,7 @@ def from_curl(
             # unpaired surrogate) or a response a Report can't hold (a status
             # outside 100-599); the hosted demo's /api/run answers 400 with
             # this text.
-            raise typer.BadParameter(str(e)) from e
+            raise typer.BadParameter(_printable(str(e))) from e
     report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
@@ -361,13 +397,14 @@ def from_har(
     except ValueError as e:
         # Includes a file that isn't UTF-8 (UnicodeDecodeError). The message
         # can quote the entry's URL, unpaired surrogate and all, which stderr
-        # can't print; api-medic serve answers that one the same way.
+        # can't print; api-medic serve answers that one the same way. Its
+        # control characters are escaped.
         message = str(e)
         try:
             message.encode("utf-8")
         except UnicodeEncodeError:
             message = UNENCODABLE_TEXT
-        raise typer.BadParameter(message) from e
+        raise typer.BadParameter(_printable(message)) from e
     report = _analyze(captured)
     if verbose:
         _emit_findings_summary(report)
@@ -382,7 +419,7 @@ def serve(
     """Start the local web UI."""
     import uvicorn
 
-    typer.echo(f"api-medic web UI on http://{host}:{port} (Ctrl+C to stop)", err=True)
+    typer.echo(_printable(f"api-medic web UI on http://{host}:{port} (Ctrl+C to stop)"), err=True)
     uvicorn.run("api_medic.web.app:app", host=host, port=port, reload=False)
 
 

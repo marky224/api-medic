@@ -177,6 +177,12 @@ def _bearer_cases(name: str, payload: bytes, expect: str) -> list[Case]:
 
 _JSON = {"Content-Type": "application/json"}
 _DEEP = "[" * 100_000 + "]" * 100_000
+# A URL holding an OSC sequence, which sets a terminal's title.
+_ESC_URL = "https://api.example.com/\x1b]0;t\x07"
+# A C0 character but tab and line feed. The rows that use it hold escapes
+# CliRunner doesn't strip (it drops ESC [ ... sequences), and no C1
+# characters: api-medic serve's JSON writes those as they are.
+_RAW_C0 = r"[\x00-\x08\x0b-\x1f]"
 _NINES = "9" * 4301
 _CURL = "curl https://api.example.com/"
 
@@ -717,6 +723,54 @@ CASES: list[Case] = [
         Live(headers={"Bad Name": "v"}),
         "run",
         "Header names can only hold letters, digits and !#$%&'*+-.^_`|~ (header 'Bad Name').",
+    ),
+    # Control characters from the input: the CLI printed them as they were,
+    # and a terminal reads ESC as the start of a command.
+    Case(
+        "har-control-characters",
+        _har(
+            {
+                "method": "G\x1bcET",
+                "url": _ESC_URL,
+                "headers": [{"name": "Origin", "value": "https://o.example\x1b[5m"}],
+            },
+            response={
+                "status": 200,
+                "statusText": "O\x1b[7mK",
+                "httpVersion": "HTTP/1.1\x1b[8m",
+                "headers": [{"name": "Content-Type", "value": "application/json\x1b]2;t\x07"}],
+                "content": {"text": "{\x1b[31m"},
+            },
+        ),
+        "har",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "curl-control-characters",
+        "curl -X $'P\\u001bcUT' 'https://api.example.com/\x1b[2J'",
+        "curl",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "run-control-characters",
+        Live(
+            response_headers={"Content-Type": "application/json\x1b]2;t\x07"},
+            content=b"{\x1b[31m",
+        ),
+        "run",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "har-error-quoting-control-characters",
+        json.dumps({"log": {"entries": [{"request": {"url": _ESC_URL}}]}}),
+        "har",
+        f"HAR entry[0] ({_ESC_URL}): request.method is missing.",
+        {
+            "cli": "HAR entry[0] (https://api.example.com/\\x1b]0;t\\x07): request.method is missing."
+        },
     ),
 ]
 
