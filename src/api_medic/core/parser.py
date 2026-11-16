@@ -350,8 +350,9 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         raise ValueError(CMD_QUOTES)
 
     # uncurl lowercases -X's value. curl sends it as given, and HTTP methods
-    # are case-sensitive, so the request keeps it; without -X the method is
-    # uncurl's "get" or "post".
+    # are case-sensitive, so the request keeps it. Without -X, or with an
+    # empty one, which uncurl ignores, the method is uncurl's "get", or
+    # "post" when the command has a body, in uppercase.
     method = parsed.X or (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
     # uncurl moves every Cookie header into ctx.cookies, read with
