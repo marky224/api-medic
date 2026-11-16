@@ -179,9 +179,12 @@ _JSON = {"Content-Type": "application/json"}
 _DEEP = "[" * 100_000 + "]" * 100_000
 # A URL holding an OSC sequence, which sets a terminal's title.
 _ESC_URL = "https://api.example.com/\x1b]0;t\x07"
-# A C0 character but tab and line feed. The rows that use it hold escapes
-# CliRunner doesn't strip (it drops ESC [ ... sequences), and no C1
-# characters: api-medic serve's JSON writes those as they are.
+# A C0 character but tab and line feed. The rows that use it hold ESC c,
+# which resets a terminal, and OSC sequences (ESC ] ... BEL). They hold no
+# ESC [ ... sequence: _cli_entry runs CliRunner without color=True, which
+# drops those from the CLI's output, as Click does in a pipe, so the field
+# holding one would never be checked. And no C1 characters: api-medic
+# serve's JSON writes those as they are.
 _RAW_C0 = r"[\x00-\x08\x0b-\x1f]"
 _NINES = "9" * 4301
 _CURL = "curl https://api.example.com/"
@@ -732,14 +735,14 @@ CASES: list[Case] = [
             {
                 "method": "G\x1bcET",
                 "url": _ESC_URL,
-                "headers": [{"name": "Origin", "value": "https://o.example\x1b[5m"}],
+                "headers": [{"name": "Origin", "value": "https://o.example\x1bc"}],
             },
             response={
                 "status": 200,
-                "statusText": "O\x1b[7mK",
-                "httpVersion": "HTTP/1.1\x1b[8m",
+                "statusText": "O\x1bcK",
+                "httpVersion": "HTTP/1.1\x1bc",
                 "headers": [{"name": "Content-Type", "value": "application/json\x1b]2;t\x07"}],
-                "content": {"text": "{\x1b[31m"},
+                "content": {"text": "{\x1bc"},
             },
         ),
         "har",
@@ -748,7 +751,7 @@ CASES: list[Case] = [
     ),
     Case(
         "curl-control-characters",
-        "curl -X $'P\\u001bcUT' 'https://api.example.com/\x1b[2J'",
+        f"curl -X $'P\\u001bcUT' '{_ESC_URL}'",
         "curl",
         REPORT,
         never_shows=_RAW_C0,
@@ -757,7 +760,7 @@ CASES: list[Case] = [
         "run-control-characters",
         Live(
             response_headers={"Content-Type": "application/json\x1b]2;t\x07"},
-            content=b"{\x1b[31m",
+            content=b"{\x1bc",
         ),
         "run",
         REPORT,

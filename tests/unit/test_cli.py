@@ -1055,6 +1055,7 @@ class TestControlCharactersFromTheInput:
             {
                 "status": 200,
                 "statusText": "O\x9bK",
+                "httpVersion": "HTTP/1.1\x1bc",
                 "headers": [{"name": "Content-Type", "value": "application/json"}],
                 "content": {"text": "{\x1bc\x7f"},
             },
