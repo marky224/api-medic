@@ -8,6 +8,10 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 - A report made from a HAR file, or from a curl command that isn't run, shows the request's method as it was given: `-X put` is `put` and a HAR entry's `patch` is `patch`, where 1.2.0 showed `PUT` and `PATCH`. HTTP methods are case-sensitive and curl sends `-X`'s value as given, so the uppercase form could hide the method a server refused. This is what the hosted demo's and `api-medic serve`'s `/api/analyze`, `api-medic from-har`, `api-medic from-curl --no-execute` and the browser extension's Analyze return. A method that isn't ASCII is no longer changed either: 1.2.0 read `-X POſT` (a long s, U+017F) as `POST`, and a live `api-medic from-curl` sent that `POST`; it now exits 2 with "Invalid value: Method must be ASCII (got 'POſT')." and sends nothing. Other live requests are unchanged: `api-medic run`, a live `from-curl` and `/api/run` send the method in uppercase, as httpx sends every method, and their reports show the method sent. The description of the Report's `request.method` says so; its shape and `schema_version` are unchanged.
 
+### Fixed
+
+- Several curl `-b`/`--cookie` values keep the whitespace between them, as curl sends it: `curl https://api.example.com/ -b 'a=1 ' -b ' b=2'` gives the `Cookie` header `a=1 ; b=2`, where 1.2.0 gave `a=1;b=2`. 1.2.0 stripped each value before joining them with `;`; curl 8.5.0 joins them as given. Whitespace at the two ends of the joined header is still dropped, as it is for every other header, since it isn't part of a header's value: `-b ' a=1 '` is still `Cookie: a=1`. `-H 'Cookie: …'` headers are read as before.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

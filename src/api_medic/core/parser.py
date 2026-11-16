@@ -356,12 +356,16 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     headers = dict(ctx.headers) if ctx.headers else {}
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send
-    # them as the command gave them, stripped like uncurl strips the others.
-    # curl sends the -b/--cookie cookies, joined with ";", only when there
-    # is no Cookie header; an empty one (-H 'Cookie:') sends no cookies at
-    # all.
-    values, sep = (cookie_values, "; ") if cookie_values else (cookie_options, ";")
-    cookie = sep.join(value.strip() for value in values if value.strip())
+    # them as the command gave them, each stripped like uncurl strips the
+    # others. curl sends the -b/--cookie cookies only when there is no
+    # Cookie header; an empty one (-H 'Cookie:') sends no cookies at all.
+    # It joins them with ";" as given into one header, so whitespace
+    # between two of them is part of that header's value, and only the
+    # whitespace at its ends is stripped.
+    if cookie_values:
+        cookie = "; ".join(value.strip() for value in cookie_values if value.strip())
+    else:
+        cookie = ";".join(cookie_options).strip()
     if cookie:
         headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""

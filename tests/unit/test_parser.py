@@ -660,6 +660,7 @@ class TestParseCurl:
             (["-HCookie: a=1"], "a=1"),
             (["--header=Cookie: a=1"], "a=1"),
             (["-H", "$Cookie:a=1"], "a=1"),
+            (["-H", "Cookie:  a=1  ", "-H", "Cookie:\tb=2 "], "a=1; b=2"),
         ],
         ids=[
             "one",
@@ -668,6 +669,7 @@ class TestParseCurl:
             "-H<value>",
             "--header=<value>",
             "$-key",
+            "whitespace-around-each",
         ],
     )
     def test_cookie_header_is_kept_as_given(self, args: list[str], cookie: str) -> None:
@@ -801,6 +803,11 @@ class TestCurlCookieOptions:
             (["-b", "a=1", "--cookie", "b=2"], "a=1;b=2"),
             (["-b", "a=1;", "-b", "c=2"], "a=1;;c=2"),
             (["-b", " a=1 "], "a=1"),
+            # curl joins the values as given: whitespace between two of them
+            # is inside the header's value; at its ends it isn't part of it.
+            (["-b", "a=1 ", "-b", " b=2"], "a=1 ; b=2"),
+            (["-b", " a=1 ", "--cookie", " b=2 "], "a=1 ; b=2"),
+            (["-b", "a=1", "-b", "\tb=2"], "a=1;\tb=2"),
             # The next argument is the value whatever it starts with, as in curl.
             (["-b", "-x=1"], "-x=1"),
         ],
@@ -816,6 +823,9 @@ class TestCurlCookieOptions:
             "several",
             "several-ending-in-a-semicolon",
             "whitespace",
+            "whitespace-between-several",
+            "whitespace-around-several",
+            "tab-between-several",
             "value-starting-with-dash",
         ],
     )
