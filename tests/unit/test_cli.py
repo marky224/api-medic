@@ -452,6 +452,24 @@ class TestInputThatCantMakeAReport:
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
 
+    def test_from_curl_live_method_that_isnt_ascii_is_refused(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A long s (U+017F): changing the method's case made it POST, which
+        # was sent. The real runner refuses the method as given.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("PO\u017fT", "https://api.example.com/", {}, None)
+        result = runner.invoke(app, ["from-curl", "curl -X PO\u017fT https://api.example.com/"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+
     @pytest.mark.parametrize(
         "url", ["https://x.com/\ud800", "https://x.com:99999/"], ids=["surrogate", "bad-port"]
     )
@@ -666,6 +684,12 @@ class TestFromCurl:
         body = json.loads(result.stdout)
         assert body["source"] == "curl"
         assert body["response"] is None  # parser-only — no response
+
+    def test_no_execute_shows_the_method_as_given(self, runner, fake_runner):
+        curl = "curl -X put https://api.example.com/"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "--output", "json"])
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["request"]["method"] == "put"
 
     def test_live_run_sends_the_cookie_header(
         self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch

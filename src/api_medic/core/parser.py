@@ -277,7 +277,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     timing = _timing_from_har(_har_object(entry.get("timings"), label, "timings"))
 
     return CapturedRequest(
-        method=method.upper(),
+        method=method,
         url=url,
         headers=request_headers,
         body=body,
@@ -349,7 +349,10 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     if url.startswith("^"):
         raise ValueError(CMD_QUOTES)
 
-    method = (ctx.method or "GET").upper()
+    # uncurl lowercases -X's value. curl sends it as given, and HTTP methods
+    # are case-sensitive, so the request keeps it; without -X the method is
+    # uncurl's "get" or "post".
+    method = parsed.X or (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send

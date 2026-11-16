@@ -82,7 +82,11 @@ class RequestSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    method: str = Field(..., min_length=1, description="HTTP method, uppercase.")
+    method: str = Field(
+        ...,
+        min_length=1,
+        description="HTTP method: as given by a HAR or curl command, uppercase from a live run.",
+    )
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
     body_size_bytes: int = Field(..., ge=0)

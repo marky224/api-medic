@@ -136,11 +136,14 @@ class TestParseHar:
         cap = parse_har(har)
         assert cap.response is None
 
-    def test_method_normalized_to_upper(self):
+    @pytest.mark.parametrize(
+        "method", ["patch", "Patch", "ge\u00dft"], ids=["lower", "mixed", "sharp-s"]
+    )
+    def test_method_keeps_the_case_given(self, method: str) -> None:
+        # HTTP methods are case-sensitive: the server got it as the HAR has it.
         har = _minimal_har()
-        har["log"]["entries"][0]["request"]["method"] = "post"
-        cap = parse_har(har)
-        assert cap.method == "POST"
+        har["log"]["entries"][0]["request"]["method"] = method
+        assert parse_har(har).method == method
 
     def test_missing_request_method_raises_value_error(self):
         har = {
@@ -489,6 +492,39 @@ class TestParseCurl:
         assert cap.method == "GET"
         assert cap.url == "https://api.example.com/health"
         assert cap.body == b""
+
+    @pytest.mark.parametrize(
+        ("args", "method"),
+        [
+            (["-X", "put"], "put"),
+            (["-X", "Put", "-d", "x"], "Put"),
+            (["-d", "x", "-X", "post"], "post"),
+            (["-kX", "patch"], "patch"),
+            (["-Xdelete"], "delete"),
+            (["-X", "put", "-X", "Get"], "Get"),
+            # Changing the case made these POST and I.
+            (["-X", "PO\u017fT"], "PO\u017fT"),
+            (["-X", "\u0131"], "\u0131"),
+        ],
+        ids=[
+            "-X",
+            "with-a-body",
+            "after-the-body",
+            "-kX",
+            "-X<value>",
+            "last-of-two",
+            "long-s",
+            "dotless-i",
+        ],
+    )
+    def test_method_keeps_the_case_given(self, args: list[str], method: str) -> None:
+        # curl sends -X's value as given, and HTTP methods are case-sensitive;
+        # uncurl lowercases it.
+        assert parse_curl(_curl_with_args(*args)).method == method
+
+    def test_empty_method_option_leaves_get_or_post(self) -> None:
+        # uncurl ignores an empty -X; curl sends an empty method.
+        assert parse_curl(_curl_with_args("-X", "", "-d", "x")).method == "POST"
 
     def test_empty_curl_raises(self):
         with pytest.raises(ValueError, match="Empty"):

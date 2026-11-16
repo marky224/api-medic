@@ -68,7 +68,7 @@ export interface RequestSummary {
     body_size_bytes: number;
     headers?:        { [key: string]: string };
     /**
-     * HTTP method, uppercase.
+     * HTTP method: as given by a HAR or curl command, uppercase from a live run.
      */
     method: string;
     url:    string;
