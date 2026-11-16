@@ -206,7 +206,10 @@ class TestAnalyzeCurl:
         result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
         elapsed = time.perf_counter() - started
         assert result["statusCode"] == 400
-        assert elapsed < 1
+        # Checked only when nothing is tracing, as in test_parser.py's
+        # test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
         with pytest.raises(ValueError) as e:
             parse_curl(curl)
         assert json.loads(result["body"])["detail"] == str(e.value)

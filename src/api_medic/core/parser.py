@@ -83,8 +83,8 @@ COOKIE_JAR = (
 # is one uncurl rejects.
 _CURL_FLAGS = "iks"
 # curl refuses one given a value after "=", as in -k=d x, and so does
-# argparse from Python 3.11 on; parse_curl refuses it before argparse reads
-# it, so every Python does.
+# argparse on the Pythons checked: 3.11.15, 3.12.3, 3.12.13 and 3.14.6.
+# parse_curl refuses it before argparse reads it, so every Python does.
 _FLAG_WITH_A_VALUE = re.compile(rf"-[{_CURL_FLAGS}]+=")
 # The options uncurl reads with a value, -b aside: the short ones, and each
 # long one in every spelling argparse reads, as it takes an abbreviation no
@@ -277,7 +277,7 @@ def parse_har(raw: str | dict[str, Any]) -> CapturedRequest:
     timing = _timing_from_har(_har_object(entry.get("timings"), label, "timings"))
 
     return CapturedRequest(
-        method=method.upper(),
+        method=method,
         url=url,
         headers=request_headers,
         body=body,
@@ -349,16 +349,23 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     if url.startswith("^"):
         raise ValueError(CMD_QUOTES)
 
-    method = (ctx.method or "GET").upper()
+    # uncurl lowercases -X's value. curl sends it as given, and HTTP methods
+    # are case-sensitive, so the request keeps it; without -X the method is
+    # uncurl's "get" or "post".
+    method = parsed.X or (ctx.method or "GET").upper()
     headers = dict(ctx.headers) if ctx.headers else {}
     # uncurl moves every Cookie header into ctx.cookies, read with
     # SimpleCookie, which reorders the cookies and drops attributes. Send
-    # them as the command gave them, stripped like uncurl strips the others.
-    # curl sends the -b/--cookie cookies, joined with ";", only when there
-    # is no Cookie header; an empty one (-H 'Cookie:') sends no cookies at
-    # all.
-    values, sep = (cookie_values, "; ") if cookie_values else (cookie_options, ";")
-    cookie = sep.join(value.strip() for value in values if value.strip())
+    # them as the command gave them, each stripped like uncurl strips the
+    # others. curl sends the -b/--cookie cookies only when there is no
+    # Cookie header; an empty one (-H 'Cookie:') sends no cookies at all.
+    # It joins them with ";" as given into one header, so whitespace
+    # between two of them is part of that header's value, and only the
+    # whitespace at its ends is stripped.
+    if cookie_values:
+        cookie = "; ".join(value.strip() for value in cookie_values if value.strip())
+    else:
+        cookie = ";".join(cookie_options).strip()
     if cookie:
         headers["Cookie"] = cookie
     body = _utf8(ctx.data) if ctx.data else b""
