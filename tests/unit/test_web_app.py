@@ -6,6 +6,7 @@ import base64
 import json
 import shlex
 import socket
+import sys
 import time
 from typing import Any
 
@@ -251,7 +252,10 @@ class TestAnalyzeEndpoint:
         r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
         elapsed = time.perf_counter() - started
         assert r.status_code == 400
-        assert elapsed < 1
+        # Checked only when nothing is tracing, as in test_parser.py's
+        # test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
         with pytest.raises(ValueError) as e:
             parse_curl(curl)
         assert r.json()["detail"] == str(e.value)

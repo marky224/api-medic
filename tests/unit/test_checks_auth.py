@@ -433,7 +433,11 @@ class TestBearerToken:
         cap = _cap(headers={"Authorization": "Bearer a" + " " * 200_000 + "b"})
         started = time.perf_counter()
         assert check(cap) is None
-        assert time.perf_counter() - started < 1
+        elapsed = time.perf_counter() - started
+        # Checked only when nothing is tracing, as in test_parser.py's
+        # test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1
 
 
 class TestAuthMissing:

@@ -607,8 +607,11 @@ class TestParseCurl:
         # bound leaves room for a slower CI runner.
         started = time.perf_counter()
         cap = parse_curl(_curl_with_cookie(_cookie_value(_MAX_CURL_COOKIE_CHARS)))
-        assert time.perf_counter() - started < 3
+        elapsed = time.perf_counter() - started
         assert cap.url == "https://api.example.com/"
+        # See test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 3
 
     @pytest.mark.parametrize("form", list(_COOKIE_HEADER_FORMS))
     def test_cookie_header_over_the_limit_raises_before_parsing(
