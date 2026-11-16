@@ -7,18 +7,21 @@ exercise the DNS/TLS pre-flight pieces monkeypatch `_resolve_dns` and
 
 from __future__ import annotations
 
+import sys
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+import h11
 import httpcore
 import httpx
 import pytest
 
 from api_medic import __version__
 from api_medic.core.captured import CapturedDns, CapturedTls
-from api_medic.core.runner import DEFAULT_USER_AGENT, run
-from api_medic.core.runner_safety import UnusableResponseError
+from api_medic.core.runner import DEFAULT_USER_AGENT, run, validate_request
+from api_medic.core.runner_safety import InvalidRequestError, UnusableResponseError
 
 
 def _transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
@@ -519,3 +522,207 @@ class TestUnsendableRedirectHop:
 
         assert cap.response is None
         assert connects == [("api.example.com", 443)]
+
+
+_PROXY_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+_TOKEN_CHARACTERS = "letters, digits and !#$%&'*+-.^_`|~"
+_AT_AN_END = "Header values can't start or end with a space or tab (header 'X-A')."
+
+
+def _h11_sends(method: str, headers: dict[str, str]) -> bool:
+    """Whether h11, which writes httpx's HTTP/1.1 requests, takes them."""
+    try:
+        h11.Request(method=method, target="/", headers=[("Host", "x"), *headers.items()])
+    except h11.LocalProtocolError:
+        return False
+    return True
+
+
+def _validate_request_sends(method: str, headers: dict[str, str]) -> bool:
+    try:
+        validate_request(method, "https://example.com/", headers)
+    except InvalidRequestError:
+        return False
+    return True
+
+
+class TestRequestH11CantSend:
+    """h11 refuses a method or header name that isn't a token, and a header
+    value holding NUL, LF, VT, FF or CR or starting or ending with a space
+    or tab. httpx raised LocalProtocolError once the connection was open,
+    so run() reported no response and gave no reason. It refuses them
+    before anything is sent."""
+
+    @pytest.mark.parametrize(
+        ("name", "value", "message"),
+        [
+            ("X-A", "a\nb", "Header values can't hold '\\n' (header 'X-A')."),
+            ("X-A", "a\rb", "Header values can't hold '\\r' (header 'X-A')."),
+            ("X-A", "a\x0bb", "Header values can't hold '\\x0b' (header 'X-A')."),
+            ("X-A", "a\x0cb", "Header values can't hold '\\x0c' (header 'X-A')."),
+            ("X-A", "a\x00b", "Header values can't hold '\\x00' (header 'X-A')."),
+            # Two curl -b values with a line break between them.
+            ("Cookie", "a=1\n;b=2", "Header values can't hold '\\n' (header 'Cookie')."),
+            ("X-A", " a", _AT_AN_END),
+            ("X-A", "a ", _AT_AN_END),
+            ("X-A", "\ta", _AT_AN_END),
+            ("X-A", "a\t", _AT_AN_END),
+            (
+                "Bad Name",
+                "v",
+                f"Header names can only hold {_TOKEN_CHARACTERS} (header 'Bad Name').",
+            ),
+            ("", "v", f"Header names can only hold {_TOKEN_CHARACTERS} (header '')."),
+            ("X:A", "v", f"Header names can only hold {_TOKEN_CHARACTERS} (header 'X:A')."),
+            ("X\x1bA", "v", f"Header names can only hold {_TOKEN_CHARACTERS} (header 'X\\x1bA')."),
+        ],
+        ids=[
+            "value-line-feed",
+            "value-carriage-return",
+            "value-vertical-tab",
+            "value-form-feed",
+            "value-nul",
+            "value-line-break-between-cookies",
+            "value-starting-with-a-space",
+            "value-ending-with-a-space",
+            "value-starting-with-a-tab",
+            "value-ending-with-a-tab",
+            "name-with-a-space",
+            "name-empty",
+            "name-with-a-colon",
+            "name-with-esc",
+        ],
+    )
+    def test_header_is_refused_before_anything_is_sent(
+        self, name: str, value: str, message: str
+    ) -> None:
+        sent: list[httpx.Request] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200)
+
+        with pytest.raises(InvalidRequestError) as e:
+            run(
+                "GET",
+                "https://example.com/",
+                headers={name: value},
+                transport=_transport(record),
+                probe_network=False,
+            )
+        assert str(e.value) == message
+        assert sent == []
+
+    @pytest.mark.parametrize(
+        ("method", "shown"),
+        [("GE T", "'GE T'"), ("GET\x1b", "'GET\\x1b'"), ("", "''")],
+        ids=["space", "esc", "empty"],
+    )
+    def test_method_is_refused_before_anything_is_sent(self, method: str, shown: str) -> None:
+        sent: list[httpx.Request] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200)
+
+        with pytest.raises(InvalidRequestError) as e:
+            run(method, "https://example.com/", transport=_transport(record), probe_network=False)
+        assert str(e.value) == f"Method can only hold {_TOKEN_CHARACTERS} (got {shown})."
+        assert sent == []
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("X-A", "a\x01b"),
+            ("X-A", "a\x1bb"),
+            ("X-A", "a\tb"),
+            ("X-A", "a b"),
+            ("X-A", ""),
+            ("!#$%&'*+-.^_`|~09AZaz", "v"),
+        ],
+        ids=[
+            "value-soh",
+            "value-esc",
+            "value-tab-inside",
+            "value-space-inside",
+            "value-empty",
+            "name-every-token-character",
+        ],
+    )
+    def test_header_h11_sends_is_still_sent(self, name: str, value: str) -> None:
+        sent: list[str] = []
+
+        def record(request: httpx.Request) -> httpx.Response:
+            sent.append(request.headers[name])
+            return httpx.Response(200)
+
+        assert _h11_sends("GET", {name: value})
+        cap = run(
+            "GET",
+            "https://example.com/",
+            headers={name: value},
+            transport=_transport(record),
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert sent == [value]
+
+    def test_refuses_what_h11_refuses(self) -> None:
+        """Each ASCII character in a header value, in a header name and in the
+        method: validate_request refuses what h11 refuses, and only that."""
+        cases: list[tuple[str, dict[str, str]]] = []
+        for c in map(chr, range(128)):
+            cases += [("GET", {"X-A": value}) for value in (f"a{c}b", f"{c}a", f"a{c}", c)]
+            cases += [("GET", {name: "v"}) for name in (c, f"a{c}b")]
+            cases += [(method, {}) for method in (c, f"G{c}T")]
+        mismatches = [
+            (method, headers, _h11_sends(method, headers))
+            for method, headers in cases
+            if _h11_sends(method, headers) != _validate_request_sends(method, headers)
+        ]
+        assert mismatches == []
+
+    @pytest.mark.parametrize(
+        "headers",
+        [{"X-A": "a\nb"}, {"Bad Name": "v"}],
+        ids=["value-line-break", "name-with-a-space"],
+    )
+    def test_header_h11_refuses_never_connects(
+        self, monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+    ) -> None:
+        """Without a transport, httpx hands the request to h11 once the
+        connection is open. httpcore's TCP connect is stubbed: nothing is
+        opened."""
+        connects: list[tuple[str, int]] = []
+
+        def connect_tcp(
+            self: httpcore.SyncBackend, host: str, port: int, *a: Any, **kw: Any
+        ) -> httpcore.NetworkStream:
+            connects.append((host, port))
+            return httpcore.MockStream([b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"])
+
+        # With no transport, httpx would send the request to a proxy named
+        # in the environment.
+        for var in _PROXY_VARIABLES:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect_tcp)
+        with pytest.raises(InvalidRequestError):
+            run("GET", "https://api.example.com/", headers=headers, probe_network=False)
+        assert connects == []
+
+    def test_long_header_value_is_refused_quickly(self) -> None:
+        started = time.perf_counter()
+        with pytest.raises(InvalidRequestError):
+            validate_request("GET", "https://example.com/", {"X-A": "a" * 200_000 + "\n"})
+        elapsed = time.perf_counter() - started
+        # Checked only when nothing is tracing, as in test_parser.py's
+        # test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1

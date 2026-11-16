@@ -696,6 +696,28 @@ CASES: list[Case] = [
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
     ),
+    # A header h11, httpx's HTTP/1.1 writer, refuses: the run reported no
+    # response and gave no reason. run -H and curl commands drop the spaces
+    # and tabs at a value's ends, as before.
+    Case(
+        "run-header-line-break",
+        Live(headers={"X-A": "a\nb"}),
+        "run",
+        "Header values can't hold '\\n' (header 'X-A').",
+    ),
+    Case(
+        "run-header-space-at-the-start",
+        Live(headers={"X-A": " a"}),
+        "run",
+        "Header values can't start or end with a space or tab (header 'X-A').",
+        {"cli": REPORT, "cli-from-curl": REPORT},
+    ),
+    Case(
+        "run-header-name-with-a-space",
+        Live(headers={"Bad Name": "v"}),
+        "run",
+        "Header names can only hold letters, digits and !#$%&'*+-.^_`|~ (header 'Bad Name').",
+    ),
 ]
 
 

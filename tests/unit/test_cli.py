@@ -491,6 +491,25 @@ class TestInputThatCantMakeAReport:
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
 
+    def test_run_method_h11_cant_send(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # h11, httpx's HTTP/1.1 writer, refused it once the connection was
+        # open: the report had no response and the run exited 0.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GE T", "https://api.example.com/", {}, None)
+        result = runner.invoke(app, ["run", "https://api.example.com/", "-X", "GE T"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert "Method can only hold letters, digits and" in _flat(result.stderr)
+
 
 # JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
 # body.malformed_json reports for each (None: no finding). NUL bytes used to
@@ -745,6 +764,45 @@ class TestFromCurl:
         result = runner.invoke(app, ["from-curl", curl, "-o", "json"])
         assert result.exit_code == 0, result.stderr
         assert sent == [("GET", ["b=2; a=1"], b"")]
+
+    @pytest.mark.parametrize(
+        ("between", "message"),
+        [
+            ("\\n", "Header values can't hold '\\n' (header 'Cookie')."),
+            ("\\u00a0", "Header names and values must be ASCII (header 'Cookie')."),
+        ],
+        ids=["line-break", "non-breaking-space"],
+    )
+    def test_live_run_refuses_whitespace_a_header_cant_carry_between_cookie_options(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, between: str, message: str
+    ) -> None:
+        # curl joins -b values as given, so the Cookie header holds what is
+        # between them. A line break was sent to h11, which refused it once
+        # the connection was open: no response, and exit 0.
+        sent: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+        def resolve_dns(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
+            return CapturedDns(records=["93.184.216.34"]), 0.0
+
+        def probe_tls(host: str, port: int, *a: Any, **kw: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        monkeypatch.setattr(core_runner, "_resolve_dns", resolve_dns)
+        monkeypatch.setattr(core_runner, "_probe_tls", probe_tls)
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        curl = f"curl https://api.example.com/ -b $'a=1{between}' -b 'b=2'"
+        result = runner.invoke(app, ["from-curl", curl])
+        assert result.exit_code == 2, (result.exit_code, result.stdout)
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(message) in _flat(result.stderr)
+        assert sent == []
 
     @pytest.mark.parametrize(
         "curl",

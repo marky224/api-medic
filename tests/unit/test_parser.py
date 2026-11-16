@@ -811,6 +811,10 @@ class TestCurlCookieOptions:
             (["-b", "a=1 ", "-b", " b=2"], "a=1 ; b=2"),
             (["-b", " a=1 ", "--cookie", " b=2 "], "a=1 ; b=2"),
             (["-b", "a=1", "-b", "\tb=2"], "a=1;\tb=2"),
+            # A header can't carry these: a live run refuses the command.
+            (["-b", "a=1\n", "-b", "b=2"], "a=1\n;b=2"),
+            (["-b", "a=1\u00a0", "-b", "b=2"], "a=1\u00a0;b=2"),
+            (["-b", "a=1", "-b", "\rb=2"], "a=1;\rb=2"),
             # The next argument is the value whatever it starts with, as in curl.
             (["-b", "-x=1"], "-x=1"),
         ],
@@ -829,6 +833,9 @@ class TestCurlCookieOptions:
             "whitespace-between-several",
             "whitespace-around-several",
             "tab-between-several",
+            "line-feed-between-several",
+            "non-breaking-space-between-several",
+            "carriage-return-between-several",
             "value-starting-with-dash",
         ],
     )

@@ -15,6 +15,7 @@ need a custom httpcore transport and is out of scope for v1.
 
 from __future__ import annotations
 
+import re
 import socket
 import ssl
 import time
@@ -52,6 +53,15 @@ MAX_GUARDED_REDIRECTS = 5
 # decide when to drop Content-Encoding from the captured headers so checks
 # don't see a body/header inconsistency we created ourselves.
 _HTTPX_DECODED_ENCODINGS = frozenset({"gzip", "deflate", "br"})
+
+# What h11, which writes httpx's HTTP/1.1 requests, won't send: a method or
+# header name that isn't an RFC 9110 token, and a header value holding NUL,
+# LF, VT, FF or CR, or starting or ending with a space or tab. httpx raises
+# LocalProtocolError for these once the connection is open, which run()
+# would report as no response.
+_TOKEN = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
+_TOKEN_CHARACTERS = "letters, digits and !#$%&'*+-.^_`|~"
+_NOT_IN_A_HEADER_VALUE = re.compile(r"[\x00\n\x0b\x0c\r]")
 
 
 def run(
@@ -205,17 +215,31 @@ def validate_request(
     """Raise InvalidRequestError if httpx can't send this request as given.
 
     The URL goes through validate_url (InvalidURLError); the method and
-    header names and values must be ASCII, and a str body must encode as
-    UTF-8. run() calls this first. A caller with work to do before run()
-    (the Lambda's SSRF guard) can call it earlier, so bad input gets a
-    400 before any DNS lookup.
+    header names and values must be ASCII, the method and each header name
+    an RFC 9110 token, and each header value free of NUL, LF, VT, FF and CR
+    and of a space or tab at either end, which h11, httpx's HTTP/1.1
+    writer, refuses; and a str body must encode as UTF-8. run() calls this
+    first. A caller with work to do before run() (the Lambda's SSRF guard)
+    can call it earlier, so bad input gets a 400 before any DNS lookup.
     """
     validate_url(url)
     if not method.isascii():
         raise InvalidRequestError(f"Method must be ASCII (got {method!r}).")
+    if not _TOKEN.fullmatch(method):
+        raise InvalidRequestError(f"Method can only hold {_TOKEN_CHARACTERS} (got {method!r}).")
     for name, value in (headers or {}).items():
         if not (name.isascii() and value.isascii()):
             raise InvalidRequestError(f"Header names and values must be ASCII (header {name!r}).")
+        if not _TOKEN.fullmatch(name):
+            raise InvalidRequestError(
+                f"Header names can only hold {_TOKEN_CHARACTERS} (header {name!r})."
+            )
+        if held := _NOT_IN_A_HEADER_VALUE.search(value):
+            raise InvalidRequestError(f"Header values can't hold {held[0]!r} (header {name!r}).")
+        if value[:1] in (" ", "\t") or value[-1:] in (" ", "\t"):
+            raise InvalidRequestError(
+                f"Header values can't start or end with a space or tab (header {name!r})."
+            )
     if isinstance(body, str):
         try:
             body.encode("utf-8")
