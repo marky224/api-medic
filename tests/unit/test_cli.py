@@ -491,6 +491,25 @@ class TestInputThatCantMakeAReport:
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
 
+    def test_run_method_h11_cant_send(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # h11, httpx's HTTP/1.1 writer, refused it once the connection was
+        # open: the report had no response and the run exited 0.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GE T", "https://api.example.com/", {}, None)
+        result = runner.invoke(app, ["run", "https://api.example.com/", "-X", "GE T"])
+        assert result.exit_code == 2
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(str(e.value)) in _flat(result.stderr)
+        assert "Method can only hold letters, digits and" in _flat(result.stderr)
+
 
 # JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
 # body.malformed_json reports for each (None: no finding). NUL bytes used to
@@ -747,6 +766,45 @@ class TestFromCurl:
         assert sent == [("GET", ["b=2; a=1"], b"")]
 
     @pytest.mark.parametrize(
+        ("between", "message"),
+        [
+            ("\\n", "Header values can't hold '\\n' (header 'Cookie')."),
+            ("\\u00a0", "Header names and values must be ASCII (header 'Cookie')."),
+        ],
+        ids=["line-break", "non-breaking-space"],
+    )
+    def test_live_run_refuses_whitespace_a_header_cant_carry_between_cookie_options(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, between: str, message: str
+    ) -> None:
+        # curl joins -b values as given, so the Cookie header holds what is
+        # between them. A line break was sent to h11, which refused it once
+        # the connection was open: no response, and exit 0.
+        sent: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+        def resolve_dns(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
+            return CapturedDns(records=["93.184.216.34"]), 0.0
+
+        def probe_tls(host: str, port: int, *a: Any, **kw: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        monkeypatch.setattr(core_runner, "_resolve_dns", resolve_dns)
+        monkeypatch.setattr(core_runner, "_probe_tls", probe_tls)
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        curl = f"curl https://api.example.com/ -b $'a=1{between}' -b 'b=2'"
+        result = runner.invoke(app, ["from-curl", curl])
+        assert result.exit_code == 2, (result.exit_code, result.stdout)
+        assert isinstance(result.exception, SystemExit)
+        assert _flat(message) in _flat(result.stderr)
+        assert sent == []
+
+    @pytest.mark.parametrize(
         "curl",
         [
             # One character over parser.MAX_CURL_CHARS (50,000).
@@ -955,6 +1013,136 @@ class TestFileNameThatIsNotUtf8:
         assert _unspaced(f"Wrote {tmp_path}/\\udcff.json") in _unspaced(result.stderr)
 
 
+# --- Control characters from the input --------------------------------------
+
+_C1_URL = "https://api.example.com/\x1bc\x9b2J"
+_C1_URL_SHOWN = "https://api.example.com/\\x1bc\\x9b2J"
+# A control character api-medic didn't write: C0 but tab and line feed, DEL
+# and C1.
+_RAW_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# The colour codes Rich writes in Typer's error box when CI sets GITHUB_ACTIONS.
+_RICH_STYLE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _raw_controls(text: str) -> list[str]:
+    """The control characters _RAW_CONTROL finds in `text`, in hex."""
+    return sorted({f"0x{ord(c):02x}" for c in _RAW_CONTROL.findall(text)})
+
+
+def _har_path(
+    tmp_path: Path, request: dict[str, Any], response: dict[str, Any] | None = None
+) -> Path:
+    entry: dict[str, Any] = {"request": request}
+    if response is not None:
+        entry["response"] = response
+    path = tmp_path / "in.har"
+    path.write_text(json.dumps({"log": {"entries": [entry]}}), encoding="utf-8")
+    return path
+
+
+class TestControlCharactersFromTheInput:
+    """A terminal reads ESC and C1 characters as commands: clear the screen,
+    move the cursor, retitle the window, make a link. The CLI printed the
+    ones in its input as they were. It shows them as Python writes them in
+    a string. CliRunner runs with color=True: without it, Click drops
+    ESC [ ... sequences from what the CLI writes, as it does in a pipe."""
+
+    @pytest.mark.parametrize("fmt", ["terminal", "markdown", "html", "json"])
+    def test_report_shows_them_escaped(self, runner: CliRunner, tmp_path: Path, fmt: str) -> None:
+        path = _har_path(
+            tmp_path,
+            {"method": "GET", "url": _C1_URL},
+            {
+                "status": 200,
+                "statusText": "O\x9bK",
+                "httpVersion": "HTTP/1.1\x1bc",
+                "headers": [{"name": "Content-Type", "value": "application/json"}],
+                "content": {"text": "{\x1bc\x7f"},
+            },
+        )
+        result = runner.invoke(app, ["from-har", str(path), "-o", fmt], color=True)
+        assert result.exit_code == 0, result.stderr
+        assert _raw_controls(result.stdout) == []
+        if fmt == "json":
+            # JSON escapes them, so the report still holds the URL as given.
+            assert json.loads(result.stdout)["request"]["url"] == _C1_URL
+        else:
+            assert _C1_URL_SHOWN in result.stdout
+
+    def test_from_har_error_shows_them_escaped(self, runner: CliRunner, tmp_path: Path) -> None:
+        # An entry with no method: parse_har's message quotes its URL.
+        path = _har_path(tmp_path, {"url": _C1_URL})
+        result = runner.invoke(app, ["from-har", str(path)], color=True)
+        assert result.exit_code == 2
+        assert _raw_controls(_RICH_STYLE.sub("", result.stderr)) == []
+        shown = f"HAR entry[0] ({_C1_URL_SHOWN}): request.method is missing."
+        assert _unspaced(shown) in _unspaced(result.stderr)
+
+    def test_request_line_shows_them_escaped(self, runner: CliRunner) -> None:
+        curl = f"curl -X 'P\x1bcUT' '{_C1_URL}'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute"], color=True)
+        assert result.exit_code == 0, result.stderr
+        assert _raw_controls(result.stdout) == []
+        assert f"P\\x1bcUT {_C1_URL_SHOWN}" in result.stdout
+
+    def test_file_name_shows_them_escaped(self, runner: CliRunner, tmp_path: Path) -> None:
+        path = tmp_path / "\x1bc.har"
+        reason = _os_reason(lambda: path.read_text(encoding="utf-8"))
+        result = runner.invoke(app, ["from-har", str(path)], color=True)
+        assert result.exit_code == 2
+        assert _raw_controls(_RICH_STYLE.sub("", result.stderr)) == []
+        shown = str(path).replace("\x1b", "\\x1b")
+        assert _unspaced(f"Can't read {shown}: {reason}.") in _unspaced(result.stderr)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows refuses a control character in a file name"
+    )
+    def test_save_says_where_it_wrote_with_them_escaped(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "\x1bc.json"
+        args = ["from-curl", "curl https://api.example.com/", "--no-execute", "-o", "json"]
+        result = runner.invoke(app, [*args, "--save", str(path)], color=True)
+        assert result.exit_code == 0, repr(result.exception)
+        assert json.loads(path.read_text(encoding="utf-8"))["source"] == "curl"
+        assert _raw_controls(result.stderr) == []
+        assert _unspaced(f"Wrote {tmp_path}/\\x1bc.json") in _unspaced(result.stderr)
+
+    @pytest.mark.parametrize(
+        "protocol",
+        ["[link=https://evil.example/]HTTP/1.1[/link]", "[/bold]"],
+        ids=["link", "unmatched-close"],
+    )
+    def test_protocol_is_shown_as_text(
+        self, runner: CliRunner, tmp_path: Path, protocol: str
+    ) -> None:
+        # Rich read a HAR's httpVersion as markup: the first made a link,
+        # and the second raised MarkupError, a traceback and exit 1.
+        response = {"status": 200, "headers": [], "httpVersion": protocol}
+        path = _har_path(tmp_path, {"method": "GET", "url": "https://api.example.com/"}, response)
+        result = runner.invoke(app, ["from-har", str(path)], color=True)
+        assert result.exit_code == 0, repr(result.exception)
+        assert protocol in result.stdout
+
+    def test_escaped_copy_escapes_keys_too(self, tmp_path: Path) -> None:
+        """No output prints a key from the input today: the renderers print
+        a finding's evidence, whose keys api-medic names, and no request or
+        response headers. The copy they render escapes keys too, for any
+        output that does."""
+        har = _har_path(
+            tmp_path,
+            {
+                "method": "GET",
+                "url": "https://api.example.com/",
+                "headers": [{"name": "X-\x1bc", "value": "a\x9bb"}],
+            },
+        )
+        report = analyze(parse_har(har.read_text(encoding="utf-8")))
+        assert cli_main._escaped(report).request.headers == {"X-\\x1bc": "a\\x9bb"}
+        # The report itself, which -o json renders, is unchanged.
+        assert report.request.headers == {"X-\x1bc": "a\x9bb"}
+
+
 # --- serve ---------------------------------------------------------------
 
 
@@ -976,6 +1164,17 @@ class TestServe:
         assert seen["app_path"] == "api_medic.web.app:app"
         assert seen["port"] == 9999
         assert seen["host"] == "0.0.0.0"
+
+    def test_banner_shows_the_host_escaped(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import uvicorn as _uv
+
+        monkeypatch.setattr(_uv, "run", lambda *a, **kw: None)
+        result = runner.invoke(app, ["serve", "--host", "\x1bc"], color=True)
+        assert result.exit_code == 0, repr(result.exception)
+        assert _raw_controls(result.stderr) == []
+        assert "http://\\x1bc:8765" in result.stderr
 
 
 # --- end-of-phase integration test ---------------------------------------

@@ -177,6 +177,15 @@ def _bearer_cases(name: str, payload: bytes, expect: str) -> list[Case]:
 
 _JSON = {"Content-Type": "application/json"}
 _DEEP = "[" * 100_000 + "]" * 100_000
+# A URL holding an OSC sequence, which sets a terminal's title.
+_ESC_URL = "https://api.example.com/\x1b]0;t\x07"
+# A C0 character but tab and line feed. The rows that use it hold ESC c,
+# which resets a terminal, and OSC sequences (ESC ] ... BEL). They hold no
+# ESC [ ... sequence: _cli_entry runs CliRunner without color=True, which
+# drops those from the CLI's output, as Click does in a pipe, so the field
+# holding one would never be checked. And no C1 characters: api-medic
+# serve's JSON writes those as they are.
+_RAW_C0 = r"[\x00-\x08\x0b-\x1f]"
 _NINES = "9" * 4301
 _CURL = "curl https://api.example.com/"
 
@@ -695,6 +704,76 @@ CASES: list[Case] = [
     Case("curl-empty", "   ", "curl", "Empty curl command."),
     Case(
         "curl-unparseable", "definitely not a curl command", "curl", "Could not parse curl command"
+    ),
+    # A header h11, httpx's HTTP/1.1 writer, refuses: the run reported no
+    # response and gave no reason. run -H and curl commands drop the spaces
+    # and tabs at a value's ends, as before.
+    Case(
+        "run-header-line-break",
+        Live(headers={"X-A": "a\nb"}),
+        "run",
+        "Header values can't hold '\\n' (header 'X-A').",
+    ),
+    Case(
+        "run-header-space-at-the-start",
+        Live(headers={"X-A": " a"}),
+        "run",
+        "Header values can't start or end with a space or tab (header 'X-A').",
+        {"cli": REPORT, "cli-from-curl": REPORT},
+    ),
+    Case(
+        "run-header-name-with-a-space",
+        Live(headers={"Bad Name": "v"}),
+        "run",
+        "Header names can only hold letters, digits and !#$%&'*+-.^_`|~ (header 'Bad Name').",
+    ),
+    # Control characters from the input: the CLI printed them as they were,
+    # and a terminal reads ESC as the start of a command.
+    Case(
+        "har-control-characters",
+        _har(
+            {
+                "method": "G\x1bcET",
+                "url": _ESC_URL,
+                "headers": [{"name": "Origin", "value": "https://o.example\x1bc"}],
+            },
+            response={
+                "status": 200,
+                "statusText": "O\x1bcK",
+                "httpVersion": "HTTP/1.1\x1bc",
+                "headers": [{"name": "Content-Type", "value": "application/json\x1b]2;t\x07"}],
+                "content": {"text": "{\x1bc"},
+            },
+        ),
+        "har",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "curl-control-characters",
+        f"curl -X $'P\\u001bcUT' '{_ESC_URL}'",
+        "curl",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "run-control-characters",
+        Live(
+            response_headers={"Content-Type": "application/json\x1b]2;t\x07"},
+            content=b"{\x1bc",
+        ),
+        "run",
+        REPORT,
+        never_shows=_RAW_C0,
+    ),
+    Case(
+        "har-error-quoting-control-characters",
+        json.dumps({"log": {"entries": [{"request": {"url": _ESC_URL}}]}}),
+        "har",
+        f"HAR entry[0] ({_ESC_URL}): request.method is missing.",
+        {
+            "cli": "HAR entry[0] (https://api.example.com/\\x1b]0;t\\x07): request.method is missing."
+        },
     ),
 ]
 

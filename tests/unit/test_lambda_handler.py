@@ -1199,6 +1199,12 @@ class TestRunRejectsMalformedInput:
             ({"headers": {"X-A": "caf\u00e9"}}, _ASCII_HEADERS),
             ({"headers": {"X-A": "\ud800"}}, _ASCII_HEADERS),
             ({"method": "G\u00c9T"}, "Method must be ASCII"),
+            # h11, httpx's HTTP/1.1 writer, refuses these once the connection
+            # is open: the run reported no response.
+            ({"headers": {"X-A": "a\nb"}}, "Header values can't hold '\\n' (header 'X-A')."),
+            ({"headers": {"X-A": " a"}}, "Header values can't start or end with a space or tab"),
+            ({"headers": {"Bad Name": "v"}}, "Header names can only hold letters, digits and"),
+            ({"method": "GE T"}, "Method can only hold letters, digits and"),
         ],
     )
     def test_request_httpx_cannot_send(
