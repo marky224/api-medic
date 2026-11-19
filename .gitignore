@@ -40,10 +40,8 @@ coverage.xml
 # IDE / agent state
 .idea/
 .vscode/
-.claude/
 .cursor/
 .aider*
-CLAUDE.md
 *.swp
 *.swo
 .DS_Store
