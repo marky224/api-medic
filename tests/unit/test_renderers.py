@@ -8,10 +8,16 @@ tweak.
 
 from __future__ import annotations
 
+import json
+import sys
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from api_medic.core.engine import analyze
 from api_medic.core.models import (
@@ -21,7 +27,7 @@ from api_medic.core.models import (
     ResponseSummary,
     TimingBreakdown,
 )
-from api_medic.core.parser import parse_har
+from api_medic.core.parser import parse_curl, parse_har
 from api_medic.core.render import (
     render_html,
     render_json,
@@ -209,3 +215,287 @@ class TestHarTimingTotalPastTheFloatMaximum:
         assert render(report) == render(report.model_copy(update={"timing": timing}))
         # render_json wrote the old Infinity total as null too.
         assert report.timing.total_ms is None
+
+
+# --- Markdown from the input ---------------------------------------------
+
+# CommonMark, which GitHub's markdown extends, with GFM's tables and
+# strikethrough. The renderer writes no link, image or HTML of its own, so
+# any of them in its output came from the input.
+_COMMONMARK = MarkdownIt("commonmark").enable(["table", "strikethrough"])
+_IN_BACKTICKS = "`![t](https://evil.example/p.png)`"
+
+
+def _markup(md: str) -> list[str]:
+    """Each link, image and piece of HTML CommonMark reads in `md`."""
+    found: list[str] = []
+    for token in _COMMONMARK.parse(md):
+        if token.type == "html_block":
+            found.append(f"html_block {token.content}")
+        for child in token.children or []:
+            if child.type == "link_open":
+                found.append(f"link_open {child.attrGet('href')}")
+            elif child.type == "image":
+                found.append(f"image {child.attrGet('src')}")
+            elif child.type == "html_inline":
+                found.append(f"html_inline {child.content}")
+    return found
+
+
+def _shown(inline: Token) -> str:
+    """The text an inline token shows: its text and code spans."""
+    return "".join(c.content for c in inline.children or [] if c.type in ("text", "code_inline"))
+
+
+def _blocks(md: str, opener: str) -> list[str]:
+    tokens = _COMMONMARK.parse(md)
+    return [_shown(tokens[i + 1]) for i, token in enumerate(tokens) if token.type == opener]
+
+
+def _headings(md: str) -> list[str]:
+    return _blocks(md, "heading_open")
+
+
+def _paragraphs(md: str) -> list[str]:
+    return _blocks(md, "paragraph_open")
+
+
+def _code_spans(md: str) -> list[str]:
+    """What each code span in `md` shows."""
+    return [
+        child.content
+        for token in _COMMONMARK.parse(md)
+        for child in token.children or []
+        if child.type == "code_inline"
+    ]
+
+
+def _metrics_rows(md: str) -> list[list[str]]:
+    """The cells of the first table in `md`, row by row."""
+    rows: list[list[str]] = []
+    tokens = _COMMONMARK.parse(md)
+    for i, token in enumerate(tokens):
+        if token.type == "table_close":
+            break
+        if token.type == "tr_open":
+            rows.append([])
+        elif token.type in ("th_open", "td_open"):
+            rows[-1].append(_shown(tokens[i + 1]))
+    return rows
+
+
+def _as_shown(value: str) -> str:
+    """`value` as the renderer shows its line breaks: CR as \r, LF as \n."""
+    return value.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _har_report(
+    *,
+    method: str = "GET",
+    url: str = "https://api.example.com/v1",
+    headers: dict[str, str] | None = None,
+    status_text: str = "OK",
+    protocol: str = "HTTP/1.1",
+    response_headers: dict[str, str] | None = None,
+) -> Report:
+    """analyze() of a one-entry HAR whose 200 response took 10 ms."""
+
+    def pairs(h: dict[str, str] | None) -> list[dict[str, str]]:
+        return [{"name": k, "value": v} for k, v in (h or {}).items()]
+
+    entry = {
+        "request": {"method": method, "url": url, "headers": pairs(headers)},
+        "response": {
+            "status": 200,
+            "statusText": status_text,
+            "httpVersion": protocol,
+            "headers": pairs(response_headers),
+        },
+        "timings": {"wait": 10},
+    }
+    return analyze(parse_har({"log": {"entries": [entry]}}))
+
+
+_ORIGINS = {
+    "link": "https://o.example [Re-authenticate here](https://evil.example/login)",
+    "image": "https://o.example ![t](https://evil.example/p.png)",
+    "html": (
+        'https://o.example <img src="https://evil.example/p.png">'
+        ' <a href="https://evil.example/">x</a>'
+    ),
+    "autolink": "https://o.example <https://evil.example/login>",
+    "backslash-before-the-brackets": (
+        "https://o.example \\[Re-authenticate here\\](https://evil.example/login)"
+    ),
+    "entities": "https://o.example &lt;b&gt; &#91;x&#93;",
+}
+
+
+class TestMarkdownShowsTheInputAsText:
+    """A HAR file, a curl command or a server can put markdown in the text a
+    report quotes. The renderer wrote it as it was, so wherever the report
+    was pasted it could show a link, an image or HTML, or start a block.
+    It escapes that text now, and CommonMark reads it back as given."""
+
+    @pytest.mark.parametrize(
+        ("origin", "allow"),
+        [
+            pytest.param(origin, allow, id=f"{allow_id}-{origin_id}")
+            for allow_id, allow in (("no-allow", None), ("allow", "https://app.example"))
+            for origin_id, origin in _ORIGINS.items()
+        ],
+    )
+    def test_explanation_and_fix_show_the_origin_as_text(
+        self, origin: str, allow: str | None
+    ) -> None:
+        response_headers = {"Access-Control-Allow-Origin": allow} if allow else None
+        report = _har_report(headers={"Origin": origin}, response_headers=response_headers)
+        (finding,) = report.findings
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert finding.explanation in _paragraphs(out)
+        assert f"Suggested fix: {finding.suggested_fix}" in _paragraphs(out)
+
+    def test_emphasis_and_backticks_in_the_origin_are_left_as_they_are(self) -> None:
+        # Only what makes a link, an image, HTML, an entity or a line break
+        # is escaped, so these still format the text they wrap.
+        report = _har_report(headers={"Origin": "https://o.example *x* _y_ ~z~ `w`"})
+        (finding,) = report.findings
+        out = render_markdown(report)
+        assert f"\n{finding.explanation}\n" in out
+        assert f"\n**Suggested fix:** {finding.suggested_fix}\n" in out
+
+    def test_line_breaks_in_the_origin_add_no_block(self) -> None:
+        # The reference definition would make the [CRITICAL] tag a link.
+        origin = (
+            "https://o.example\n\n# Pwned heading\n\n"
+            "[critical]: https://evil.example/tag\r\n> quote"
+        )
+        report = _har_report(headers={"Origin": origin})
+        (finding,) = report.findings
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert _headings(out) == [
+            "api-medic — diagnostic report",
+            "Timing",
+            "Findings",
+            f"[CRITICAL] {finding.title}",
+        ]
+        assert _as_shown(finding.explanation) in _paragraphs(out)
+
+    @pytest.mark.parametrize(
+        "har",
+        [
+            pytest.param({"url": f"https://api.example.com/v1?q=a{_IN_BACKTICKS}"}, id="url"),
+            pytest.param({"method": f"GET{_IN_BACKTICKS}"}, id="method"),
+            pytest.param({"status_text": f"OK{_IN_BACKTICKS}"}, id="status-text"),
+            pytest.param({"status_text": "`OK``"}, id="status-text-ending-in-backticks"),
+            pytest.param(
+                {"url": "https://api.example.com/v1\n# Pwned heading\n"}, id="url-line-break"
+            ),
+        ],
+    )
+    def test_request_and_status_lines_show_the_input_in_code(self, har: dict[str, Any]) -> None:
+        report = _har_report(**har)
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert _headings(out) == ["api-medic — diagnostic report", "Timing", "Findings"]
+        if "status_text" in har:
+            assert f"200 {har['status_text']}" in _code_spans(out)
+        else:
+            request_line = f"{report.request.method} {report.request.url}"
+            assert _as_shown(request_line) in _code_spans(out)
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            pytest.param(f"https://o.example{_IN_BACKTICKS}", id="image"),
+            pytest.param("`https://o.example", id="starts-with-a-backtick"),
+            pytest.param("https://o.example``", id="ends-with-backticks"),
+            pytest.param(" https://o.example ", id="spaces-at-both-ends"),
+            pytest.param("https://o.example\n# x", id="line-break"),
+        ],
+    )
+    def test_evidence_value_is_shown_exactly(self, origin: str) -> None:
+        out = render_markdown(_har_report(headers={"Origin": origin}))
+        assert _markup(out) == []
+        assert _as_shown(origin) in _code_spans(out)
+
+    def test_json_evidence_is_shown_exactly(self) -> None:
+        curl = f"curl https://api.example.com/ -H 'X-A: a{_IN_BACKTICKS}' -H 'X-A: b'"
+        report = analyze(parse_curl(curl))
+        (finding,) = report.findings
+        assert finding.evidence is not None
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert json.dumps(finding.evidence["duplicates"]) in _code_spans(out)
+
+    @pytest.mark.parametrize(
+        "protocol",
+        [
+            pytest.param("HTTP/1.1 | 0", id="pipe"),
+            pytest.param("HTTP/1.1 |\n| evil | row | x | y |", id="line-break"),
+            pytest.param("![t](https://evil.example/p.png)", id="image"),
+            pytest.param("HTTP/1.1 \\| x", id="backslash-before-a-pipe"),
+        ],
+    )
+    def test_protocol_cell_shows_the_protocol(self, protocol: str) -> None:
+        # Beside a CORS finding, so the Findings cell isn't 0 already.
+        report = _har_report(headers={"Origin": "https://o.example"}, protocol=protocol)
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert _metrics_rows(out) == [
+            ["Latency", "Body", "Protocol", "Findings"],
+            ["10 ms", "0 B", _as_shown(protocol), "1 critical"],
+        ]
+
+    def test_title_and_evidence_key_show_the_input_as_text(self) -> None:
+        # No check puts input in a title or an evidence key, so the Report is
+        # built by hand: this fails if either stops being escaped.
+        key = f"k{_IN_BACKTICKS}"
+        report = Report.model_validate(
+            {
+                "source": "har",
+                "request": {
+                    "method": "GET",
+                    "url": "https://api.example.com/",
+                    "body_size_bytes": 0,
+                },
+                "timing": {},
+                "findings": [
+                    {
+                        "id": "http.example.title",
+                        "severity": "warning",
+                        "title": "x [a](https://evil.example/)",
+                        "explanation": "An explanation.",
+                        "evidence": {key: "v"},
+                    }
+                ],
+            }
+        )
+        out = render_markdown(report)
+        assert _markup(out) == []
+        assert "[WARNING] x [a](https://evil.example/)" in _headings(out)
+        assert key in _code_spans(out)
+
+    def test_long_input_renders_quickly(self) -> None:
+        # The escaping runs regexes on the input, which can be long. The
+        # origin reaches the explanation, the suggested fix and an evidence
+        # value.
+        for value in (
+            "\\[" * 100_000,
+            "&a" * 100_000,
+            "&" + "a" * 200_000,
+            "`a" * 100_000,
+            "\n" * 200_000,
+        ):
+            report = _har_report(headers={"Origin": value})
+            started = time.perf_counter()
+            out = render_markdown(report)
+            elapsed = time.perf_counter() - started
+            assert out.startswith("# api-medic — diagnostic report\n")
+            # On Python 3.12+ a trace function, such as coverage's under CI's
+            # --cov, slows Python code down, so the bound is checked only
+            # when nothing is tracing.
+            if sys.version_info < (3, 12) or sys.gettrace() is None:
+                assert elapsed < 1, value[:10]

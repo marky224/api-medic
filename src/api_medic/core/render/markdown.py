@@ -2,11 +2,16 @@
 
 GitHub-flavored markdown. Designed to render cleanly when pasted into a
 GitHub issue, a Slack message, or an email body. Severity is conveyed by
-[CRITICAL]/[WARNING]/[INFO] tags rather than emoji.
+[CRITICAL]/[WARNING]/[INFO] tags rather than emoji. Text from the Report
+is escaped so it reads as text (see _text, _cell and _code). The escaping
+relies on each title, explanation and suggested fix starting with the
+check's own words, since it doesn't guard the start of a line (`#`, `>`,
+`-`, a fence, an indent).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..models import Finding, Report, Severity, TimingBreakdown
@@ -22,7 +27,9 @@ def render_markdown(report: Report) -> str:
     parts: list[str] = []
     parts.append("# api-medic — diagnostic report")
     parts.append("")
-    parts.append(f"`{report.request.method} {report.request.url}` → " + _status_str(report))
+    parts.append(
+        _code(f"{report.request.method} {report.request.url}") + " → " + _status_str(report)
+    )
     parts.append("")
     parts.append(_metrics_table(report))
     parts.append("")
@@ -46,13 +53,13 @@ def render_markdown(report: Report) -> str:
 def _status_str(report: Report) -> str:
     if report.response is None:
         return "_no response_"
-    return f"`{report.response.status_code} {report.response.status_text}`"
+    return _code(f"{report.response.status_code} {report.response.status_text}")
 
 
 def _metrics_table(report: Report) -> str:
     latency = _fmt_latency(report.timing.total_ms)
     body = _fmt_bytes(report.response.body_size_bytes) if report.response else "—"
-    protocol = report.response.protocol if report.response else "—"
+    protocol = _cell(report.response.protocol) if report.response else "—"
     findings = _fmt_findings_count(report.findings)
     return (
         "| Latency | Body | Protocol | Findings |\n"
@@ -83,15 +90,20 @@ def _timing_table(t: TimingBreakdown) -> str:
 
 
 def _finding_block(f: Finding) -> str:
-    lines = [f"### {_SEVERITY_TAG[f.severity]} {f.title}", f"**`{f.id}`**", "", f.explanation]
+    lines = [
+        f"### {_SEVERITY_TAG[f.severity]} {_text(f.title)}",
+        f"**{_code(f.id)}**",
+        "",
+        _text(f.explanation),
+    ]
     if f.evidence:
         lines.append("")
         lines.append("**Evidence:**")
         for k, v in f.evidence.items():
-            lines.append(f"- `{k}`: `{_evidence_value(v)}`")
+            lines.append(f"- {_code(k)}: {_code(_evidence_value(v))}")
     if f.suggested_fix:
         lines.append("")
-        lines.append(f"**Suggested fix:** {f.suggested_fix}")
+        lines.append(f"**Suggested fix:** {_text(f.suggested_fix)}")
     return "\n".join(lines)
 
 
@@ -134,3 +146,33 @@ def _fmt_findings_count(findings: list[Finding]) -> str:
     if by_severity["warning"]:
         return f"{by_severity['warning']} warning"
     return f"{by_severity['info']} info"
+
+
+_LINE_BREAKS = str.maketrans({"\r": "\\r", "\n": "\\n"})
+_MARKUP = re.compile(r"\\(?=[!-/:-@\[-`{-~])|[\[\]<]|&(?=#?[0-9A-Za-z]+;)")
+_BACKTICKS = re.compile(r"`+")
+
+
+def _text(value: str) -> str:
+    return _MARKUP.sub(_escape_markup, value.translate(_LINE_BREAKS))
+
+
+def _escape_markup(match: re.Match[str]) -> str:
+    c = match.group(0)
+    if c == "<":
+        return "&lt;"
+    if c == "&":
+        return "&amp;"
+    return "\\" + c
+
+
+def _cell(value: str) -> str:
+    return _text(value).replace("|", "\\|")
+
+
+def _code(value: str) -> str:
+    value = value.translate(_LINE_BREAKS)
+    fence = "`" * (max((len(run) for run in _BACKTICKS.findall(value)), default=0) + 1)
+    ends = value[:1] + value[-1:]
+    pad = " " if value.strip(" ") and ("`" in ends or ends == "  ") else ""
+    return f"{fence}{pad}{value}{pad}{fence}"

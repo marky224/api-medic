@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 import pytest
+from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
 from api_medic import __version__
@@ -1377,6 +1378,42 @@ class TestControlCharactersFromTheInput:
         result = runner.invoke(app, ["from-har", str(path)], color=True)
         assert result.exit_code == 0, repr(result.exception)
         assert protocol in result.stdout
+
+    def test_markdown_escapes_its_markup_after_them(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # The markdown escapes run on the escaped copy and leave a backslash
+        # before a letter alone, so each escape shows once.
+        origin = (
+            "https://o.example\x1b]8;;https://evil.example/\x07"
+            " [Re-authenticate here](https://evil.example/login)\r\n# Pwned"
+        )
+        path = _har_path(
+            tmp_path,
+            {
+                "method": "GET",
+                "url": "https://api.example.com/",
+                "headers": [{"name": "Origin", "value": origin}],
+            },
+            {
+                "status": 200,
+                "headers": [
+                    {"name": "Access-Control-Allow-Origin", "value": "https://app.example"}
+                ],
+            },
+        )
+        result = runner.invoke(app, ["from-har", str(path), "-o", "markdown"], color=True)
+        assert result.exit_code == 0, result.stderr
+        assert _raw_controls(result.stdout) == []
+        inline = [t for t in MarkdownIt("commonmark").parse(result.stdout) if t.type == "inline"]
+        links = [c for t in inline for c in t.children or [] if c.type in ("link_open", "image")]
+        assert links == []
+        shown = (
+            "The browser sent a request from https://o.example\\x1b]8;;https://evil.example/"
+            "\\x07 [Re-authenticate here](https://evil.example/login)\\r\\n# Pwned but the"
+            " server only allows https://app.example. The browser will block the response."
+        )
+        assert shown in ["".join(c.content for c in t.children or []) for t in inline]
 
     def test_escaped_copy_escapes_keys_too(self, tmp_path: Path) -> None:
         """No output prints a key from the input today: the renderers print
