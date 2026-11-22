@@ -294,6 +294,52 @@ class TestHeadersDuplicate:
             "duplicates": [{"location": "response", "name": name, "values": [first, second]}]
         }
 
+    @pytest.mark.parametrize(
+        ("location", "name", "first", "second"),
+        [
+            ("request", "Authorization", "Bearer one", "Bearer two"),
+            ("request", "Host", "a.example", "b.example"),
+            ("request", "Content-Length", "11", "5"),
+            ("request", "Accept", "text/html", "application/json"),
+            ("response", "Content-Type", "application/json", "text/html"),
+            ("response", "ETag", '"a"', '"b"'),
+        ],
+        ids=[
+            "request-Authorization",
+            "request-Host",
+            "request-Content-Length",
+            "request-Accept",
+            "response-Content-Type",
+            "response-ETag",
+        ],
+    )
+    def test_wording_is_right_for_a_single_value_header_and_for_a_list(
+        self, location: str, name: str, first: str, second: str
+    ) -> None:
+        # One wording for both sides and every header. It said the header
+        # was sent, which a curl command's isn't, and to join the values
+        # with a comma, which is wrong for a header that takes one value.
+        raw = [(name, first), (name, second)]
+        if location == "request":
+            cap = _cap(raw_request_headers=raw)
+        else:
+            cap = _cap(response=_resp(raw_headers=raw))
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.title == "Header repeated with different values"
+        assert finding.explanation == (
+            f"The {location} contains multiple {name} headers with different values. "
+            "A recipient may keep the first, keep the last, join them with commas or "
+            "refuse the message, so two hops can read it differently."
+        )
+        assert finding.suggested_fix == (
+            "Send each header exactly once. Join several values with commas only where "
+            "the header is defined as a comma-separated list (RFC 9110, section 5.3), as "
+            "Accept and Cache-Control are; a header that takes one value, such as "
+            "Authorization, Host or Content-Length, can keep only one."
+        )
+        assert finding.severity == "warning"
+
 
 class TestRedirectLoop:
     def test_empty_chain_skipped(self):

@@ -992,6 +992,34 @@ class TestFromCurl:
         assert [f for f in findings if f["id"] == "http.headers.duplicate"] == []
 
     @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("Authorization: Bearer one", "Authorization: Bearer two"),
+            ("Host: a.example", "Host: b.example"),
+            ("Content-Length: 11", "Content-Length: 5"),
+        ],
+        ids=["authorization", "host", "content-length"],
+    )
+    def test_no_execute_duplicate_finding_doesnt_say_to_join_a_single_value_header(
+        self, runner: CliRunner, first: str, second: str
+    ) -> None:
+        # The finding called the header sent, for a command that wasn't run,
+        # and said to join the values with a comma.
+        curl = shlex.join(["curl", "https://api.example.com/", "-H", first, "-H", second])
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        findings = json.loads(result.stdout)["findings"]
+        duplicates = [f for f in findings if f["id"] == "http.headers.duplicate"]
+        assert len(duplicates) == 1
+        assert duplicates[0]["title"] == "Header repeated with different values"
+        assert duplicates[0]["suggested_fix"] == (
+            "Send each header exactly once. Join several values with commas only where "
+            "the header is defined as a comma-separated list (RFC 9110, section 5.3), as "
+            "Accept and Cache-Control are; a header that takes one value, such as "
+            "Authorization, Host or Content-Length, can keep only one."
+        )
+
+    @pytest.mark.parametrize(
         "curl",
         [
             # One character over parser.MAX_CURL_CHARS (50,000).

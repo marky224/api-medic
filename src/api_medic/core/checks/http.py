@@ -98,7 +98,7 @@ _REPEATABLE_IN_A_RESPONSE = frozenset(
 
 @register
 def headers_duplicate(captured: CapturedRequest) -> Finding | None:
-    """Same header appears multiple times with conflicting values.
+    """Same header appears multiple times with different values.
 
     Needs `raw_headers` populated on the request or response — the dict-shaped
     `headers` would have already collapsed duplicates. The Runner fills the
@@ -134,17 +134,20 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     return Finding(
         id="http.headers.duplicate",
         severity="warning",
-        title="Header sent more than once with conflicting values",
+        title="Header repeated with different values",
         explanation=(
             f"The {first['location']} contains multiple {first['name']} "
-            "headers with different values. Different proxies and servers "
-            "pick different ones — usually first or last — which leads to "
-            "inconsistent behaviour across hops."
+            "headers with different values. A recipient may keep the first, "
+            "keep the last, join them with commas or refuse the message, so "
+            "two hops can read it differently."
         ),
         evidence={"duplicates": findings},
         suggested_fix=(
-            "Send each header exactly once. If multiple values are intended, "
-            "join them with a comma per RFC 9110."
+            "Send each header exactly once. Join several values with commas "
+            "only where the header is defined as a comma-separated list "
+            "(RFC 9110, section 5.3), as Accept and Cache-Control are; a "
+            "header that takes one value, such as Authorization, Host or "
+            "Content-Length, can keep only one."
         ),
     )
 
