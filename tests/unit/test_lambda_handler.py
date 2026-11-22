@@ -1084,6 +1084,27 @@ class TestRunConnectionPinning:
         assert result["statusCode"] == 200
         assert net["tcp"] == [("93.184.216.34", 443), (v6, 8443)]
 
+    @pytest.mark.parametrize("host", ["other.example", ""], ids=["other-host", "empty"])
+    def test_host_header_is_sent_as_given_to_the_checked_address(
+        self, net: dict[str, Any], host: str
+    ) -> None:
+        """A Host header goes as given; the connection still goes to the
+        address the guard checked for the URL's host, with its name as SNI."""
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+        body = json.dumps(
+            {"method": "GET", "url": "https://api.example.com/", "headers": {"Host": host}}
+        )
+
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+
+        assert result["statusCode"] == 200
+        assert net["tcp"] == [("93.184.216.34", 443)]
+        assert net["sni"] == ["api.example.com"]
+        sent = b"".join(net["sent"])
+        assert sent.count(b"\r\nHost:") == 1
+        assert f"\r\nHost: {host}\r\n".encode() in sent
+
     def test_proxy_environment_is_ignored(
         self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:

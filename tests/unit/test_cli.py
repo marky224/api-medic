@@ -234,6 +234,30 @@ class TestRunCommand:
         assert result.exit_code != 0
         assert "Header must be" in (result.stderr or result.stdout)
 
+    def test_user_agent_in_lowercase_replaces_api_medics(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The runner added its own User-Agent beside it: both were sent, and
+        # the report showed both.
+        sent: list[list[str]] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request.headers.get_list("User-Agent"))
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(
+                *args, **kwargs, transport=httpx.MockTransport(respond), probe_network=False
+            )
+
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        result = runner.invoke(
+            app, ["run", "https://api.example.com/", "-H", "user-agent: mine/1.0", "-o", "json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert sent == [["mine/1.0"]]
+        assert json.loads(result.stdout)["request"]["headers"] == {"user-agent": "mine/1.0"}
+
 
 # --- Unencodable text ------------------------------------------------------
 

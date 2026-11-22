@@ -110,10 +110,17 @@ def run(
     InvalidRequestError (see validate_request) before anything is sent. A
     final response whose status is outside 100-599, which h11 accepts but a
     Report can't hold, raises UnusableResponseError after the exchange.
+
+    A Host header is sent as given; the connection still goes to the URL's
+    host. api-medic's User-Agent is added unless one is given, in any
+    case. A request that gives a Transfer-Encoding goes without the
+    Content-Length httpx would add beside it, as curl sends it, and h11
+    chunk-encodes the body.
     """
     validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
-    request_headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    if not any(name.lower() == "user-agent" for name in request_headers):
+        request_headers["User-Agent"] = DEFAULT_USER_AGENT
 
     if body is None:
         body_bytes = b""
@@ -151,12 +158,19 @@ def run(
             transport=transport,
             event_hooks={"request": [_refuse_unsendable_hop]},
         ) as client:
-            response = client.request(
+            request = client.build_request(
                 method=method,
                 url=url,
                 headers=request_headers,
                 content=body_bytes if body_bytes else None,
             )
+            if any(name.lower() == "transfer-encoding" for name in request_headers):
+                # httpx adds a Content-Length for the body beside it, which
+                # RFC 9112 forbids a sender to send; validate_request has
+                # refused one the caller gave. A request without a body has
+                # none, hence pop() and not del.
+                request.headers.pop("Content-Length", None)
+            response = client.send(request)
             if follow_redirects and url_guard is not None:
                 response = _follow_guarded_redirects(client, response, url_guard)
     except (httpx.HTTPError, httpx.InvalidURL, UnicodeError, _UnsendableHopError):

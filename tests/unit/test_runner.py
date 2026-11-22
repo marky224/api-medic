@@ -744,6 +744,14 @@ class _WireStream(httpcore.MockStream):
 _OK = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
 
 
+def _httpx_defaults() -> bytes:
+    """The headers every httpx client sends after Host. Accept-Encoding lists
+    the decoders installed (brotli, zstandard), so it is read from httpx."""
+    with httpx.Client() as client:
+        accept_encoding = client.headers["Accept-Encoding"].encode()
+    return b"Accept: */*\r\nAccept-Encoding: " + accept_encoding + b"\r\nConnection: keep-alive\r\n"
+
+
 @pytest.fixture
 def wire(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
     """httpx's real transport, with httpcore's TCP connect stubbed: it records
@@ -1056,3 +1064,110 @@ class TestRequestFramingH11CantSend:
         # test_command_at_the_argument_limit_parses_quickly.
         if sys.version_info < (3, 12) or sys.gettrace() is None:
             assert elapsed < 1
+
+
+def _requests_written(written: list[bytes]) -> list[bytes]:
+    """The request heads written, each up to its blank line."""
+    sent = b"".join(written)
+    return [b"POST " + part.split(b"\r\n\r\n", 1)[0] for part in sent.split(b"POST ")[1:]]
+
+
+class TestRequestFramingAsCurlSendsIt:
+    """A Transfer-Encoding the caller gave went with the Content-Length httpx
+    adds for the body, which RFC 9112 forbids a sender to send, and a
+    user-agent in another case went beside api-medic's User-Agent. curl
+    sends neither. Through httpx's real transport, connect stubbed."""
+
+    @pytest.mark.parametrize("coding", ["chunked", "CHUNKED"])
+    def test_chunked_body_goes_without_a_content_length(
+        self, wire: dict[str, list[Any]], coding: str
+    ) -> None:
+        cap = run(
+            "POST",
+            "https://api.example.com/",
+            headers={"Transfer-Encoding": coding},
+            body=_HELLO,
+            probe_network=False,
+        )
+        assert cap.response is not None
+        sent = b"".join(wire["written"])
+        assert b"\r\nTransfer-Encoding: chunked\r\n" in sent
+        assert b"Content-Length" not in sent
+        assert sent.endswith(b"\r\n\r\nb\r\nhello world\r\n0\r\n\r\n")
+
+    def test_redirect_hop_resends_it_the_same_way(self, wire: dict[str, list[Any]]) -> None:
+        wire["responses"][:] = [
+            b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n",
+            _OK,
+        ]
+        cap = run(
+            "POST",
+            "https://api.example.com/start",
+            headers={"Transfer-Encoding": "chunked"},
+            body=_HELLO,
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert cap.redirect_chain == [
+            "https://api.example.com/start",
+            "https://api.example.com/next",
+        ]
+        heads = _requests_written(wire["written"])
+        assert [head.split(b"\r\n", 1)[0] for head in heads] == [
+            b"POST /start HTTP/1.1",
+            b"POST /next HTTP/1.1",
+        ]
+        assert all(b"\r\nTransfer-Encoding: chunked" in head for head in heads)
+        assert all(b"Content-Length" not in head for head in heads)
+        assert b"".join(wire["written"]).count(b"b\r\nhello world\r\n0\r\n\r\n") == 2
+
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_chunked_without_a_body_is_sent_as_before(
+        self, wire: dict[str, list[Any]], method: str
+    ) -> None:
+        # httpx adds no Content-Length here, so there is none to drop.
+        cap = run(
+            method,
+            "https://api.example.com/",
+            headers={"Transfer-Encoding": "chunked"},
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert b"".join(wire["written"]) == (
+            f"{method} / HTTP/1.1\r\nHost: api.example.com\r\n".encode()
+            + _httpx_defaults()
+            + b"Transfer-Encoding: chunked\r\nUser-Agent: "
+            + DEFAULT_USER_AGENT.encode()
+            + b"\r\n\r\n0\r\n\r\n"
+        )
+
+    @pytest.mark.parametrize("name", ["user-agent", "USER-AGENT", "User-Agent"])
+    def test_user_agent_in_any_case_replaces_api_medics(
+        self, wire: dict[str, list[Any]], name: str
+    ) -> None:
+        cap = run(
+            "GET", "https://api.example.com/", headers={name: "mine/1.0"}, probe_network=False
+        )
+        sent = b"".join(wire["written"])
+        assert sent.lower().count(b"\r\nuser-agent: ") == 1
+        assert f"\r\n{name}: mine/1.0\r\n".encode() in sent
+        assert cap.headers == {name: "mine/1.0"}
+
+    def test_request_without_framing_headers_is_sent_as_before(
+        self, wire: dict[str, list[Any]]
+    ) -> None:
+        cap = run(
+            "POST",
+            "https://api.example.com/users",
+            headers={"Content-Type": "text/plain"},
+            body=_HELLO,
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert b"".join(wire["written"]) == (
+            b"POST /users HTTP/1.1\r\nHost: api.example.com\r\n"
+            + _httpx_defaults()
+            + b"Content-Type: text/plain\r\nUser-Agent: "
+            + DEFAULT_USER_AGENT.encode()
+            + b"\r\nContent-Length: 11\r\n\r\nhello world"
+        )
