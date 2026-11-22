@@ -292,6 +292,26 @@ class TestRawHeaders:
         cookies = [v for k, v in cap.response.raw_headers if k.lower() == "set-cookie"]
         assert cookies == ["a=1", "b=2"]
 
+    def test_several_set_cookie_headers_get_no_duplicate_finding(self) -> None:
+        # A server sets each cookie in a Set-Cookie header of its own, so two
+        # with different values are no conflict. They got the finding.
+        from api_medic.core.engine import analyze
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers=[("Set-Cookie", "a=1"), ("Set-Cookie", "b=2")])
+
+        cap = run(
+            "GET",
+            "https://example.com/",
+            transport=_transport(handler),
+            probe_network=False,
+        )
+        assert cap.response is not None
+        assert cap.response.raw_headers is not None
+        cookies = [v for k, v in cap.response.raw_headers if k.lower() == "set-cookie"]
+        assert cookies == ["a=1", "b=2"]
+        assert "http.headers.duplicate" not in [f.id for f in analyze(cap).findings]
+
 
 class TestContentEncodingStripping:
     """httpx auto-decompresses gzip/deflate/br on response.content. The

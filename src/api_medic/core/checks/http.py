@@ -71,6 +71,31 @@ def cors_misconfigured(captured: CapturedRequest) -> Finding | None:
     )
 
 
+# The response fields headers_duplicate leaves out, in lowercase; its
+# docstring says why. Transfer-Encoding is a list too, but h11 refuses a
+# response with two, so it never reaches the check.
+_REPEATABLE_IN_A_RESPONSE = frozenset(
+    {
+        "set-cookie",
+        "accept-ranges",
+        "allow",
+        "authentication-info",
+        "cache-control",
+        "connection",
+        "content-encoding",
+        "content-language",
+        "link",
+        "proxy-authenticate",
+        "proxy-authentication-info",
+        "trailer",
+        "upgrade",
+        "vary",
+        "via",
+        "www-authenticate",
+    }
+)
+
+
 @register
 def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     """Same header appears multiple times with conflicting values.
@@ -79,6 +104,16 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     `headers` would have already collapsed duplicates. The Runner fills the
     response's on a live run, and parse_curl the request's for a curl
     command; HAR input has neither, so this check no-ops on it.
+
+    A response's headers named in `_REPEATABLE_IN_A_RESPONSE` are left out.
+    A server sends each cookie in a Set-Cookie header of its own, and they
+    can't be joined into one; the other fields there are defined as
+    comma-separated lists, which a server may send on several lines and a
+    recipient may join (RFC 9110, section 5.3). The set holds only fields
+    checked against RFC 9110, RFC 9111 (Cache-Control) and RFC 8288 (Link),
+    so any other response header repeated with different values is named.
+    The request side leaves nothing out: a live run refuses a name given
+    twice.
     """
     request_dups = _find_duplicates(captured.raw_headers)
     response_dups = (
@@ -89,7 +124,8 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     for name, values in request_dups.items():
         findings.append({"location": "request", "name": name, "values": values})
     for name, values in response_dups.items():
-        findings.append({"location": "response", "name": name, "values": values})
+        if name.lower() not in _REPEATABLE_IN_A_RESPONSE:
+            findings.append({"location": "response", "name": name, "values": values})
 
     if not findings:
         return None
