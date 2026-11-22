@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -224,6 +225,9 @@ class TestHarTimingTotalPastTheFloatMaximum:
 # any of them in its output came from the input.
 _COMMONMARK = MarkdownIt("commonmark").enable(["table", "strikethrough"])
 _IN_BACKTICKS = "`![t](https://evil.example/p.png)`"
+# Each Report beside the markdown both renderers write for it;
+# frontend/src/lib/markdown.test.ts renders them with markdown.ts.
+_SHARED_CASES = sorted((Path(__file__).parent.parent / "fixtures" / "markdown").glob("*.json"))
 
 
 def _markup(md: str) -> list[str]:
@@ -477,6 +481,14 @@ class TestMarkdownShowsTheInputAsText:
         assert _markup(out) == []
         assert "[WARNING] x [a](https://evil.example/)" in _headings(out)
         assert key in _code_spans(out)
+
+    @pytest.mark.parametrize("case", _SHARED_CASES, ids=lambda p: p.stem)
+    def test_shared_markdown_case(self, case: Path) -> None:
+        # UTF-8 on every OS: each .md holds an em dash and an arrow.
+        report = Report.model_validate_json(case.read_text(encoding="utf-8"))
+        expected = case.with_suffix(".md").read_text(encoding="utf-8")
+        assert render_markdown(report) == expected
+        assert _markup(expected) == []
 
     def test_long_input_renders_quickly(self) -> None:
         # The escaping runs regexes on the input, which can be long. The
