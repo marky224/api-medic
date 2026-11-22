@@ -1105,6 +1105,7 @@ _BRACKETS = "square brackets are only allowed around an IPv6 address"
 _IDNA = "is not a valid internationalized hostname"
 _DNS = "can't be looked up in DNS"
 _ASCII_HEADERS = "Header names and values must be ASCII"
+_NOT_A_LENGTH = "Content-Length must be one whole number of bytes, 1 to 20 digits"
 
 
 class TestRunRejectsMalformedInput:
@@ -1205,6 +1206,27 @@ class TestRunRejectsMalformedInput:
             ({"headers": {"X-A": " a"}}, "Header values can't start or end with a space or tab"),
             ({"headers": {"Bad Name": "v"}}, "Header names can only hold letters, digits and"),
             ({"method": "GE T"}, "Method can only hold letters, digits and"),
+            # h11 raised while writing a body the Content-Length didn't match,
+            # and this route answered 500 "Internal error."; it refused the
+            # rest once the connection was open: a report with no response.
+            (
+                {"headers": {"Content-Length": "5"}, "body": "hello world"},
+                "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+            ),
+            ({"headers": {"Content-Length": "abc"}}, _NOT_A_LENGTH),
+            # Past int()'s 4,300-digit limit, which would raise ValueError.
+            ({"headers": {"Content-Length": "1" * 4301}}, _NOT_A_LENGTH),
+            (
+                {"headers": {"Transfer-Encoding": "gzip"}},
+                "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+            ),
+            (
+                {
+                    "headers": {"Content-Length": "11", "Transfer-Encoding": "chunked"},
+                    "body": "hello world",
+                },
+                "Content-Length and Transfer-Encoding can't be sent together",
+            ),
         ],
     )
     def test_request_httpx_cannot_send(

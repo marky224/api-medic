@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shlex
 import socket
 import sys
 from collections.abc import Callable
@@ -509,6 +510,59 @@ class TestInputThatCantMakeAReport:
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
         assert "Method can only hold letters, digits and" in _flat(result.stderr)
+
+    @pytest.mark.parametrize(
+        ("headers", "message"),
+        [
+            (
+                ["Content-Length: 5"],
+                "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+            ),
+            (
+                ["Content-Length: abc"],
+                "Content-Length must be one whole number of bytes, 1 to 20 digits "
+                "(header 'Content-Length').",
+            ),
+            (
+                ["Transfer-Encoding: gzip"],
+                "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+            ),
+            (
+                ["Content-Length: 11", "Transfer-Encoding: chunked"],
+                "Content-Length and Transfer-Encoding can't be sent together; "
+                "leave Content-Length out.",
+            ),
+        ],
+        ids=["length-shorter", "length-not-a-number", "coding-gzip", "both"],
+    )
+    @pytest.mark.parametrize("entry", ["run", "from-curl"])
+    def test_framing_h11_cant_send_is_refused_before_any_lookup(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        headers: list[str],
+        message: str,
+        entry: str,
+    ) -> None:
+        # A Content-Length the body didn't match made h11 raise while writing
+        # the body: a traceback and exit 1. The others gave a report with no
+        # response and exit 0.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        url = "https://api.example.com/"
+        options = [arg for header in headers for arg in ("-H", header)]
+        if entry == "run":
+            args = ["run", url, *options, "-d", "hello world"]
+        else:
+            args = ["from-curl", shlex.join(["curl", url, *options, "-d", "hello world"])]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2, (result.exit_code, repr(result.exception))
+        assert isinstance(result.exception, SystemExit)
+        assert f"Invalid value: {_flat(message)}" in _flat(result.stderr)
 
 
 # JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error

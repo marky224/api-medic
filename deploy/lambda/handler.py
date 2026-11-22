@@ -14,9 +14,10 @@ connection (the TLS probe, the request and each hop) is pinned: it
 resolves the name once and connects only to an address that passed the
 same check, so a DNS answer that changes after the guard ran can't
 point it somewhere else. A request that can't be sent at all (a
-malformed URL, a non-ASCII header, a non-string body) gets a 400 before
-any DNS lookup. A response whose status is outside 100-599, which a
-Report can't hold, gets a 400 after the exchange.
+malformed URL, a non-ASCII header, a non-string body, a Content-Length
+the body doesn't match, a Transfer-Encoding other than chunked) gets a
+400 before any DNS lookup. A response whose status is outside 100-599,
+which a Report can't hold, gets a 400 after the exchange.
 A 10s per-request timeout caps cost on slow targets. API Gateway
 throttling and Lambda reserved concurrency provide the broader
 abuse / cost ceiling — see deploy/template.yaml.
