@@ -557,8 +557,21 @@ class TestInputThatCantMakeAReport:
                 "Content-Length and Transfer-Encoding can't be sent together; "
                 "leave Content-Length out.",
             ),
+            # The rules run in one order, whatever the order of the headers:
+            # this one got the Transfer-Encoding message.
+            (
+                ["Transfer-Encoding: gzip", "Content-Length: abc"],
+                "Content-Length must be one whole number of bytes, 1 to 20 digits "
+                "(header 'Content-Length').",
+            ),
         ],
-        ids=["length-shorter", "length-not-a-number", "coding-gzip", "both"],
+        ids=[
+            "length-shorter",
+            "length-not-a-number",
+            "coding-gzip",
+            "both",
+            "bad-coding-then-bad-length",
+        ],
     )
     @pytest.mark.parametrize("entry", ["run", "from-curl"])
     def test_framing_h11_cant_send_is_refused_before_any_lookup(
@@ -967,6 +980,45 @@ class TestFromCurl:
             ]
         }
 
+    @pytest.mark.parametrize(
+        ("headers", "shown", "values"),
+        [
+            (["X-A: 1", "x-a: 2"], {"X-A": "1", "x-a": "2"}, ("X-A", ["1", "2"])),
+            (["X-A: 1", "x-a: 2", "X-A: 3"], {"X-A": "3", "x-a": "2"}, ("X-A", ["1", "2", "3"])),
+            (["X-A: 1", "x-a: 1"], {"X-A": "1", "x-a": "1"}, None),
+            (
+                ["Authorization: Bearer one", "authorization: Bearer two"],
+                {"Authorization": "Bearer one", "authorization": "Bearer two"},
+                ("Authorization", ["Bearer one", "Bearer two"]),
+            ),
+        ],
+        ids=["two-cases", "two-cases-and-a-repeat", "two-cases-same-value", "authorization"],
+    )
+    def test_no_execute_shows_each_spelling_of_a_name_in_two_cases(
+        self,
+        runner: CliRunner,
+        headers: list[str],
+        shown: dict[str, str],
+        values: tuple[str, list[str]] | None,
+    ) -> None:
+        # The report holds a header for each spelling of a name, with the
+        # last value given in that spelling. The finding puts the spellings
+        # under the first one and lists each value that differs.
+        options = [arg for header in headers for arg in ("-H", header)]
+        curl = shlex.join(["curl", "https://api.example.com/", *options])
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        report = json.loads(result.stdout)
+        assert report["request"]["headers"] == shown
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        if values is None:
+            assert duplicates == []
+        else:
+            name, listed = values
+            assert [f["evidence"] for f in duplicates] == [
+                {"duplicates": [{"location": "request", "name": name, "values": listed}]}
+            ]
+
     def test_no_execute_reports_no_duplicate_for_the_same_value_twice(
         self, runner: CliRunner
     ) -> None:
@@ -977,6 +1029,34 @@ class TestFromCurl:
         assert result.exit_code == 0, result.stderr
         findings = json.loads(result.stdout)["findings"]
         assert [f for f in findings if f["id"] == "http.headers.duplicate"] == []
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("Authorization: Bearer one", "Authorization: Bearer two"),
+            ("Host: a.example", "Host: b.example"),
+            ("Content-Length: 11", "Content-Length: 5"),
+        ],
+        ids=["authorization", "host", "content-length"],
+    )
+    def test_no_execute_duplicate_finding_doesnt_say_to_join_a_single_value_header(
+        self, runner: CliRunner, first: str, second: str
+    ) -> None:
+        # The finding called the header sent, for a command that wasn't run,
+        # and said to join the values with a comma.
+        curl = shlex.join(["curl", "https://api.example.com/", "-H", first, "-H", second])
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        findings = json.loads(result.stdout)["findings"]
+        duplicates = [f for f in findings if f["id"] == "http.headers.duplicate"]
+        assert len(duplicates) == 1
+        assert duplicates[0]["title"] == "Header repeated with different values"
+        assert duplicates[0]["suggested_fix"] == (
+            "Send each header exactly once. Join several values with commas only where "
+            "the header is defined as a comma-separated list (RFC 9110, section 5.3), as "
+            "Accept and Cache-Control are; a header that takes one value, such as "
+            "Authorization, Host or Content-Length, can keep only one."
+        )
 
     @pytest.mark.parametrize(
         "curl",

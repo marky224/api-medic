@@ -76,8 +76,9 @@ class CapturedRequest(BaseModel):
     leaves it None, as a HAR does.
 
     `redirect_chain` is the list of URLs visited starting from the
-    user-supplied URL and ending at the final one. None when not captured
-    (HAR/curl don't carry it; Runner populates in 3b-F).
+    user-supplied URL and ending at the final one. The Runner fills it on
+    a live run whose response came after at least one redirect. It is None
+    otherwise: with no redirect or no response, and for HAR and curl input.
     """
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

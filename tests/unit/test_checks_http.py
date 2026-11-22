@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from api_medic.core.captured import CapturedRequest, CapturedResponse
 from api_medic.core.checks.http import (
     REDIRECT_TOO_MANY_THRESHOLD,
@@ -97,9 +99,33 @@ class TestCorsMisconfigured:
         assert finding.evidence["allow_origin"] is None
 
 
+# The response fields RFC 9110, RFC 9111 (Cache-Control) and RFC 8288 (Link)
+# define as comma-separated lists, each with two values a server may send on
+# two lines.
+_LIST_VALUED_RESPONSE_HEADERS = [
+    ("Accept-Ranges", "bytes", "none"),
+    ("Allow", "GET", "HEAD"),
+    ("Authentication-Info", 'nextnonce="abc"', "nc=00000001"),
+    ("Cache-Control", "no-store", "max-age=3600"),
+    ("Connection", "keep-alive", "Upgrade"),
+    ("Content-Encoding", "gzip", "br"),
+    ("Content-Language", "en", "de"),
+    ("Link", '</page/2>; rel="next"', '</page/9>; rel="last"'),
+    ("Proxy-Authenticate", 'Basic realm="proxy"', "Negotiate"),
+    ("Proxy-Authentication-Info", 'nextnonce="abc"', "nc=00000001"),
+    ("Trailer", "Expires", "ETag"),
+    ("Upgrade", "h2c", "websocket"),
+    ("Vary", "Accept", "Accept-Encoding"),
+    ("Via", "1.1 edge", "1.1 origin"),
+    ("WWW-Authenticate", 'Basic realm="api"', "Negotiate"),
+]
+
+
 class TestHeadersDuplicate:
     def test_no_raw_headers_skipped(self):
-        # Phase 3a runner doesn't populate raw_headers — check should no-op.
+        # Nothing filled raw_headers: the Runner fills a response's on a live
+        # run and parse_curl a request's, and a HAR has neither. The check
+        # should no-op.
         cap = _cap(response=_resp())
         assert headers_duplicate(cap) is None
 
@@ -115,7 +141,7 @@ class TestHeadersDuplicate:
         assert headers_duplicate(cap) is None
 
     def test_same_value_duplicates_not_flagged(self):
-        # Two Set-Cookie with the same value is harmless — don't surface.
+        # The same value twice is harmless: don't surface it.
         cap = _cap(
             response=_resp(
                 raw_headers=[
@@ -130,8 +156,8 @@ class TestHeadersDuplicate:
         cap = _cap(
             response=_resp(
                 raw_headers=[
-                    ("Cache-Control", "no-store"),
-                    ("Cache-Control", "max-age=3600"),
+                    ("Content-Type", "application/json"),
+                    ("Content-Type", "text/html"),
                 ]
             )
         )
@@ -143,8 +169,8 @@ class TestHeadersDuplicate:
         assert ev is not None
         dup = ev["duplicates"][0]
         assert dup["location"] == "response"
-        assert dup["name"] == "Cache-Control"
-        assert dup["values"] == ["no-store", "max-age=3600"]
+        assert dup["name"] == "Content-Type"
+        assert dup["values"] == ["application/json", "text/html"]
 
     def test_request_dup_flagged(self):
         cap = _cap(
@@ -170,6 +196,151 @@ class TestHeadersDuplicate:
         )
         finding = headers_duplicate(cap)
         assert finding is not None
+
+    @pytest.mark.parametrize(
+        "raw_headers",
+        [
+            [("Set-Cookie", "a=1"), ("Set-Cookie", "b=2")],
+            [("Set-Cookie", "a=1"), ("set-cookie", "b=2")],
+            [("Set-Cookie", "a=1"), ("Set-Cookie", "b=2"), ("Set-Cookie", "c=3")],
+        ],
+        ids=["two", "two-cases", "three"],
+    )
+    def test_set_cookie_response_headers_are_not_flagged(
+        self, raw_headers: list[tuple[str, str]]
+    ) -> None:
+        # A server sets each cookie in a Set-Cookie header of its own, and
+        # they can't be joined into one (RFC 9110, section 5.3).
+        cap = _cap(response=_resp(raw_headers=raw_headers))
+        assert headers_duplicate(cap) is None
+
+    def test_set_cookie_is_left_out_of_another_headers_finding(self) -> None:
+        cap = _cap(
+            response=_resp(
+                raw_headers=[
+                    ("Set-Cookie", "a=1"),
+                    ("Content-Type", "application/json"),
+                    ("Set-Cookie", "b=2"),
+                    ("Content-Type", "text/html"),
+                ]
+            )
+        )
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.evidence == {
+            "duplicates": [
+                {
+                    "location": "response",
+                    "name": "Content-Type",
+                    "values": ["application/json", "text/html"],
+                }
+            ]
+        }
+        assert "multiple Content-Type headers" in finding.explanation
+
+    @pytest.mark.parametrize(
+        ("name", "first", "second"),
+        _LIST_VALUED_RESPONSE_HEADERS,
+        ids=[name for name, _, _ in _LIST_VALUED_RESPONSE_HEADERS],
+    )
+    def test_list_valued_response_headers_are_not_flagged(
+        self, name: str, first: str, second: str
+    ) -> None:
+        # A server may send a comma-separated list on several lines, and a
+        # recipient may join them (RFC 9110, section 5.3).
+        cap = _cap(response=_resp(raw_headers=[(name, first), (name, second)]))
+        assert headers_duplicate(cap) is None
+
+    def test_set_cookie_given_twice_in_a_request_is_still_flagged(self) -> None:
+        # Only a response may hold several: a live run refuses a request
+        # that gives a name twice.
+        cap = _cap(raw_request_headers=[("Set-Cookie", "a=1"), ("Set-Cookie", "b=2")])
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.evidence == {
+            "duplicates": [{"location": "request", "name": "Set-Cookie", "values": ["a=1", "b=2"]}]
+        }
+
+    def test_list_valued_request_header_is_still_flagged(self) -> None:
+        cap = _cap(raw_request_headers=[("Accept", "text/html"), ("Accept", "application/json")])
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.evidence == {
+            "duplicates": [
+                {
+                    "location": "request",
+                    "name": "Accept",
+                    "values": ["text/html", "application/json"],
+                }
+            ]
+        }
+
+    @pytest.mark.parametrize(
+        ("name", "first", "second"),
+        [
+            ("Content-Type", "application/json", "text/html"),
+            ("Access-Control-Allow-Origin", "https://a.example", "https://b.example"),
+            ("X-Custom", "foo", "bar"),
+        ],
+        ids=["Content-Type", "Access-Control-Allow-Origin", "X-Custom"],
+    )
+    def test_other_repeated_response_headers_are_still_flagged(
+        self, name: str, first: str, second: str
+    ) -> None:
+        # A header that takes one value, or one not checked against the
+        # RFCs, is still named.
+        cap = _cap(response=_resp(raw_headers=[(name, first), (name, second)]))
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.evidence == {
+            "duplicates": [{"location": "response", "name": name, "values": [first, second]}]
+        }
+
+    @pytest.mark.parametrize(
+        ("location", "name", "first", "second"),
+        [
+            ("request", "Authorization", "Bearer one", "Bearer two"),
+            ("request", "Host", "a.example", "b.example"),
+            ("request", "Content-Length", "11", "5"),
+            ("request", "Accept", "text/html", "application/json"),
+            ("response", "Content-Type", "application/json", "text/html"),
+            ("response", "ETag", '"a"', '"b"'),
+        ],
+        ids=[
+            "request-Authorization",
+            "request-Host",
+            "request-Content-Length",
+            "request-Accept",
+            "response-Content-Type",
+            "response-ETag",
+        ],
+    )
+    def test_wording_is_right_for_a_single_value_header_and_for_a_list(
+        self, location: str, name: str, first: str, second: str
+    ) -> None:
+        # One wording for both sides and every header. It said the header
+        # was sent, which a curl command's isn't, and to join the values
+        # with a comma, which is wrong for a header that takes one value.
+        raw = [(name, first), (name, second)]
+        if location == "request":
+            cap = _cap(raw_request_headers=raw)
+        else:
+            cap = _cap(response=_resp(raw_headers=raw))
+        finding = headers_duplicate(cap)
+        assert finding is not None
+        assert finding.title == "Header repeated with different values"
+        assert finding.explanation == (
+            f"The {location} contains multiple {name} headers with different values. "
+            "A recipient may keep the first, keep the last, join them with commas or "
+            "refuse the message, so two hops can read it differently."
+        )
+        assert finding.suggested_fix == (
+            "Send each header exactly once. Join several values with commas only where "
+            "the header is defined as a comma-separated list (RFC 9110, section 5.3), as "
+            "Accept and Cache-Control are; a header that takes one value, such as "
+            "Authorization, Host or Content-Length, can keep only one."
+        )
+        assert finding.severity == "warning"
 
 
 class TestRedirectLoop:

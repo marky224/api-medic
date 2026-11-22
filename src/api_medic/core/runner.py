@@ -294,10 +294,12 @@ def validate_request(
 def _validate_framing(headers: list[tuple[str, str]], body_size: int) -> None:
     """validate_request's rules for Content-Length and Transfer-Encoding, on
     headers that passed its character rules (so they are ASCII), for a body
-    of `body_size` bytes. The digits are counted before int() reads them:
-    int() raises ValueError past 4,300 digits."""
+    of `body_size` bytes. They are checked in one order, whatever the order
+    of the headers: each Content-Length's form, each Transfer-Encoding's
+    value, the two given together, then the length against the body. The
+    digits are counted before int() reads them: int() raises ValueError
+    past 4,300 digits."""
     lengths: list[tuple[str, int]] = []
-    coded = False
     for name, value in headers:
         if name.lower() == "content-length":
             parts = {part.strip(" \t") for part in value.split(",")}
@@ -308,7 +310,9 @@ def _validate_framing(headers: list[tuple[str, str]], body_size: int) -> None:
                     f"(header {name!r})."
                 )
             lengths.append((name, int(number)))
-        elif name.lower() == "transfer-encoding":
+    coded = False
+    for name, value in headers:
+        if name.lower() == "transfer-encoding":
             if value.lower() != "chunked":
                 raise InvalidRequestError(
                     f"Transfer-Encoding can only be chunked (header {name!r})."

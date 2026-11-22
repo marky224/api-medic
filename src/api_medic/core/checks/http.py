@@ -71,14 +71,49 @@ def cors_misconfigured(captured: CapturedRequest) -> Finding | None:
     )
 
 
+# The response fields headers_duplicate leaves out, in lowercase; its
+# docstring says why. Transfer-Encoding is a list too, but h11 refuses a
+# response with two, so it never reaches the check.
+_REPEATABLE_IN_A_RESPONSE = frozenset(
+    {
+        "set-cookie",
+        "accept-ranges",
+        "allow",
+        "authentication-info",
+        "cache-control",
+        "connection",
+        "content-encoding",
+        "content-language",
+        "link",
+        "proxy-authenticate",
+        "proxy-authentication-info",
+        "trailer",
+        "upgrade",
+        "vary",
+        "via",
+        "www-authenticate",
+    }
+)
+
+
 @register
 def headers_duplicate(captured: CapturedRequest) -> Finding | None:
-    """Same header appears multiple times with conflicting values.
+    """Same header appears multiple times with different values.
 
     Needs `raw_headers` populated on the request or response — the dict-shaped
     `headers` would have already collapsed duplicates. The Runner fills the
     response's on a live run, and parse_curl the request's for a curl
     command; HAR input has neither, so this check no-ops on it.
+
+    A response's headers named in `_REPEATABLE_IN_A_RESPONSE` are left out.
+    A server sends each cookie in a Set-Cookie header of its own, and they
+    can't be joined into one; the other fields there are defined as
+    comma-separated lists, which a server may send on several lines and a
+    recipient may join (RFC 9110, section 5.3). The set holds only fields
+    checked against RFC 9110, RFC 9111 (Cache-Control) and RFC 8288 (Link),
+    so any other response header repeated with different values is named.
+    The request side leaves nothing out: a live run refuses a name given
+    twice.
     """
     request_dups = _find_duplicates(captured.raw_headers)
     response_dups = (
@@ -89,7 +124,8 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     for name, values in request_dups.items():
         findings.append({"location": "request", "name": name, "values": values})
     for name, values in response_dups.items():
-        findings.append({"location": "response", "name": name, "values": values})
+        if name.lower() not in _REPEATABLE_IN_A_RESPONSE:
+            findings.append({"location": "response", "name": name, "values": values})
 
     if not findings:
         return None
@@ -98,17 +134,20 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     return Finding(
         id="http.headers.duplicate",
         severity="warning",
-        title="Header sent more than once with conflicting values",
+        title="Header repeated with different values",
         explanation=(
             f"The {first['location']} contains multiple {first['name']} "
-            "headers with different values. Different proxies and servers "
-            "pick different ones — usually first or last — which leads to "
-            "inconsistent behaviour across hops."
+            "headers with different values. A recipient may keep the first, "
+            "keep the last, join them with commas or refuse the message, so "
+            "two hops can read it differently."
         ),
         evidence={"duplicates": findings},
         suggested_fix=(
-            "Send each header exactly once. If multiple values are intended, "
-            "join them with a comma per RFC 9110."
+            "Send each header exactly once. Join several values with commas "
+            "only where the header is defined as a comma-separated list "
+            "(RFC 9110, section 5.3), as Accept and Cache-Control are; a "
+            "header that takes one value, such as Authorization, Host or "
+            "Content-Length, can keep only one."
         ),
     )
 
