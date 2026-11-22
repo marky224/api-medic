@@ -283,6 +283,26 @@ class TestAnalyzeEndpoint:
         assert report["request"]["method"] == "GET"
         assert report["response"] is None
 
+    @pytest.mark.parametrize(
+        ("second", "shown"),
+        [("X-A: 2", {"X-A": "2"}), ("x-a: 2", {"X-A": "1", "x-a": "2"})],
+        ids=["one-spelling", "two-cases"],
+    )
+    def test_curl_header_given_twice_gets_the_duplicate_finding(
+        self, client: TestClient, second: str, shown: dict[str, str]
+    ) -> None:
+        # The report shows the last value given in each spelling; the
+        # finding names both values.
+        curl = f"curl https://api.example.com/ -H 'X-A: 1' -H '{second}'"
+        r = client.post("/api/analyze", json={"kind": "curl", "curl": curl})
+        assert r.status_code == 200
+        report = r.json()
+        assert report["request"]["headers"] == shown
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        assert [f["evidence"] for f in duplicates] == [
+            {"duplicates": [{"location": "request", "name": "X-A", "values": ["1", "2"]}]}
+        ]
+
     def test_curl_over_the_limit_returns_400(self, client: TestClient) -> None:
         # One character over parser.MAX_CURL_CHARS (50,000).
         curl = "curl https://api.example.com/ -d '" + "a" * 49_966 + "'"

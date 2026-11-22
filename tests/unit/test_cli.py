@@ -980,6 +980,45 @@ class TestFromCurl:
             ]
         }
 
+    @pytest.mark.parametrize(
+        ("headers", "shown", "values"),
+        [
+            (["X-A: 1", "x-a: 2"], {"X-A": "1", "x-a": "2"}, ("X-A", ["1", "2"])),
+            (["X-A: 1", "x-a: 2", "X-A: 3"], {"X-A": "3", "x-a": "2"}, ("X-A", ["1", "2", "3"])),
+            (["X-A: 1", "x-a: 1"], {"X-A": "1", "x-a": "1"}, None),
+            (
+                ["Authorization: Bearer one", "authorization: Bearer two"],
+                {"Authorization": "Bearer one", "authorization": "Bearer two"},
+                ("Authorization", ["Bearer one", "Bearer two"]),
+            ),
+        ],
+        ids=["two-cases", "two-cases-and-a-repeat", "two-cases-same-value", "authorization"],
+    )
+    def test_no_execute_shows_each_spelling_of_a_name_in_two_cases(
+        self,
+        runner: CliRunner,
+        headers: list[str],
+        shown: dict[str, str],
+        values: tuple[str, list[str]] | None,
+    ) -> None:
+        # The report holds a header for each spelling of a name, with the
+        # last value given in that spelling. The finding puts the spellings
+        # under the first one and lists each value that differs.
+        options = [arg for header in headers for arg in ("-H", header)]
+        curl = shlex.join(["curl", "https://api.example.com/", *options])
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        report = json.loads(result.stdout)
+        assert report["request"]["headers"] == shown
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        if values is None:
+            assert duplicates == []
+        else:
+            name, listed = values
+            assert [f["evidence"] for f in duplicates] == [
+                {"duplicates": [{"location": "request", "name": name, "values": listed}]}
+            ]
+
     def test_no_execute_reports_no_duplicate_for_the_same_value_twice(
         self, runner: CliRunner
     ) -> None:

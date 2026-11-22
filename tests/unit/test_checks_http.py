@@ -123,7 +123,9 @@ _LIST_VALUED_RESPONSE_HEADERS = [
 
 class TestHeadersDuplicate:
     def test_no_raw_headers_skipped(self):
-        # Phase 3a runner doesn't populate raw_headers — check should no-op.
+        # Nothing filled raw_headers: the Runner fills a response's on a live
+        # run and parse_curl a request's, and a HAR has neither. The check
+        # should no-op.
         cap = _cap(response=_resp())
         assert headers_duplicate(cap) is None
 

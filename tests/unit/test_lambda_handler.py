@@ -177,14 +177,22 @@ class TestAnalyzeCurl:
         assert report["request"]["method"] == "GET"
         assert report["response"] is None  # curl parser doesn't execute
 
-    def test_header_given_twice_gets_the_duplicate_finding(self) -> None:
-        # The report shows the last value, as before; the finding names both.
-        curl = "curl https://api.example.com/ -H 'X-A: 1' -H 'X-A: 2'"
+    @pytest.mark.parametrize(
+        ("second", "shown"),
+        [("X-A: 2", {"X-A": "2"}), ("x-a: 2", {"X-A": "1", "x-a": "2"})],
+        ids=["one-spelling", "two-cases"],
+    )
+    def test_header_given_twice_gets_the_duplicate_finding(
+        self, second: str, shown: dict[str, str]
+    ) -> None:
+        # The report shows the last value given in each spelling, as before;
+        # the finding names both values.
+        curl = f"curl https://api.example.com/ -H 'X-A: 1' -H '{second}'"
         body = json.dumps({"kind": "curl", "curl": curl})
         result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
         assert result["statusCode"] == 200
         report = json.loads(result["body"])
-        assert report["request"]["headers"] == {"X-A": "2"}
+        assert report["request"]["headers"] == shown
         duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
         assert len(duplicates) == 1
         duplicate = duplicates[0]
