@@ -19,7 +19,7 @@ import re
 import socket
 import ssl
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import dns.exception
@@ -62,13 +62,18 @@ _HTTPX_DECODED_ENCODINGS = frozenset({"gzip", "deflate", "br"})
 _TOKEN = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
 _TOKEN_CHARACTERS = "letters, digits and !#$%&'*+-.^_`|~"
 _NOT_IN_A_HEADER_VALUE = re.compile(r"[\x00\n\x0b\x0c\r]")
+# A Content-Length h11 takes: once its comma-separated parts are stripped
+# and merged, one number of 1 to 20 ASCII digits. h11 strips each part with
+# bytes.strip(), which also strips the characters _NOT_IN_A_HEADER_VALUE
+# refuses, but not \x1c-\x1f as str.strip() does.
+_CONTENT_LENGTH = re.compile(r"[0-9]{1,20}")
 
 
 def run(
     method: str,
     url: str,
     *,
-    headers: dict[str, str] | None = None,
+    headers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     body: bytes | str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     follow_redirects: bool = True,
@@ -105,10 +110,20 @@ def run(
     InvalidRequestError (see validate_request) before anything is sent. A
     final response whose status is outside 100-599, which h11 accepts but a
     Report can't hold, raises UnusableResponseError after the exchange.
+
+    `headers` is a mapping or a list of (name, value) pairs, such as a
+    curl command's -H headers; validate_request refuses a name given
+    twice, so the request and its report hold each once. A Host header is
+    sent as given; the connection still goes to the URL's host.
+    api-medic's User-Agent is added unless one is given, in any case. A
+    request that gives a Transfer-Encoding goes without the Content-Length
+    httpx would add beside it, as curl sends it, and h11 chunk-encodes the
+    body.
     """
     validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
-    request_headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    if not any(name.lower() == "user-agent" for name in request_headers):
+        request_headers["User-Agent"] = DEFAULT_USER_AGENT
 
     if body is None:
         body_bytes = b""
@@ -146,12 +161,19 @@ def run(
             transport=transport,
             event_hooks={"request": [_refuse_unsendable_hop]},
         ) as client:
-            response = client.request(
+            request = client.build_request(
                 method=method,
                 url=url,
                 headers=request_headers,
                 content=body_bytes if body_bytes else None,
             )
+            if any(name.lower() == "transfer-encoding" for name in request_headers):
+                # httpx adds a Content-Length for the body beside it, which
+                # RFC 9112 forbids a sender to send; validate_request has
+                # refused one the caller gave. A request without a body has
+                # none, hence pop() and not del.
+                request.headers.pop("Content-Length", None)
+            response = client.send(request)
             if follow_redirects and url_guard is not None:
                 response = _follow_guarded_redirects(client, response, url_guard)
     except (httpx.HTTPError, httpx.InvalidURL, UnicodeError, _UnsendableHopError):
@@ -209,7 +231,7 @@ def run(
 def validate_request(
     method: str,
     url: str,
-    headers: Mapping[str, str] | None = None,
+    headers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     body: bytes | str | None = None,
 ) -> None:
     """Raise InvalidRequestError if httpx can't send this request as given.
@@ -218,16 +240,27 @@ def validate_request(
     header names and values must be ASCII, the method and each header name
     an RFC 9110 token, and each header value free of NUL, LF, VT, FF and CR
     and of a space or tab at either end, which h11, httpx's HTTP/1.1
-    writer, refuses; and a str body must encode as UTF-8. run() calls this
-    first. A caller with work to do before run() (the Lambda's SSRF guard)
-    can call it earlier, so bad input gets a 400 before any DNS lookup.
+    writer, refuses. `headers` is a mapping or a list of (name, value)
+    pairs, and no name may be given twice, compared case-insensitively,
+    even with the same value: of two in one spelling a mapping keeps only
+    the last, and h11 refuses two Host or Transfer-Encoding headers or two
+    different lengths. A str body must encode as UTF-8. Then the body's
+    framing, which h11 also refuses or can't send: a Content-Length must be
+    one whole number of 1 to 20 digits once its comma-separated parts are
+    merged, and match the body's length in bytes, and a Transfer-Encoding
+    must be chunked, in any case. Content-Length and Transfer-Encoding
+    can't both be given, which h11 would send (RFC 9112 forbids it). run()
+    calls this first. A caller with work to do before run() (the Lambda's
+    SSRF guard) can call it earlier, so bad input gets a 400 before any DNS
+    lookup.
     """
     validate_url(url)
     if not method.isascii():
         raise InvalidRequestError(f"Method must be ASCII (got {method!r}).")
     if not _TOKEN.fullmatch(method):
         raise InvalidRequestError(f"Method can only hold {_TOKEN_CHARACTERS} (got {method!r}).")
-    for name, value in (headers or {}).items():
+    pairs = list(headers.items()) if isinstance(headers, Mapping) else list(headers or [])
+    for name, value in pairs:
         if not (name.isascii() and value.isascii()):
             raise InvalidRequestError(f"Header names and values must be ASCII (header {name!r}).")
         if not _TOKEN.fullmatch(name):
@@ -240,13 +273,57 @@ def validate_request(
             raise InvalidRequestError(
                 f"Header values can't start or end with a space or tab (header {name!r})."
             )
+    names: set[str] = set()
+    for name, _ in pairs:
+        if name.lower() in names:
+            raise InvalidRequestError(
+                f"Header {name!r} is given more than once (names are case-insensitive, "
+                "and a repeat with the same value counts too); give it once."
+            )
+        names.add(name.lower())
     if isinstance(body, str):
         try:
-            body.encode("utf-8")
+            body = body.encode("utf-8")
         except UnicodeEncodeError as e:
             raise InvalidRequestError(
                 "Body can't be encoded as UTF-8 (it contains an unpaired surrogate)."
             ) from e
+    _validate_framing(pairs, len(body or b""))
+
+
+def _validate_framing(headers: list[tuple[str, str]], body_size: int) -> None:
+    """validate_request's rules for Content-Length and Transfer-Encoding, on
+    headers that passed its character rules (so they are ASCII), for a body
+    of `body_size` bytes. The digits are counted before int() reads them:
+    int() raises ValueError past 4,300 digits."""
+    lengths: list[tuple[str, int]] = []
+    coded = False
+    for name, value in headers:
+        if name.lower() == "content-length":
+            parts = {part.strip(" \t") for part in value.split(",")}
+            number = parts.pop() if len(parts) == 1 else ""
+            if not _CONTENT_LENGTH.fullmatch(number):
+                raise InvalidRequestError(
+                    "Content-Length must be one whole number of bytes, 1 to 20 digits "
+                    f"(header {name!r})."
+                )
+            lengths.append((name, int(number)))
+        elif name.lower() == "transfer-encoding":
+            if value.lower() != "chunked":
+                raise InvalidRequestError(
+                    f"Transfer-Encoding can only be chunked (header {name!r})."
+                )
+            coded = True
+    if lengths and coded:
+        raise InvalidRequestError(
+            "Content-Length and Transfer-Encoding can't be sent together; leave Content-Length out."
+        )
+    for name, length in lengths:
+        if length != body_size:
+            raise InvalidRequestError(
+                f"Content-Length is {length} but the body is {body_size} "
+                f"byte{'' if body_size == 1 else 's'} (header {name!r})."
+            )
 
 
 class _UnsendableHopError(Exception):

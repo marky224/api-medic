@@ -177,6 +177,21 @@ class TestAnalyzeCurl:
         assert report["request"]["method"] == "GET"
         assert report["response"] is None  # curl parser doesn't execute
 
+    def test_header_given_twice_gets_the_duplicate_finding(self) -> None:
+        # The report shows the last value, as before; the finding names both.
+        curl = "curl https://api.example.com/ -H 'X-A: 1' -H 'X-A: 2'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 200
+        report = json.loads(result["body"])
+        assert report["request"]["headers"] == {"X-A": "2"}
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        assert len(duplicates) == 1
+        duplicate = duplicates[0]
+        assert duplicate["evidence"]["duplicates"] == [
+            {"location": "request", "name": "X-A", "values": ["1", "2"]}
+        ]
+
     def test_missing_curl_field_400(self):
         result = handler.lambda_handler(
             _event("POST", "/api/analyze", json.dumps({"kind": "curl"})), None
@@ -1084,6 +1099,27 @@ class TestRunConnectionPinning:
         assert result["statusCode"] == 200
         assert net["tcp"] == [("93.184.216.34", 443), (v6, 8443)]
 
+    @pytest.mark.parametrize("host", ["other.example", ""], ids=["other-host", "empty"])
+    def test_host_header_is_sent_as_given_to_the_checked_address(
+        self, net: dict[str, Any], host: str
+    ) -> None:
+        """A Host header goes as given; the connection still goes to the
+        address the guard checked for the URL's host, with its name as SNI."""
+        net["answers"] = {"api.example.com": ["93.184.216.34"]}
+        net["responses"] = [_OK]
+        body = json.dumps(
+            {"method": "GET", "url": "https://api.example.com/", "headers": {"Host": host}}
+        )
+
+        result = handler.lambda_handler(_event("POST", "/api/run", body), None)
+
+        assert result["statusCode"] == 200
+        assert net["tcp"] == [("93.184.216.34", 443)]
+        assert net["sni"] == ["api.example.com"]
+        sent = b"".join(net["sent"])
+        assert sent.count(b"\r\nHost:") == 1
+        assert f"\r\nHost: {host}\r\n".encode() in sent
+
     def test_proxy_environment_is_ignored(
         self, net: dict[str, Any], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1105,6 +1141,7 @@ _BRACKETS = "square brackets are only allowed around an IPv6 address"
 _IDNA = "is not a valid internationalized hostname"
 _DNS = "can't be looked up in DNS"
 _ASCII_HEADERS = "Header names and values must be ASCII"
+_NOT_A_LENGTH = "Content-Length must be one whole number of bytes, 1 to 20 digits"
 
 
 class TestRunRejectsMalformedInput:
@@ -1205,6 +1242,33 @@ class TestRunRejectsMalformedInput:
             ({"headers": {"X-A": " a"}}, "Header values can't start or end with a space or tab"),
             ({"headers": {"Bad Name": "v"}}, "Header names can only hold letters, digits and"),
             ({"method": "GE T"}, "Method can only hold letters, digits and"),
+            # h11 raised while writing a body the Content-Length didn't match,
+            # and this route answered 500 "Internal error."; it refused the
+            # rest once the connection was open: a report with no response.
+            (
+                {"headers": {"Content-Length": "5"}, "body": "hello world"},
+                "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+            ),
+            ({"headers": {"Content-Length": "abc"}}, _NOT_A_LENGTH),
+            # Past int()'s 4,300-digit limit, which would raise ValueError.
+            ({"headers": {"Content-Length": "1" * 4301}}, _NOT_A_LENGTH),
+            (
+                {"headers": {"Transfer-Encoding": "gzip"}},
+                "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+            ),
+            (
+                {
+                    "headers": {"Content-Length": "11", "Transfer-Encoding": "chunked"},
+                    "body": "hello world",
+                },
+                "Content-Length and Transfer-Encoding can't be sent together",
+            ),
+            # Both were sent. A JSON object keeps only the last of two keys in
+            # one spelling, so only two cases reach the rule.
+            (
+                {"headers": {"X-A": "1", "x-a": "2"}},
+                "Header 'x-a' is given more than once (names are case-insensitive",
+            ),
         ],
     )
     def test_request_httpx_cannot_send(

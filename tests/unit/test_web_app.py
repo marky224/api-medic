@@ -160,6 +160,33 @@ class TestRunRejectsMalformedInput:
             ({"headers": {"X-A": " a"}}, "Header values can't start or end with a space or tab"),
             ({"headers": {"Bad Name": "v"}}, "Header names can only hold letters, digits and"),
             ({"method": "GE T"}, "Method can only hold letters, digits and"),
+            # h11 raised while writing a body the Content-Length didn't match,
+            # and this route answered 500; it refused the rest once the
+            # connection was open: a report with no response.
+            (
+                {"headers": {"Content-Length": "5"}, "body": "hello world"},
+                "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+            ),
+            ({"headers": {"Content-Length": "abc"}}, "Content-Length must be one whole number"),
+            # Past int()'s 4,300-digit limit, which would raise ValueError.
+            ({"headers": {"Content-Length": "1" * 4301}}, "Content-Length must be one whole"),
+            (
+                {"headers": {"Transfer-Encoding": "gzip"}},
+                "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+            ),
+            (
+                {
+                    "headers": {"Content-Length": "11", "Transfer-Encoding": "chunked"},
+                    "body": "hello world",
+                },
+                "Content-Length and Transfer-Encoding can't be sent together",
+            ),
+            # Both were sent. A JSON object keeps only the last of two keys in
+            # one spelling, so only two cases reach the rule.
+            (
+                {"headers": {"X-A": "1", "x-a": "2"}},
+                "Header 'x-a' is given more than once (names are case-insensitive",
+            ),
         ],
     )
     def test_returns_400(

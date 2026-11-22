@@ -1997,3 +1997,54 @@ class TestUnencodableBodyText:
         assert captured.response is not None
         assert captured.response.body == "\u2603".encode()
         assert parse_curl("curl https://x.com/ -d 'caf\u00e9'").body == "caf\u00e9".encode()
+
+
+class TestCurlHeaderList:
+    """parse_curl keeps the command's headers as a list in raw_headers, so a
+    live from-curl can refuse a name given twice, which `headers` holds once,
+    and a report can show http.headers.duplicate. raw_headers was None."""
+
+    def test_raw_headers_keep_every_header_in_order(self) -> None:
+        cap = parse_curl(
+            _curl_with_args(
+                *("-H", "X-A: 1", "-H", "Cookie: a=1", "-H", "x-a:  2 "),
+                *("-H", "cookie: b=2", "-H", "X-A: 1"),
+            )
+        )
+        assert cap.raw_headers == [("X-A", "1"), ("x-a", "2"), ("X-A", "1"), ("Cookie", "a=1; b=2")]
+        assert cap.headers == {"X-A": "1", "x-a": "2", "Cookie": "a=1; b=2"}
+
+    @pytest.mark.parametrize(
+        "curl",
+        [
+            _CHROME_GET,
+            _CHROME_POST,
+            _curl_with_args("-H", "X-A: 1", "-H", "X-A: 2"),
+            # uncurl keeps a name's spaces, splits a header starting with ":"
+            # at its second colon, and moves $Cookie into the cookies too.
+            _curl_with_args("-H", "Accept :  */*  ", "-H", ":authority: api.example.com"),
+            _curl_with_args("-H", "$Cookie:a=1", "-H", "X-A: b"),
+            _curl_with_args("-b", "a=1", "-H", "X-A: b"),
+            _curl_with_args("-b", "a=1", "-H", "Cookie:"),
+            _curl_with_args("-H=a: b"),
+            _curl_with_args("-H", "X-A: b;"),
+            _curl_with_args("-d", "x"),
+        ],
+        ids=[
+            "chrome-get",
+            "chrome-post",
+            "name-twice",
+            "uncurls-splitting",
+            "dollar-cookie",
+            "cookie-option",
+            "empty-cookie-header",
+            "-H=",
+            "value-ending-in-a-semicolon",
+            "no-headers",
+        ],
+    )
+    def test_raw_headers_hold_what_headers_hold(self, curl: str) -> None:
+        cap = parse_curl(curl)
+        assert cap.raw_headers is not None
+        assert dict(cap.raw_headers) == cap.headers
+        assert len(cap.raw_headers) >= len(cap.headers)

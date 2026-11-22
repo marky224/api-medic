@@ -95,10 +95,13 @@ SPACE_AFTER_BACKSLASH = (
 
 @dataclass(frozen=True)
 class Live:
-    """A GET /api/run sends, and the response the stubbed runner gets."""
+    """A GET /api/run sends, and the response the stubbed runner gets. A
+    body goes as `run -d`, curl's -d (which makes from-curl's request a
+    POST) and /api/run's "body"."""
 
     url: str = "https://api.example.com/"
     headers: dict[str, str] = field(default_factory=dict)
+    body: str | None = None
     status: int = 200
     response_headers: dict[str, str] = field(default_factory=dict)
     content: bytes = b""
@@ -727,6 +730,50 @@ CASES: list[Case] = [
         "run",
         "Header names can only hold letters, digits and !#$%&'*+-.^_`|~ (header 'Bad Name').",
     ),
+    # A body the Content-Length doesn't match made h11 raise while writing
+    # it: a traceback and exit 1 from the CLI, a 500 from both servers. The
+    # stubbed runner never reaches h11, so these rows gave a report.
+    Case(
+        "run-content-length-shorter",
+        Live(headers={"Content-Length": "5"}, body="hello world"),
+        "run",
+        "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+    ),
+    Case(
+        "run-content-length-longer",
+        Live(headers={"Content-Length": "20"}, body="hello world"),
+        "run",
+        "Content-Length is 20 but the body is 11 bytes (header 'Content-Length').",
+    ),
+    # h11 refused these once the connection was open: no response.
+    Case(
+        "run-content-length-not-a-number",
+        Live(headers={"Content-Length": "abc"}, body="hello world"),
+        "run",
+        "Content-Length must be one whole number of bytes, 1 to 20 digits "
+        "(header 'Content-Length').",
+    ),
+    Case(
+        "run-transfer-encoding-gzip",
+        Live(headers={"Transfer-Encoding": "gzip"}, body="hello world"),
+        "run",
+        "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+    ),
+    # h11 sent both.
+    Case(
+        "run-content-length-with-transfer-encoding",
+        Live(headers={"Content-Length": "11", "Transfer-Encoding": "chunked"}, body="hello world"),
+        "run",
+        "Content-Length and Transfer-Encoding can't be sent together; leave Content-Length out.",
+    ),
+    # A name in two cases: both were sent.
+    Case(
+        "run-header-in-two-cases",
+        Live(headers={"X-A": "1", "x-a": "2"}),
+        "run",
+        "Header 'x-a' is given more than once (names are case-insensitive, "
+        "and a repeat with the same value counts too); give it once.",
+    ),
     # Control characters from the input: the CLI printed them as they were,
     # and a terminal reads ESC as the start of a command.
     Case(
@@ -883,13 +930,14 @@ def _send(case: Case, entry: str, tmp_path: Path) -> str | dict[str, str]:
         return (_lambda if entry == "lambda" else _serve)("/api/analyze", body)
     if case.kind == "run":
         live: Live = case.input
+        headers = [arg for k, v in live.headers.items() for arg in ("-H", f"{k}: {v}")]
+        data = [] if live.body is None else ["-d", live.body]
         if entry == "cli":
-            headers = [arg for k, v in live.headers.items() for arg in ("-H", f"{k}: {v}")]
-            return _cli(["run", live.url, *headers])
+            return _cli(["run", live.url, *headers, *data])
         if entry == "cli-from-curl":
-            headers = [arg for k, v in live.headers.items() for arg in ("-H", f"{k}: {v}")]
-            return _cli(["from-curl", shlex.join(["curl", live.url, *headers])])
-        body = json.dumps({"method": "GET", "url": live.url, "headers": live.headers})
+            return _cli(["from-curl", shlex.join(["curl", live.url, *headers, *data])])
+        fields = {} if live.body is None else {"body": live.body}
+        body = json.dumps({"method": "GET", "url": live.url, "headers": live.headers, **fields})
         return (_lambda if entry == "lambda" else _serve)("/api/run", body)
     request: Body = case.input
     return (_lambda if entry == "lambda" else _serve)(request.path, request.text)

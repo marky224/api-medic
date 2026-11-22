@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shlex
 import socket
 import sys
 from collections.abc import Callable
@@ -69,7 +70,8 @@ def fake_runner(monkeypatch):
 
     def fake_run(method: str, url: str, **kwargs: Any) -> CapturedRequest:
         calls.append({"method": method, "url": url, **kwargs})
-        return _captured(method=method.upper(), url=url, headers=kwargs.get("headers") or {})
+        # The CLI passes the headers as a list of (name, value) pairs.
+        return _captured(method=method.upper(), url=url, headers=dict(kwargs.get("headers") or {}))
 
     monkeypatch.setattr(cli_main, "runner_run", fake_run)
     return calls
@@ -187,10 +189,10 @@ class TestRunCommand:
         assert len(fake_runner) == 1
         call = fake_runner[0]
         assert call["method"] == "POST"
-        assert call["headers"] == {
-            "Authorization": "Bearer xyz",
-            "Content-Type": "application/json",
-        }
+        assert call["headers"] == [
+            ("Authorization", "Bearer xyz"),
+            ("Content-Type", "application/json"),
+        ]
         assert call["body"] == '{"name":"alex"}'
 
     def test_run_body_file_reads_path(self, runner, fake_runner, tmp_path):
@@ -232,6 +234,30 @@ class TestRunCommand:
         result = runner.invoke(app, ["run", "https://x.com/", "-H", "no-colon-here"])
         assert result.exit_code != 0
         assert "Header must be" in (result.stderr or result.stdout)
+
+    def test_user_agent_in_lowercase_replaces_api_medics(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The runner added its own User-Agent beside it: both were sent, and
+        # the report showed both.
+        sent: list[list[str]] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            sent.append(request.headers.get_list("User-Agent"))
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(
+                *args, **kwargs, transport=httpx.MockTransport(respond), probe_network=False
+            )
+
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        result = runner.invoke(
+            app, ["run", "https://api.example.com/", "-H", "user-agent: mine/1.0", "-o", "json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert sent == [["mine/1.0"]]
+        assert json.loads(result.stdout)["request"]["headers"] == {"user-agent": "mine/1.0"}
 
 
 # --- Unencodable text ------------------------------------------------------
@@ -509,6 +535,59 @@ class TestInputThatCantMakeAReport:
         assert isinstance(result.exception, SystemExit)
         assert _flat(str(e.value)) in _flat(result.stderr)
         assert "Method can only hold letters, digits and" in _flat(result.stderr)
+
+    @pytest.mark.parametrize(
+        ("headers", "message"),
+        [
+            (
+                ["Content-Length: 5"],
+                "Content-Length is 5 but the body is 11 bytes (header 'Content-Length').",
+            ),
+            (
+                ["Content-Length: abc"],
+                "Content-Length must be one whole number of bytes, 1 to 20 digits "
+                "(header 'Content-Length').",
+            ),
+            (
+                ["Transfer-Encoding: gzip"],
+                "Transfer-Encoding can only be chunked (header 'Transfer-Encoding').",
+            ),
+            (
+                ["Content-Length: 11", "Transfer-Encoding: chunked"],
+                "Content-Length and Transfer-Encoding can't be sent together; "
+                "leave Content-Length out.",
+            ),
+        ],
+        ids=["length-shorter", "length-not-a-number", "coding-gzip", "both"],
+    )
+    @pytest.mark.parametrize("entry", ["run", "from-curl"])
+    def test_framing_h11_cant_send_is_refused_before_any_lookup(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        headers: list[str],
+        message: str,
+        entry: str,
+    ) -> None:
+        # A Content-Length the body didn't match made h11 raise while writing
+        # the body: a traceback and exit 1. The others gave a report with no
+        # response and exit 0.
+        def no_network(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("looked up or probed a host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_network)
+        monkeypatch.setattr(core_runner, "_resolve_dns", no_network)
+        monkeypatch.setattr(core_runner, "_probe_tls", no_network)
+        url = "https://api.example.com/"
+        options = [arg for header in headers for arg in ("-H", header)]
+        if entry == "run":
+            args = ["run", url, *options, "-d", "hello world"]
+        else:
+            args = ["from-curl", shlex.join(["curl", url, *options, "-d", "hello world"])]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2, (result.exit_code, repr(result.exception))
+        assert isinstance(result.exception, SystemExit)
+        assert f"Invalid value: {_flat(message)}" in _flat(result.stderr)
 
 
 # JSON-typed HAR bodies, which reach the check as UTF-8, and the parse error
@@ -803,6 +882,101 @@ class TestFromCurl:
         assert isinstance(result.exception, SystemExit)
         assert _flat(message) in _flat(result.stderr)
         assert sent == []
+
+    @pytest.mark.parametrize(
+        ("headers", "repeat"),
+        [
+            (["X-A: 1", "X-A: 2"], "X-A"),
+            (["X-A: 1", "x-a: 2"], "x-a"),
+            (["X-A: 1", "X-A: 1"], "X-A"),
+            (["Authorization: Bearer one", "authorization: Bearer two"], "authorization"),
+        ],
+        ids=["one-spelling", "two-cases", "same-value", "authorization-in-two-cases"],
+    )
+    @pytest.mark.parametrize("entry", ["run", "from-curl"])
+    def test_live_run_refuses_a_header_name_given_twice(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        headers: list[str],
+        repeat: str,
+        entry: str,
+    ) -> None:
+        # The CLI kept the last of one spelling, without a word, and sent
+        # both of two cases; it now refuses either before any lookup.
+        seen: list[str] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            seen.append(f"sent {request.url}")
+            return httpx.Response(200)
+
+        def run_offline(*args: Any, **kwargs: Any) -> CapturedRequest:
+            return core_runner.run(*args, **kwargs, transport=httpx.MockTransport(respond))
+
+        def resolve_dns(host: str, timeout: float = 5.0) -> tuple[CapturedDns, float]:
+            seen.append(f"looked up {host}")
+            return CapturedDns(records=["93.184.216.34"]), 0.0
+
+        def probe_tls(host: str, port: int, *a: Any, **kw: Any) -> tuple[None, float]:
+            seen.append(f"probed {host}")
+            return None, 0.0
+
+        monkeypatch.setattr(core_runner, "_resolve_dns", resolve_dns)
+        monkeypatch.setattr(core_runner, "_probe_tls", probe_tls)
+        monkeypatch.setattr(cli_main, "runner_run", run_offline)
+        url = "https://api.example.com/"
+        options = [arg for header in headers for arg in ("-H", header)]
+        if entry == "run":
+            args = ["run", url, *options]
+        else:
+            args = ["from-curl", shlex.join(["curl", url, *options])]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2, (result.exit_code, result.stdout)
+        assert isinstance(result.exception, SystemExit)
+        message = (
+            f"Header {repeat!r} is given more than once (names are case-insensitive, "
+            "and a repeat with the same value counts too); give it once."
+        )
+        assert f"Invalid value: {_flat(message)}" in _flat(result.stderr)
+        assert seen == []
+
+    def test_no_execute_reports_a_header_given_twice(self, runner: CliRunner) -> None:
+        # The report keeps the last value, as before, and now also names
+        # every value in http.headers.duplicate's evidence: for two
+        # Authorization headers, both tokens. It goes back only to whoever
+        # gave the command, which held both.
+        curl = (
+            "curl https://api.example.com/ -H 'X-A: 1' -H 'X-A: 2' "
+            "-H 'Authorization: Bearer one' -H 'Authorization: Bearer two'"
+        )
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        report = json.loads(result.stdout)
+        assert report["request"]["headers"] == {"X-A": "2", "Authorization": "Bearer two"}
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        assert len(duplicates) == 1
+        duplicate = duplicates[0]
+        assert duplicate["evidence"] == {
+            "duplicates": [
+                {"location": "request", "name": "X-A", "values": ["1", "2"]},
+                {
+                    "location": "request",
+                    "name": "Authorization",
+                    "values": ["Bearer one", "Bearer two"],
+                },
+            ]
+        }
+
+    def test_no_execute_reports_no_duplicate_for_the_same_value_twice(
+        self, runner: CliRunner
+    ) -> None:
+        # A live run refuses it, but http.headers.duplicate names only
+        # repeats whose values differ.
+        curl = "curl https://api.example.com/ -H 'X-A: 1' -H 'X-A: 1'"
+        result = runner.invoke(app, ["from-curl", curl, "--no-execute", "-o", "json"])
+        assert result.exit_code == 0, result.stderr
+        findings = json.loads(result.stdout)["findings"]
+        assert [f for f in findings if f["id"] == "http.headers.duplicate"] == []
 
     @pytest.mark.parametrize(
         "curl",
