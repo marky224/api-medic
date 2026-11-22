@@ -4,6 +4,8 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-22
+
 ### Changed
 
 - A report made from a HAR file, or from a curl command that isn't run, shows the request's method as it was given: `-X put` is `put` and a HAR entry's `patch` is `patch`, where 1.2.0 showed `PUT` and `PATCH`. HTTP methods are case-sensitive and curl sends `-X`'s value as given, so the uppercase form could hide the method a server refused. This is what the hosted demo's and `api-medic serve`'s `/api/analyze`, `api-medic from-har`, `api-medic from-curl --no-execute` and the browser extension's Analyze return. A method that isn't ASCII is no longer changed either: 1.2.0 read `-X POſT` (a long s, U+017F) as `POST`, and a live `api-medic from-curl` sent that `POST`; it now exits 2 with "Invalid value: Method must be ASCII (got 'POſT')." and sends nothing. Other live requests are unchanged: `api-medic run`, a live `from-curl` and `/api/run` send the method in uppercase, as httpx sends every method, and their reports show the method sent. The description of the Report's `request.method` says so; its shape and `schema_version` are unchanged.
@@ -185,7 +187,8 @@ First public release. Three input surfaces (CLI, local web UI, hosted demo) shar
 - **No FastAPI / uvicorn on Lambda.** The Lambda dispatches routes inline via `lambda_handler` to keep cold-start budget intact even with the runner deps (httpx, dnspython, cryptography).
 - **Same `Report` shape from every surface** — the contract that makes the future browser extension a thin capture layer rather than a parallel implementation.
 
-[Unreleased]: https://github.com/marky224/api-medic/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/marky224/api-medic/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/marky224/api-medic/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/marky224/api-medic/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/marky224/api-medic/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/marky224/api-medic/compare/v1.0.0...v1.1.0
