@@ -1010,6 +1010,55 @@ class TestRequestFramingH11CantSend:
         assert str(e.value) == _BOTH
         assert (wire["connects"], wire["written"]) == ([], [])
 
+    @pytest.mark.parametrize(
+        ("length", "coding", "message"),
+        [
+            ("abc", "gzip", _NOT_A_LENGTH),
+            ("abc", "chunked", _NOT_A_LENGTH),
+            ("11", "gzip", _NOT_CHUNKED),
+            ("5", "gzip", _NOT_CHUNKED),
+            ("11", "chunked", _BOTH),
+            ("5", "chunked", _BOTH),
+        ],
+        ids=[
+            "bad-length-and-bad-coding",
+            "bad-length-and-chunked",
+            "right-length-and-bad-coding",
+            "wrong-length-and-bad-coding",
+            "right-length-and-chunked",
+            "wrong-length-and-chunked",
+        ],
+    )
+    @pytest.mark.parametrize("coding_first", [False, True], ids=["length-first", "coding-first"])
+    @pytest.mark.parametrize("as_pairs", [False, True], ids=["mapping", "pairs"])
+    def test_request_breaking_several_framing_rules_gets_the_first_rules_message(
+        self,
+        wire: dict[str, list[Any]],
+        length: str,
+        coding: str,
+        message: str,
+        coding_first: bool,
+        as_pairs: bool,
+    ) -> None:
+        """The framing rules are checked in one order, whatever the order of
+        the headers: Content-Length's form, Transfer-Encoding's value, the
+        two given together, the length against the body. A coding other than
+        chunked given before a length that isn't a number got the coding's
+        message, and the same two the other way round the length's."""
+        pairs = [("Content-Length", length), ("Transfer-Encoding", coding)]
+        if coding_first:
+            pairs.reverse()
+        with pytest.raises(InvalidRequestError) as e:
+            run(
+                "POST",
+                "https://api.example.com/",
+                headers=pairs if as_pairs else dict(pairs),
+                body=_HELLO,
+                probe_network=False,
+            )
+        assert str(e.value) == message
+        assert (wire["connects"], wire["written"]) == ([], [])
+
     def test_refuses_what_h11_refuses(self) -> None:
         """Every ASCII character in, before and after a Content-Length and a
         Transfer-Encoding value, and the lengths and codings probed, on GET,

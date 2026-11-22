@@ -557,8 +557,21 @@ class TestInputThatCantMakeAReport:
                 "Content-Length and Transfer-Encoding can't be sent together; "
                 "leave Content-Length out.",
             ),
+            # The rules run in one order, whatever the order of the headers:
+            # this one got the Transfer-Encoding message.
+            (
+                ["Transfer-Encoding: gzip", "Content-Length: abc"],
+                "Content-Length must be one whole number of bytes, 1 to 20 digits "
+                "(header 'Content-Length').",
+            ),
         ],
-        ids=["length-shorter", "length-not-a-number", "coding-gzip", "both"],
+        ids=[
+            "length-shorter",
+            "length-not-a-number",
+            "coding-gzip",
+            "both",
+            "bad-coding-then-bad-length",
+        ],
     )
     @pytest.mark.parametrize("entry", ["run", "from-curl"])
     def test_framing_h11_cant_send_is_refused_before_any_lookup(

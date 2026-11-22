@@ -181,6 +181,12 @@ class TestRunRejectsMalformedInput:
                 },
                 "Content-Length and Transfer-Encoding can't be sent together",
             ),
+            # The rules run in one order, whatever the order of the headers:
+            # this one got the Transfer-Encoding message.
+            (
+                {"headers": {"Transfer-Encoding": "gzip", "Content-Length": "abc"}},
+                "Content-Length must be one whole number",
+            ),
             # Both were sent. A JSON object keeps only the last of two keys in
             # one spelling, so only two cases reach the rule.
             (
