@@ -132,3 +132,28 @@ describe("renderMarkdown escapes text from the Report", () => {
     }
   });
 });
+
+describe("renderMarkdown's trailing whitespace", () => {
+  it("is dropped quickly after a long run of spaces and tabs", () => {
+    // A regex dropping the trailing whitespace rescanned every run of
+    // spaces or tabs in the report, in time that grew with the square of
+    // the run's length.
+    const run = " \t".repeat(25_000);
+    const report = reportWith({
+      id: "http.cors.misconfigured",
+      severity: "critical",
+      title: "CORS response missing Access-Control-Allow-Origin",
+      explanation: `The request was made from origin a${run}b.`,
+      evidence: { request_origin: `a${run}b` },
+      suggested_fix: `Set Access-Control-Allow-Origin: a${run}`,
+    });
+    const started = performance.now();
+    const out = renderMarkdown(report);
+    const elapsed = performance.now() - started;
+    expect(out).toContain(`\nThe request was made from origin a${run}b.\n`);
+    expect(out).toContain(`\n- \`request_origin\`: \`a${run}b\`\n`);
+    // The run that ends the report goes, as it did.
+    expect(out.endsWith("\n**Suggested fix:** Set Access-Control-Allow-Origin: a\n")).toBe(true);
+    expect(elapsed).toBeLessThan(1000);
+  });
+});

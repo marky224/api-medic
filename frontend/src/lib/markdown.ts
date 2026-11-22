@@ -43,7 +43,7 @@ export function renderMarkdown(report: Report): string {
       parts.push("");
     }
   }
-  return parts.join("\n").replace(/\s+$/, "") + "\n";
+  return parts.join("\n").trimEnd() + "\n";
 }
 
 function statusStr(report: Report): string {
