@@ -244,14 +244,15 @@ def _emit_findings_summary(report: Report) -> None:
     )
 
 
-def _parse_headers(items: list[str]) -> dict[str, str]:
-    """Convert ['Name: value', ...] to {Name: value, ...}."""
-    out: dict[str, str] = {}
+def _parse_headers(items: list[str]) -> list[tuple[str, str]]:
+    """Convert ['Name: value', ...] to [(Name, value), ...], in order. A name
+    given twice stays twice, for the runner to refuse."""
+    out: list[tuple[str, str]] = []
     for raw in items:
         if ":" not in raw:
             raise typer.BadParameter(_printable(f"Header must be 'Name: value' — got {raw!r}."))
         name, value = raw.split(":", 1)
-        out[name.strip()] = value.strip()
+        out.append((name.strip(), value.strip()))
     return out
 
 
@@ -290,7 +291,7 @@ def run(
         typer.Option(
             "--header",
             "-H",
-            help="Header in 'Name: value' form. Repeat for multiple.",
+            help="Header in 'Name: value' form. Repeat for multiple headers; give each name once.",
         ),
     ] = None,
     body: Annotated[
@@ -365,7 +366,7 @@ def from_curl(
             captured = runner_run(
                 captured.method,
                 captured.url,
-                headers=captured.headers,
+                headers=captured.raw_headers,
                 body=captured.body if captured.body else None,
             )
         except (InvalidRequestError, UnusableResponseError) as e:

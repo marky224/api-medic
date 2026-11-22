@@ -177,6 +177,21 @@ class TestAnalyzeCurl:
         assert report["request"]["method"] == "GET"
         assert report["response"] is None  # curl parser doesn't execute
 
+    def test_header_given_twice_gets_the_duplicate_finding(self) -> None:
+        # The report shows the last value, as before; the finding names both.
+        curl = "curl https://api.example.com/ -H 'X-A: 1' -H 'X-A: 2'"
+        body = json.dumps({"kind": "curl", "curl": curl})
+        result = handler.lambda_handler(_event("POST", "/api/analyze", body), None)
+        assert result["statusCode"] == 200
+        report = json.loads(result["body"])
+        assert report["request"]["headers"] == {"X-A": "2"}
+        duplicates = [f for f in report["findings"] if f["id"] == "http.headers.duplicate"]
+        assert len(duplicates) == 1
+        duplicate = duplicates[0]
+        assert duplicate["evidence"]["duplicates"] == [
+            {"location": "request", "name": "X-A", "values": ["1", "2"]}
+        ]
+
     def test_missing_curl_field_400(self):
         result = handler.lambda_handler(
             _event("POST", "/api/analyze", json.dumps({"kind": "curl"})), None
@@ -1247,6 +1262,12 @@ class TestRunRejectsMalformedInput:
                     "body": "hello world",
                 },
                 "Content-Length and Transfer-Encoding can't be sent together",
+            ),
+            # Both were sent. A JSON object keeps only the last of two keys in
+            # one spelling, so only two cases reach the rule.
+            (
+                {"headers": {"X-A": "1", "x-a": "2"}},
+                "Header 'x-a' is given more than once (names are case-insensitive",
             ),
         ],
     )

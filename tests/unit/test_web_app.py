@@ -181,6 +181,12 @@ class TestRunRejectsMalformedInput:
                 },
                 "Content-Length and Transfer-Encoding can't be sent together",
             ),
+            # Both were sent. A JSON object keeps only the last of two keys in
+            # one spelling, so only two cases reach the rule.
+            (
+                {"headers": {"X-A": "1", "x-a": "2"}},
+                "Header 'x-a' is given more than once (names are case-insensitive",
+            ),
         ],
     )
     def test_returns_400(

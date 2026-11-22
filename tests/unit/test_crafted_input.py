@@ -766,6 +766,14 @@ CASES: list[Case] = [
         "run",
         "Content-Length and Transfer-Encoding can't be sent together; leave Content-Length out.",
     ),
+    # A name in two cases: both were sent.
+    Case(
+        "run-header-in-two-cases",
+        Live(headers={"X-A": "1", "x-a": "2"}),
+        "run",
+        "Header 'x-a' is given more than once (names are case-insensitive, "
+        "and a repeat with the same value counts too); give it once.",
+    ),
     # Control characters from the input: the CLI printed them as they were,
     # and a terminal reads ESC as the start of a command.
     Case(

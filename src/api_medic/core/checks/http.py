@@ -1,9 +1,10 @@
 """HTTP-semantic diagnostic checks.
 
-Five checks. Three of them (`headers.duplicate` and the three `redirect.*`)
-depend on data that's only populated by the Runner once Phase 3b-F lands;
-they no-op gracefully when the relevant fields are unset, so existing
-HAR/curl sources don't false-positive.
+Five checks. `headers.duplicate` and the three `redirect.*` depend on data
+only some sources populate: `raw_headers`, which the Runner fills for a
+live response and parse_curl for a curl command's request, and the
+redirect chain the Runner follows. They no-op gracefully when the
+relevant fields are unset, so HAR sources don't false-positive.
 """
 
 from __future__ import annotations
@@ -75,8 +76,9 @@ def headers_duplicate(captured: CapturedRequest) -> Finding | None:
     """Same header appears multiple times with conflicting values.
 
     Needs `raw_headers` populated on the request or response — the dict-shaped
-    `headers` would have already collapsed duplicates. Runner adds this in
-    Phase 3b-F; until then, this check no-ops on most inputs.
+    `headers` would have already collapsed duplicates. The Runner fills the
+    response's on a live run, and parse_curl the request's for a curl
+    command; HAR input has neither, so this check no-ops on it.
     """
     request_dups = _find_duplicates(captured.raw_headers)
     response_dups = (

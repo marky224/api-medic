@@ -1171,3 +1171,114 @@ class TestRequestFramingAsCurlSendsIt:
             + DEFAULT_USER_AGENT.encode()
             + b"\r\nContent-Length: 11\r\n\r\nhello world"
         )
+
+
+def _given_twice(name: str) -> str:
+    return (
+        f"Header {name!r} is given more than once (names are case-insensitive, "
+        "and a repeat with the same value counts too); give it once."
+    )
+
+
+class TestRequestHeaderGivenTwice:
+    """A header name given twice, compared case-insensitively, is refused
+    before anything is looked up or connected. Two names that differ only in
+    case were sent as two headers, or h11 refused them once the connection
+    was open (two Host or Transfer-Encoding headers, or two lengths)."""
+
+    @pytest.mark.parametrize(
+        ("headers", "repeat"),
+        [
+            ({"X-A": "1", "x-a": "2"}, "x-a"),
+            ({"X-A": "1", "x-a": "1"}, "x-a"),
+            ({"Host": "a.example", "host": "b.example"}, "host"),
+            ({"Transfer-Encoding": "chunked", "transfer-encoding": "chunked"}, "transfer-encoding"),
+            ({"Content-Length": "11", "content-length": "5"}, "content-length"),
+            ({"Content-Length": "11", "content-length": "11"}, "content-length"),
+            # The repeat is refused before the framing rules read either.
+            ({"Content-Length": "11", "content-length": "abc"}, "content-length"),
+        ],
+        ids=[
+            "two-cases",
+            "two-cases-same-value",
+            "host",
+            "transfer-encoding",
+            "two-lengths",
+            "same-length",
+            "before-the-framing-rules",
+        ],
+    )
+    def test_name_in_two_cases_is_refused_before_connecting(
+        self, wire: dict[str, list[Any]], headers: dict[str, str], repeat: str
+    ) -> None:
+        with pytest.raises(InvalidRequestError) as e:
+            run(
+                "POST",
+                "https://api.example.com/",
+                headers=headers,
+                body=_HELLO,
+                probe_network=False,
+            )
+        assert str(e.value) == _given_twice(repeat)
+        assert (wire["connects"], wire["written"]) == ([], [])
+
+    @pytest.mark.parametrize(
+        "headers",
+        [[("X-A", "1"), ("X-A", "2")], [("X-A", "1"), ("X-A", "1")], [("X-A", "1"), ("x-a", "2")]],
+        ids=["one-spelling", "same-value", "two-cases"],
+    )
+    def test_list_with_a_name_twice_is_refused(
+        self, wire: dict[str, list[Any]], headers: list[tuple[str, str]]
+    ) -> None:
+        # A list of pairs, as the CLI passes -H and a curl command's
+        # headers; run() didn't take one, so this can't fail on the rule.
+        with pytest.raises(InvalidRequestError) as e:
+            run("GET", "https://api.example.com/", headers=headers, probe_network=False)
+        assert str(e.value) == _given_twice(headers[1][0])
+        assert (wire["connects"], wire["written"]) == ([], [])
+
+    def test_list_without_a_repeat_is_sent_in_order(self, wire: dict[str, list[Any]]) -> None:
+        cap = run(
+            "GET",
+            "https://api.example.com/",
+            headers=[("X-B", "2"), ("X-A", "1")],
+            probe_network=False,
+        )
+        assert cap.headers == {"X-B": "2", "X-A": "1", "User-Agent": DEFAULT_USER_AGENT}
+        assert b"\r\nX-B: 2\r\nX-A: 1\r\n" in b"".join(wire["written"])
+
+    def test_refuses_at_least_what_h11_refuses_for_a_name_in_two_cases(self) -> None:
+        """A3's oracle leaves repeats out; here h11 refuses some (two Host or
+        Transfer-Encoding headers, two lengths), and validate_request refuses
+        all of them."""
+        pairs = [
+            *(("Content-Length", v) for v in ("11", "5", "abc")),
+            *(("Transfer-Encoding", v) for v in ("chunked", "gzip")),
+            *(("Host", v) for v in ("a.example", "")),
+            ("X-A", "1"),
+        ]
+        sent: list[dict[str, str]] = []
+        h11_refused = 0
+        with httpx.Client() as client:
+            for (name, first), (other, second) in itertools.product(pairs, pairs):
+                if name != other:
+                    continue
+                headers = {name: first, name.lower(): second}
+                h11_refused += not _h11_sends_framing(client, "POST", headers, b"hello world")
+                if _validate_request_sends_framing("POST", headers, b"hello world"):
+                    sent.append(headers)
+        assert h11_refused > 0
+        assert sent == []
+
+    def test_many_headers_are_checked_quickly(self) -> None:
+        headers = {f"X-{i}": "v" for i in range(100_000)}
+        headers["x-99999"] = "v"
+        started = time.perf_counter()
+        with pytest.raises(InvalidRequestError) as e:
+            validate_request("GET", "https://example.com/", headers)
+        elapsed = time.perf_counter() - started
+        assert str(e.value) == _given_twice("x-99999")
+        # Checked only when nothing is tracing, as in test_parser.py's
+        # test_command_at_the_argument_limit_parses_quickly.
+        if sys.version_info < (3, 12) or sys.gettrace() is None:
+            assert elapsed < 1

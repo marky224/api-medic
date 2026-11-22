@@ -295,7 +295,9 @@ def parse_curl(curl_str: str) -> CapturedRequest:
     Cookie headers are kept as given, joined with "; " into one. Without
     one, its -b/--cookie cookies are the Cookie header, joined with ";", as
     curl sends them; a -b/--cookie file or a -c/--cookie-jar is a
-    ValueError. A command on several lines, each but the last ending in a
+    ValueError. Its `headers` keep the last value of a name given twice,
+    and `raw_headers` every header in order, with the Cookie header last.
+    A command on several lines, each but the last ending in a
     backslash, is read as one, as bash reads it (see _normalize_bash); one
     written for Windows cmd or PowerShell is a ValueError naming that.
     """
@@ -369,12 +371,26 @@ def parse_curl(curl_str: str) -> CapturedRequest:
         cookie = ";".join(cookie_options).strip()
     if cookie:
         headers["Cookie"] = cookie
+    # The same headers as a list, so a live run sends a name given twice
+    # to the runner, which refuses it: every -H header but the Cookie ones,
+    # in order, split and stripped as uncurl does it, then the Cookie
+    # header. dict(raw_headers) is `headers`.
+    raw_headers = []
+    for header in parsed.header:
+        # At its first colon, or its second when it starts with one.
+        at = header.index(":", 1 if header.startswith(":") else 0)
+        key, value = header[:at], header[at + 1 :]
+        if key.lower().strip("$") != "cookie":
+            raw_headers.append((key, value.strip()))
+    if cookie:
+        raw_headers.append(("Cookie", cookie))
     body = _utf8(ctx.data) if ctx.data else b""
 
     return CapturedRequest(
         method=method,
         url=url,
         headers=headers,
+        raw_headers=raw_headers,
         body=body,
         response=None,
         timing=TimingBreakdown(),

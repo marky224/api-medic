@@ -49,8 +49,8 @@ class CapturedResponse(BaseModel):
     for display.
 
     `raw_headers` is the original (name, value) sequence preserving
-    duplicates and case. None when the source didn't preserve them
-    (Phase 3a Runner output, for instance — populated in 3b-F).
+    duplicates and case. The Runner fills it for a live response; None
+    when the source didn't preserve them (a HAR's response).
     """
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -71,7 +71,9 @@ class CapturedRequest(BaseModel):
     no-op when it's missing.
 
     `raw_headers` mirrors CapturedResponse.raw_headers — original
-    (name, value) sequence with duplicates preserved.
+    (name, value) sequence with duplicates preserved. parse_curl fills it
+    with the command's headers; a live run refuses a name given twice, and
+    leaves it None, as a HAR does.
 
     `redirect_chain` is the list of URLs visited starting from the
     user-supplied URL and ending at the final one. None when not captured

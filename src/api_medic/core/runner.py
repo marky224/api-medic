@@ -19,7 +19,7 @@ import re
 import socket
 import ssl
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import dns.exception
@@ -73,7 +73,7 @@ def run(
     method: str,
     url: str,
     *,
-    headers: dict[str, str] | None = None,
+    headers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     body: bytes | str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     follow_redirects: bool = True,
@@ -111,11 +111,14 @@ def run(
     final response whose status is outside 100-599, which h11 accepts but a
     Report can't hold, raises UnusableResponseError after the exchange.
 
-    A Host header is sent as given; the connection still goes to the URL's
-    host. api-medic's User-Agent is added unless one is given, in any
-    case. A request that gives a Transfer-Encoding goes without the
-    Content-Length httpx would add beside it, as curl sends it, and h11
-    chunk-encodes the body.
+    `headers` is a mapping or a list of (name, value) pairs, such as a
+    curl command's -H headers; validate_request refuses a name given
+    twice, so the request and its report hold each once. A Host header is
+    sent as given; the connection still goes to the URL's host.
+    api-medic's User-Agent is added unless one is given, in any case. A
+    request that gives a Transfer-Encoding goes without the Content-Length
+    httpx would add beside it, as curl sends it, and h11 chunk-encodes the
+    body.
     """
     validate_request(method, url, headers, body)
     request_headers = dict(headers or {})
@@ -228,7 +231,7 @@ def run(
 def validate_request(
     method: str,
     url: str,
-    headers: Mapping[str, str] | None = None,
+    headers: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
     body: bytes | str | None = None,
 ) -> None:
     """Raise InvalidRequestError if httpx can't send this request as given.
@@ -237,7 +240,11 @@ def validate_request(
     header names and values must be ASCII, the method and each header name
     an RFC 9110 token, and each header value free of NUL, LF, VT, FF and CR
     and of a space or tab at either end, which h11, httpx's HTTP/1.1
-    writer, refuses; and a str body must encode as UTF-8. Then the body's
+    writer, refuses. `headers` is a mapping or a list of (name, value)
+    pairs, and no name may be given twice, compared case-insensitively,
+    even with the same value: of two in one spelling a mapping keeps only
+    the last, and h11 refuses two Host or Transfer-Encoding headers or two
+    different lengths. A str body must encode as UTF-8. Then the body's
     framing, which h11 also refuses or can't send: a Content-Length must be
     one whole number of 1 to 20 digits once its comma-separated parts are
     merged, and match the body's length in bytes, and a Transfer-Encoding
@@ -252,7 +259,7 @@ def validate_request(
         raise InvalidRequestError(f"Method must be ASCII (got {method!r}).")
     if not _TOKEN.fullmatch(method):
         raise InvalidRequestError(f"Method can only hold {_TOKEN_CHARACTERS} (got {method!r}).")
-    pairs = list((headers or {}).items())
+    pairs = list(headers.items()) if isinstance(headers, Mapping) else list(headers or [])
     for name, value in pairs:
         if not (name.isascii() and value.isascii()):
             raise InvalidRequestError(f"Header names and values must be ASCII (header {name!r}).")
@@ -266,6 +273,14 @@ def validate_request(
             raise InvalidRequestError(
                 f"Header values can't start or end with a space or tab (header {name!r})."
             )
+    names: set[str] = set()
+    for name, _ in pairs:
+        if name.lower() in names:
+            raise InvalidRequestError(
+                f"Header {name!r} is given more than once (names are case-insensitive, "
+                "and a repeat with the same value counts too); give it once."
+            )
+        names.add(name.lower())
     if isinstance(body, str):
         try:
             body = body.encode("utf-8")
