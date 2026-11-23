@@ -4,6 +4,14 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Fixed
+
+- The web UI's Export markdown no longer slows down on a long run of spaces or tabs in a report. Dropping the markdown's trailing whitespace rescanned every such run, in time that grew with the square of its length: a finding whose explanation, evidence value and suggested fix each held 50,000 spaces and tabs took about 4 s to export in a test on Node 24. It now takes under a second, and the markdown is the same.
+
+### Security
+
+- Markdown output shows the text it quotes from its input as text. `-o markdown` and the web UI's Export markdown wrote a report's method, URL, status text and protocol, and each finding's explanation, evidence and suggested fix, as they were, and a HAR file, a curl command or a live server can put markdown there. Read as CommonMark, which GitHub's markdown extends, such a report could show a link the input wrote: a CORS `Origin` header of `https://o.example [Re-authenticate here](https://evil.example/login)` made a link in the finding's explanation and its suggested fix. An image, an `<img>` or `<a>` tag, an `<https://…>` autolink, and a heading or link reference definition after a line break did the same, and a backtick in a URL, a method, a status text or an evidence value ended its code span, so an image after it showed. A `|` or a line break in a HAR's `httpVersion` broke the table: `HTTP/1.1 | 0` put `0` where the number of findings goes. Now a finding's title, explanation and suggested fix and the Protocol cell escape `[`, `]` and a backslash before punctuation, and write `<` as `&lt;` and an `&` that would start an entity as `&amp;`; the Protocol cell also escapes `|`. Each code span's fence is one backtick longer than the longest run of backticks in its text, and a space pads the text inside the fence where CommonMark would otherwise read a backtick at its edge as part of the fence or drop the spaces at its ends. A line break from the input is shown as `\n` or `\r`, where 1.3.0's `-o markdown` printed a line feed as it was and the web UI's Export wrote a line feed or a CR as it was. `*`, `_`, `~` and backticks in a finding's text are left as they are. In the CLI, control characters are still shown as `\x1b` and the like, and the markdown escapes leave those backslashes alone. The browser extension's panel uses the same Export markdown code, but its store versions change only with the extension's next version. Reports, `-o json` and what the hosted demo and `api-medic serve` answer are unchanged, and markdown output for a report whose text holds no `[`, `]`, `\`, `<`, `&`, `|`, backtick or line break is byte-identical, except that a code span whose text has a space at both ends, around something other than spaces, gets one more space inside each fence.
+
 ## [1.3.0] - 2026-11-22
 
 ### Changed

@@ -1,0 +1,44 @@
+{
+  "id": "00000000-0000-0000-0000-000000000003",
+  "schema_version": "1.0",
+  "timestamp": "2026-11-22T20:00:00Z",
+  "source": "har",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1?q=a`![t](https://evil.example/p.png)``x",
+    "headers": {
+      "Origin": "https://o.example`"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 200,
+    "status_text": "`OK",
+    "headers": {},
+    "body_size_bytes": 0,
+    "body_preview": null,
+    "protocol": "HTTP/1.1"
+  },
+  "timing": {
+    "dns_ms": null,
+    "connect_ms": null,
+    "tls_ms": null,
+    "ttfb_ms": 10.0,
+    "download_ms": null,
+    "total_ms": 10.0
+  },
+  "findings": [
+    {
+      "id": "http.cors.misconfigured",
+      "severity": "critical",
+      "title": "CORS response missing Access-Control-Allow-Origin",
+      "explanation": "The request was made from origin https://o.example`, but the response has no Access-Control-Allow-Origin header. The browser will block the response from reaching JS.",
+      "evidence": {
+        "request_origin": "https://o.example`",
+        "allow_origin": null
+      },
+      "suggested_fix": "Set Access-Control-Allow-Origin: https://o.example` on the server (or a wildcard if the API is fully public)."
+    }
+  ]
+}

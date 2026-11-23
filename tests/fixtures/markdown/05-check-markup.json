@@ -1,0 +1,56 @@
+{
+  "id": "00000000-0000-0000-0000-000000000005",
+  "schema_version": "1.0",
+  "timestamp": "2026-11-22T20:00:00Z",
+  "source": "live",
+  "request": {
+    "method": "GET",
+    "url": "https://api.example.com/v1/users",
+    "headers": {
+      "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsIm5iZiI6MTc5NTM5MTUyMX0.sig"
+    },
+    "body_size_bytes": 0,
+    "body_preview": null
+  },
+  "response": {
+    "status_code": 200,
+    "status_text": "OK",
+    "headers": {},
+    "body_size_bytes": 0,
+    "body_preview": null,
+    "protocol": "HTTP/2"
+  },
+  "timing": {
+    "dns_ms": null,
+    "connect_ms": null,
+    "tls_ms": null,
+    "ttfb_ms": null,
+    "download_ms": null,
+    "total_ms": 120.0
+  },
+  "findings": [
+    {
+      "id": "auth.jwt.not_yet_valid",
+      "severity": "critical",
+      "title": "Bearer token is not yet valid",
+      "explanation": "The JWT's `nbf` claim is 2h 0m in the future. The server will reject it until then. Likely a clock-skew issue between the token issuer and the local machine.",
+      "evidence": {
+        "nbf": "2026-11-22T23:52:01Z",
+        "valid_in_seconds": 7200,
+        "sub": "user_123"
+      },
+      "suggested_fix": "Check the system clocks on the issuer and the client. If skew is small, wait it out; otherwise sync NTP."
+    },
+    {
+      "id": "network.tls.weak_protocol",
+      "severity": "critical",
+      "title": "Weak TLS protocol negotiated (TLSv1.1)",
+      "explanation": "The connection negotiated TLSv1.1. Anything below TLS 1.2 is considered insecure and is rejected by modern clients (browsers, Python 3.12+, recent OpenSSL builds).",
+      "evidence": {
+        "negotiated_version": "TLSv1.1",
+        "minimum_safe_version": "TLSv1.2"
+      },
+      "suggested_fix": "Disable TLS 1.0 and 1.1 on the server. With nginx: `ssl_protocols TLSv1.2 TLSv1.3;`."
+    }
+  ]
+}

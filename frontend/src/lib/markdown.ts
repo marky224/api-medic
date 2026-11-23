@@ -1,7 +1,11 @@
 // Markdown renderer for Reports. Mirrors src/api_medic/core/render/markdown.py
 // so Export-markdown produces equivalent output across CLI and web/extension
 // surfaces. Severity is conveyed by [CRITICAL]/[WARNING]/[INFO] tags rather
-// than emoji to render cleanly in GitHub issues, Slack, or email.
+// than emoji to render cleanly in GitHub issues, Slack, or email. Text from
+// the Report is escaped so it reads as text: text, cell and code match
+// markdown.py's _text, _cell and _code. The escaping relies on each title,
+// explanation and suggested fix starting with the check's own words, since
+// it doesn't guard the start of a line (`#`, `>`, `-`, a fence, an indent).
 
 import type { Finding, Report, Severity, TimingBreakdown } from "./types";
 
@@ -16,7 +20,7 @@ export function renderMarkdown(report: Report): string {
   parts.push("# api-medic — diagnostic report");
   parts.push("");
   parts.push(
-    `\`${report.request.method} ${report.request.url}\` → ${statusStr(report)}`,
+    `${code(`${report.request.method} ${report.request.url}`)} → ${statusStr(report)}`,
   );
   parts.push("");
   parts.push(metricsTable(report));
@@ -39,12 +43,12 @@ export function renderMarkdown(report: Report): string {
       parts.push("");
     }
   }
-  return parts.join("\n").replace(/\s+$/, "") + "\n";
+  return parts.join("\n").trimEnd() + "\n";
 }
 
 function statusStr(report: Report): string {
   if (!report.response) return "_no response_";
-  return `\`${report.response.status_code} ${report.response.status_text}\``;
+  return code(`${report.response.status_code} ${report.response.status_text}`);
 }
 
 function metricsTable(report: Report): string {
@@ -52,7 +56,7 @@ function metricsTable(report: Report): string {
   const body = report.response
     ? fmtBytes(report.response.body_size_bytes)
     : "—";
-  const protocol = report.response ? report.response.protocol : "—";
+  const protocol = report.response ? cell(report.response.protocol) : "—";
   const findings = fmtFindingsCount(report.findings ?? []);
   return (
     "| Latency | Body | Protocol | Findings |\n" +
@@ -88,21 +92,21 @@ function timingTable(t: TimingBreakdown): string {
 
 function findingBlock(f: Finding): string {
   const lines: string[] = [
-    `### ${SEVERITY_TAG[f.severity]} ${f.title}`,
-    `**\`${f.id}\`**`,
+    `### ${SEVERITY_TAG[f.severity]} ${text(f.title)}`,
+    `**${code(f.id)}**`,
     "",
-    f.explanation,
+    text(f.explanation),
   ];
   if (f.evidence && Object.keys(f.evidence).length > 0) {
     lines.push("");
     lines.push("**Evidence:**");
     for (const [k, v] of Object.entries(f.evidence)) {
-      lines.push(`- \`${k}\`: \`${evidenceValue(v)}\``);
+      lines.push(`- ${code(k)}: ${code(evidenceValue(v))}`);
     }
   }
   if (f.suggested_fix) {
     lines.push("");
-    lines.push(`**Suggested fix:** ${f.suggested_fix}`);
+    lines.push(`**Suggested fix:** ${text(f.suggested_fix)}`);
   }
   return lines.join("\n");
 }
@@ -137,4 +141,30 @@ function fmtFindingsCount(findings: Finding[]): string {
   if (counts.critical) return `${counts.critical} critical`;
   if (counts.warning) return `${counts.warning} warning`;
   return `${counts.info} info`;
+}
+
+const MARKUP = /\\(?=[!-\/:-@\[-`{-~])|[\[\]<]|&(?=#?[0-9A-Za-z]+;)/g;
+
+function lineBreaks(value: string): string {
+  return value.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+}
+
+function text(value: string): string {
+  return lineBreaks(value).replace(MARKUP, (c) =>
+    c === "<" ? "&lt;" : c === "&" ? "&amp;" : "\\" + c,
+  );
+}
+
+function cell(value: string): string {
+  return text(value).replace(/\|/g, "\\|");
+}
+
+function code(value: string): string {
+  const v = lineBreaks(value);
+  let longest = 0;
+  for (const run of v.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  const fence = "`".repeat(longest + 1);
+  const ends = v.slice(0, 1) + v.slice(-1);
+  const pad = /[^ ]/.test(v) && (ends.includes("`") || ends === "  ") ? " " : "";
+  return `${fence}${pad}${v}${pad}${fence}`;
 }
