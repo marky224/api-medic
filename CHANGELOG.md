@@ -4,6 +4,8 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-22
+
 ### Fixed
 
 - The web UI's Export markdown no longer slows down on a long run of spaces or tabs in a report. Dropping the markdown's trailing whitespace rescanned every such run, in time that grew with the square of its length: a finding whose explanation, evidence value and suggested fix each held 50,000 spaces and tabs took about 4 s to export in a test on Node 24. It now takes under a second, and the markdown is the same.
@@ -195,7 +197,8 @@ First public release. Three input surfaces (CLI, local web UI, hosted demo) shar
 - **No FastAPI / uvicorn on Lambda.** The Lambda dispatches routes inline via `lambda_handler` to keep cold-start budget intact even with the runner deps (httpx, dnspython, cryptography).
 - **Same `Report` shape from every surface** — the contract that makes the future browser extension a thin capture layer rather than a parallel implementation.
 
-[Unreleased]: https://github.com/marky224/api-medic/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/marky224/api-medic/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/marky224/api-medic/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/marky224/api-medic/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/marky224/api-medic/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/marky224/api-medic/compare/v1.1.0...v1.1.1
