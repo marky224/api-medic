@@ -4,6 +4,10 @@ All notable changes to api-medic are documented here. The format follows [Keep a
 
 ## [Unreleased]
 
+### Security
+
+- Browser extension 0.2.2's panel exports markdown with 1.3.1's escaping and speed fix: the text a report quotes from the captured request and its response shows as text, and a long run of spaces or tabs no longer slows Export markdown down. 0.2.1's panel wrote that text as it was.
+
 ## [1.3.1] - 2026-11-22
 
 ### Fixed
